@@ -4,13 +4,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 from scipy import stats
 import numpy as np
+import duckdb
 import os
-import glob
 
 # --- CONFIGURATION ---
 PAGE_TITLE = "SWOT River Dynamics: Kanektok & Uyak"
 DATA_DIR = "batch_outputs"
-FILE_NAME = "master_all_data"
+MAX_PLOT_POINTS = 25000  # Safety Cap: Max points to plot (Prevents OOM Crash)
 
 # FIXED COLORS
 COLOR_MAP = {
@@ -20,114 +20,128 @@ COLOR_MAP = {
 
 st.set_page_config(page_title=PAGE_TITLE, layout="wide", page_icon="🌊")
 
-# --- DATA LOADING ---
-@st.cache_data
-def load_data():
+@st.cache_resource
+def get_database_connection():
     """
-    Loads data by stitching split Parquet files (for GitHub compatibility),
-    falling back to a single file if running locally.
+    Establishes a connection to DuckDB and creates a virtual view of the parquet files.
     """
-    df = None
+    con = duckdb.connect(database=':memory:')
+    parquet_pattern = os.path.join(DATA_DIR, "master_all_data_part_*.parquet")
     
-    # 1. Look for Split Files (Preferred for GitHub)
-    split_pattern = os.path.join(DATA_DIR, "master_all_data_part_*.parquet")
-    split_files = glob.glob(split_pattern)
-    
-    if split_files:
-        split_files.sort()
-        df_list = [pd.read_parquet(f) for f in split_files]
-        df = pd.concat(df_list, ignore_index=True)
-    
-    # 2. Fallback to Single Parquet
-    elif os.path.exists(os.path.join(DATA_DIR, f"{FILE_NAME}.parquet")):
-        df = pd.read_parquet(os.path.join(DATA_DIR, f"{FILE_NAME}.parquet"))
-        
-    # 3. Fallback to CSV
-    elif os.path.exists(os.path.join(DATA_DIR, f"{FILE_NAME}.csv")):
-        df = pd.read_csv(os.path.join(DATA_DIR, f"{FILE_NAME}.csv"))
-    
-    if df is not None:
-        df['Pass_Date'] = pd.to_datetime(df['Pass_Date'])
-        if 'dist_km' in df.columns:
-            df = df.sort_values(by=['Pass_Date', 'dist_km'])
-        return df
-        
-    return None
+    try:
+        con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{parquet_pattern}')")
+        return con
+    except Exception as e:
+        st.error(f"❌ Could not connect to data: {e}")
+        return None
 
 def main():
-    # --- SIDEBAR ---
+    con = get_database_connection()
+    if not con: st.stop()
+
+    # --- SIDEBAR CONTROLS (WRAPPED IN FORM) ---
     st.sidebar.title("🌊 Analysis Controls")
     
-    df = load_data()
-    
-    if df is None:
-        st.error(f"❌ Data not found in `{DATA_DIR}/`. Please check your file setup.")
+    # 1. Get Metadata (Lightweight)
+    try:
+        date_range = con.execute("SELECT MIN(Pass_Date), MAX(Pass_Date) FROM river_data").fetchone()
+        min_date, max_date = date_range[0], date_range[1]
+        available_reaches = con.execute("SELECT DISTINCT Reach_Name FROM river_data").fetchdf()['Reach_Name'].tolist()
+    except:
+        st.error("Could not read metadata. Check data files.")
         st.stop()
-
-    # 1. River Selector
-    if 'Reach_Name' in df.columns:
-        all_reaches = df['Reach_Name'].unique()
-        selected_reaches = st.sidebar.multiselect("Select Rivers:", all_reaches, default=all_reaches)
-    else:
-        st.error("Column 'Reach_Name' missing.")
-        st.stop()
-    
-    # 2. Date Slider
-    min_date = df['Pass_Date'].min().date()
-    max_date = df['Pass_Date'].max().date()
-    
-    if min_date == max_date:
-        start_date, end_date = min_date, max_date
-        st.sidebar.info(f"📅 Data available for: {min_date}")
-    else:
-        start_date, end_date = st.sidebar.slider(
+        
+    # --- THE FORM ---
+    # This prevents the app from crashing while you drag the slider!
+    with st.sidebar.form("analysis_form"):
+        st.write("### 1. Select Time & Rivers")
+        
+        # Date Slider
+        start_date, end_date = st.slider(
             "Time Frame:",
-            min_value=min_date,
-            max_value=max_date,
-            value=(min_date, max_date)
+            min_value=min_date.date(),
+            max_value=max_date.date(),
+            value=(min_date.date(), max_date.date())
         )
 
-    # 3. Filter Data
-    mask = (
-        (df['Reach_Name'].isin(selected_reaches)) &
-        (df['Pass_Date'].dt.date >= start_date) &
-        (df['Pass_Date'].dt.date <= end_date)
-    )
-    filtered_df = df[mask]
+        # River Selector
+        selected_reaches = st.multiselect(
+            "Select Rivers:", 
+            available_reaches, 
+            default=available_reaches
+        )
+
+        # Submit Button
+        submitted = st.form_submit_button("🔄 Update Analysis")
+
+    # Default to loading data on first run
+    if not submitted and "data_loaded" not in st.session_state:
+        st.session_state.data_loaded = True
+
+    if not selected_reaches:
+        st.warning("Please select at least one river.")
+        st.stop()
+
+    # 3. FILTER DATA (Lazy Load)
+    rivers_sql = "'" + "','".join(selected_reaches) + "'"
+    
+    # Query for Stats (Uses ALL data for accuracy)
+    query_full = f"""
+        SELECT * FROM river_data 
+        WHERE Reach_Name IN ({rivers_sql})
+        AND Pass_Date >= '{start_date}'
+        AND Pass_Date <= '{end_date}'
+    """
+    
+    # Check count
+    count = con.execute(f"SELECT COUNT(*) FROM ({query_full})").fetchone()[0]
+    
+    if count == 0:
+        st.warning("⚠️ No data matches your selection.")
+        st.stop()
+
+    # --- MEMORY PROTECTION ---
+    if count > MAX_PLOT_POINTS:
+        # Load random sample for Visualization
+        query_viz = f"{query_full} USING SAMPLE {MAX_PLOT_POINTS} ROWS"
+        viz_df = con.execute(query_viz).fetchdf()
+        
+        if submitted: # Only show warning if user just clicked
+            st.toast(f"ℹ️ Downsampling: Showing {MAX_PLOT_POINTS} of {count} points.", icon="📉")
+    else:
+        viz_df = con.execute(query_full).fetchdf()
+
+    # Load Full Data for Stats (Memory safe in DuckDB)
+    stats_query = f"""
+        SELECT Reach_Name, 
+               AVG(wse) as avg_wse, 
+               AVG(slope_calc) as avg_slope 
+        FROM ({query_full}) 
+        GROUP BY Reach_Name
+    """
+    stats_df = con.execute(stats_query).fetchdf()
 
     # --- MAIN PAGE ---
     st.title(PAGE_TITLE)
     
-    # Top Row: Basic Counts
+    # KPIs
     col1, col2 = st.columns(2)
-    col1.metric("Passes Analyzed", filtered_df['Pass_Date'].nunique())
-    col2.metric("Total Data Points", len(filtered_df))
-    
-    if filtered_df.empty:
-        st.warning("⚠️ No data matches your selection.")
-        st.stop()
+    col1.metric("Passes Analyzed", viz_df['Pass_Date'].nunique())
+    col2.metric("Total Data Points", count) 
 
-    # --- SUMMARY STATS TABLE (RESTORED) ---
+    # --- SUMMARY STATS TABLE ---
     st.subheader("Summary Stats (Averages for Selected Time Period)")
     
-    if 'slope_calc' in filtered_df.columns:
-        # Group by River Name and calculate averages
-        summary_stats = filtered_df.groupby("Reach_Name")[["wse", "slope_calc"]].mean().reset_index()
-        
-        # Rename columns for clarity (optional)
-        summary_stats = summary_stats.rename(columns={
-            "wse": "Avg WSE (m)",
-            "slope_calc": "Avg Slope (cm/km)"
-        })
-        
-        # Display as a clean table (use_container_width makes it span the page)
-        st.dataframe(
-            summary_stats.style.format({"Avg WSE (m)": "{:.2f}", "Avg Slope (cm/km)": "{:.2f}"}),
-            use_container_width=True,
-            hide_index=True 
-        )
-    else:
-        st.warning("Column 'slope_calc' missing, cannot calculate summary stats.")
+    display_stats = stats_df.rename(columns={
+        "avg_wse": "Avg WSE (m)",
+        "avg_slope": "Avg Slope (cm/km)"
+    })
+    
+    st.dataframe(
+        display_stats.style.format({"Avg WSE (m)": "{:.2f}", "Avg Slope (cm/km)": "{:.2f}"}),
+        use_container_width=True,
+        hide_index=True 
+    )
 
     # --- TABS ---
     tab1, tab2, tab3 = st.tabs(["📈 Gradient Profile", "🗺️ Map View", "📄 Raw Data"])
@@ -136,9 +150,8 @@ def main():
     with tab1:
         st.subheader(f"River Profile ({start_date} to {end_date})")
         
-        # 1. Base Scatter Plot (Fixed Colors)
         fig = px.scatter(
-            filtered_df, 
+            viz_df, 
             x="dist_km", 
             y="wse", 
             color="Reach_Name", 
@@ -148,20 +161,16 @@ def main():
             labels={"wse": "WSE (m)", "dist_km": "Distance Upstream (km)"}
         )
 
-        # 2. Add Trendlines & Slopes
         for reach in selected_reaches:
-            reach_data = filtered_df[filtered_df['Reach_Name'] == reach]
+            reach_data = viz_df[viz_df['Reach_Name'] == reach]
             if len(reach_data) < 5: continue
             
-            # Linear Regression
             slope, intercept, r, _, _ = stats.linregress(reach_data['dist_km'], reach_data['wse'])
             slope_cm = slope * 100
             
-            # Generate Line Points
             x_range = np.linspace(reach_data['dist_km'].min(), reach_data['dist_km'].max(), 100)
             y_range = intercept + slope * x_range
             
-            # Add Line Trace
             line_color = COLOR_MAP.get(reach, "black")
             
             fig.add_trace(go.Scatter(
@@ -179,13 +188,18 @@ def main():
     with tab2:
         st.subheader("Satellite Data Point Locations")
         
+        if len(viz_df) > 10000:
+            map_df = viz_df.sample(10000)
+        else:
+            map_df = viz_df
+
         fig_map = px.scatter_mapbox(
-            filtered_df,
+            map_df,
             lat="latitude",
             lon="longitude",
             color="Reach_Name",
             color_discrete_map=COLOR_MAP, 
-            size_max=10,
+            size_max=8,
             zoom=8,
             hover_data=["wse", "Pass_Date"]
         )
@@ -199,13 +213,14 @@ def main():
     # --- TAB 3: DATA TABLE ---
     with tab3:
         st.subheader("Data Inspector")
-        st.dataframe(filtered_df, use_container_width=True)
+        st.dataframe(viz_df.head(1000), use_container_width=True)
+        st.caption(f"Showing first 1000 rows of {count}.")
         
-        csv = filtered_df.to_csv(index=False).encode('utf-8')
+        csv = viz_df.to_csv(index=False).encode('utf-8')
         st.download_button(
-            "⬇️ Download Data as CSV",
+            "⬇️ Download Sample Data as CSV",
             csv,
-            "swot_filtered_data.csv",
+            "swot_sample_data.csv",
             "text/csv",
             key='download-csv'
         )
