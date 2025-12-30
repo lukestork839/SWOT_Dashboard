@@ -10,21 +10,18 @@ import os
 # --- CONFIGURATION ---
 PAGE_TITLE = "SWOT River Dynamics: Kanektok & Uyak"
 DATA_DIR = "batch_outputs"
-MAX_PLOT_POINTS = 25000  # Safety Cap: Max points to plot (Prevents OOM Crash)
+MAX_PLOT_POINTS = 25000  # Safety Cap
 
 # FIXED COLORS
 COLOR_MAP = {
-    "Kanektok_River": "firebrick",  # Deep Red
-    "Uyak_Creek": "dodgerblue"      # Bright Blue
+    "Kanektok_River": "firebrick",
+    "Uyak_Creek": "dodgerblue"
 }
 
 st.set_page_config(page_title=PAGE_TITLE, layout="wide", page_icon="🌊")
 
 @st.cache_resource
 def get_database_connection():
-    """
-    Establishes a connection to DuckDB and creates a virtual view of the parquet files.
-    """
     con = duckdb.connect(database=':memory:')
     parquet_pattern = os.path.join(DATA_DIR, "master_all_data_part_*.parquet")
     
@@ -39,24 +36,25 @@ def main():
     con = get_database_connection()
     if not con: st.stop()
 
-    # --- SIDEBAR CONTROLS (WRAPPED IN FORM) ---
     st.sidebar.title("🌊 Analysis Controls")
     
     # 1. Get Metadata (Lightweight)
     try:
         date_range = con.execute("SELECT MIN(Pass_Date), MAX(Pass_Date) FROM river_data").fetchone()
-        min_date, max_date = date_range[0], date_range[1]
+        # FIX: Force conversion to datetime so we can use .date()
+        min_date = pd.to_datetime(date_range[0])
+        max_date = pd.to_datetime(date_range[1])
+        
         available_reaches = con.execute("SELECT DISTINCT Reach_Name FROM river_data").fetchdf()['Reach_Name'].tolist()
-    except:
-        st.error("Could not read metadata. Check data files.")
+    except Exception as e:
+        st.error(f"Could not read metadata: {e}")
         st.stop()
         
     # --- THE FORM ---
-    # This prevents the app from crashing while you drag the slider!
     with st.sidebar.form("analysis_form"):
         st.write("### 1. Select Time & Rivers")
         
-        # Date Slider
+        # Date Slider (Now safe because min_date is a Timestamp)
         start_date, end_date = st.slider(
             "Time Frame:",
             min_value=min_date.date(),
@@ -64,17 +62,14 @@ def main():
             value=(min_date.date(), max_date.date())
         )
 
-        # River Selector
         selected_reaches = st.multiselect(
             "Select Rivers:", 
             available_reaches, 
             default=available_reaches
         )
 
-        # Submit Button
         submitted = st.form_submit_button("🔄 Update Analysis")
 
-    # Default to loading data on first run
     if not submitted and "data_loaded" not in st.session_state:
         st.session_state.data_loaded = True
 
@@ -82,10 +77,9 @@ def main():
         st.warning("Please select at least one river.")
         st.stop()
 
-    # 3. FILTER DATA (Lazy Load)
+    # 3. FILTER DATA
     rivers_sql = "'" + "','".join(selected_reaches) + "'"
     
-    # Query for Stats (Uses ALL data for accuracy)
     query_full = f"""
         SELECT * FROM river_data 
         WHERE Reach_Name IN ({rivers_sql})
@@ -94,7 +88,11 @@ def main():
     """
     
     # Check count
-    count = con.execute(f"SELECT COUNT(*) FROM ({query_full})").fetchone()[0]
+    try:
+        count = con.execute(f"SELECT COUNT(*) FROM ({query_full})").fetchone()[0]
+    except Exception as e:
+        st.error(f"Query failed: {e}")
+        st.stop()
     
     if count == 0:
         st.warning("⚠️ No data matches your selection.")
@@ -102,16 +100,15 @@ def main():
 
     # --- MEMORY PROTECTION ---
     if count > MAX_PLOT_POINTS:
-        # Load random sample for Visualization
         query_viz = f"{query_full} USING SAMPLE {MAX_PLOT_POINTS} ROWS"
         viz_df = con.execute(query_viz).fetchdf()
         
-        if submitted: # Only show warning if user just clicked
+        if submitted:
             st.toast(f"ℹ️ Downsampling: Showing {MAX_PLOT_POINTS} of {count} points.", icon="📉")
     else:
         viz_df = con.execute(query_full).fetchdf()
 
-    # Load Full Data for Stats (Memory safe in DuckDB)
+    # Load Full Data for Stats
     stats_query = f"""
         SELECT Reach_Name, 
                AVG(wse) as avg_wse, 
@@ -124,7 +121,6 @@ def main():
     # --- MAIN PAGE ---
     st.title(PAGE_TITLE)
     
-    # KPIs
     col1, col2 = st.columns(2)
     col1.metric("Passes Analyzed", viz_df['Pass_Date'].nunique())
     col2.metric("Total Data Points", count) 
@@ -146,7 +142,6 @@ def main():
     # --- TABS ---
     tab1, tab2, tab3 = st.tabs(["📈 Gradient Profile", "🗺️ Map View", "📄 Raw Data"])
 
-    # --- TAB 1: INTERACTIVE GRAPH ---
     with tab1:
         st.subheader(f"River Profile ({start_date} to {end_date})")
         
@@ -184,7 +179,6 @@ def main():
         fig.update_layout(height=600, template="plotly_white")
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- TAB 2: MAP VIEW ---
     with tab2:
         st.subheader("Satellite Data Point Locations")
         
@@ -210,7 +204,6 @@ def main():
         )
         st.plotly_chart(fig_map, use_container_width=True)
 
-    # --- TAB 3: DATA TABLE ---
     with tab3:
         st.subheader("Data Inspector")
         st.dataframe(viz_df.head(1000), use_container_width=True)
