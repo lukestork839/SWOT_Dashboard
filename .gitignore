@@ -1,0 +1,5 @@
+batch_outputs/master_all_data.parquet
+temp_swot_batch/
+*.zip
+*.nc
+__pycache__/
