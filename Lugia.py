@@ -23,7 +23,7 @@ DEFAULT_CLASSES = [3,4]
 # Optimization settings
 KEEP_COLUMNS = [
     'Reach_Name', 'Pass_Date', 'dist_km', 'wse',
-    'latitude', 'longitude', 'slope_calc', 'height_uncertainty'
+    'latitude', 'longitude', 'slope_calc', 'height_uncertainty', 'classification'
 ]
 ROWS_PER_CHUNK = 100000  # Safe chunk size for dashboard loading
 
@@ -210,7 +210,7 @@ def process_granule(granule_result, gdf_polygons):
                     full_df.loc[subset.index, 'slope_calc'] = slope * 100
             
             # Save CSV
-            cols_export = ['Reach_Name', 'Pass_Date', 'latitude', 'longitude', 'wse', 'dist_km', 'slope_calc', 'height_uncertainty']
+            cols_export = ['Reach_Name', 'Pass_Date', 'latitude', 'longitude', 'wse', 'dist_km', 'slope_calc', 'height_uncertainty', 'classification']
             final_cols = [c for c in cols_export if c in full_df.columns]
             full_df[final_cols].to_csv(os.path.join(OUTPUT_BASE, "data", f"{formatted_date}_data.csv"), index=False)
 
