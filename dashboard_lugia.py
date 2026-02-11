@@ -51,7 +51,7 @@ def main():
     # --- FORM CONTROLS ---
     with st.sidebar.form("analysis_form"):
         st.write("### 1. Select Time & Rivers")
-        
+
         start_date, end_date = st.slider(
             "Time Frame:",
             min_value=min_date.date(),
@@ -60,9 +60,16 @@ def main():
         )
 
         selected_reaches = st.multiselect(
-            "Select Rivers:", 
-            available_reaches, 
+            "Select Rivers:",
+            available_reaches,
             default=available_reaches
+        )
+
+        st.write("### 2. Map Display Options")
+        map_color_by = st.selectbox(
+            "Color Points By:",
+            options=["River Name", "WSE (Water Surface Elevation)", "Classification"],
+            index=0
         )
 
         submitted = st.form_submit_button("🔄 Update Analysis")
@@ -201,24 +208,54 @@ def main():
 
     with tab2:
         st.subheader("Satellite Data Point Locations")
-        
+
         if len(viz_df) > 10000:
             map_df = viz_df.sample(10000)
         else:
             map_df = viz_df
 
-        fig_map = px.scatter_mapbox(
-            map_df,
-            lat="latitude",
-            lon="longitude",
-            color="Reach_Name",
-            color_discrete_map=COLOR_MAP, 
-            size_max=8,
-            zoom=8,
-            hover_data=["wse", "Pass_Date"]
-        )
+        # Configure map coloring based on user selection
+        if map_color_by == "River Name":
+            fig_map = px.scatter_mapbox(
+                map_df,
+                lat="latitude",
+                lon="longitude",
+                color="Reach_Name",
+                color_discrete_map=COLOR_MAP,
+                size_max=8,
+                zoom=8,
+                hover_data=["wse", "Pass_Date", "classification"]
+            )
+        elif map_color_by == "WSE (Water Surface Elevation)":
+            fig_map = px.scatter_mapbox(
+                map_df,
+                lat="latitude",
+                lon="longitude",
+                color="wse",
+                color_continuous_scale="viridis",
+                size_max=8,
+                zoom=8,
+                hover_data=["Reach_Name", "Pass_Date", "classification"],
+                labels={"wse": "WSE (m)"}
+            )
+        else:  # Classification
+            # Convert classification to string for discrete coloring
+            map_df = map_df.copy()
+            map_df['class_str'] = map_df['classification'].astype(str)
+            fig_map = px.scatter_mapbox(
+                map_df,
+                lat="latitude",
+                lon="longitude",
+                color="class_str",
+                color_discrete_map={"3": "#FFA500", "4": "#00CED1"},  # Orange for Class 3, Turquoise for Class 4
+                size_max=8,
+                zoom=8,
+                hover_data=["Reach_Name", "wse", "Pass_Date"],
+                labels={"class_str": "Classification"}
+            )
+
         fig_map.update_layout(
-            mapbox_style="carto-positron", 
+            mapbox_style="carto-positron",
             height=600,
             margin={"r":0,"t":0,"l":0,"b":0}
         )

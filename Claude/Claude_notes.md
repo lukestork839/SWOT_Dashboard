@@ -3,6 +3,7 @@
 **Last Updated**: 2026-02-10
 **Status**: Active Development
 **Primary Workflow**: Lugia.py → dashboard_lugia.py (optimization now integrated!)
+**GitHub Repository**: https://github.com/lukestork839/SWOT_Dashboard
 
 ---
 
@@ -430,6 +431,56 @@ NAME_MAPPING = {
 - Uses same optimization strategy as old `optimize.py` but fully integrated
 - Progress bars use `tqdm.write()` to prevent bar corruption
 
+### 2026-02-10: GitHub Repository Organization & Push
+**Problem Addressed:**
+- Code not version controlled or shared publicly
+- No .gitignore to prevent accidentally committing large data files
+- README outdated (referenced old 3-stage workflow, optimize.py)
+- Missing organization for archival files
+
+**Actions Taken:**
+1. ✅ Created comprehensive `.gitignore`:
+   - Excludes all data files (`batch_outputs/`, `temp_swot_batch/`)
+   - Excludes Python artifacts (`__pycache__/`, `*.pyc`)
+   - Excludes workspace files (`.claude/`)
+   - Prevents accidental commits of large files
+2. ✅ Updated `README.md`:
+   - Reflects current 2-stage workflow (no optimize.py)
+   - Documents Classes 3-4 filter (not just 4)
+   - Highlights resumable downloads and progress bars
+   - Professional formatting with badges
+   - Clear quick-start instructions
+   - Comprehensive documentation sections
+3. ✅ Moved diagnostic script to `old_stuff/`:
+   - `check_classifications.py` → archived
+4. ✅ Initialized Git repository and pushed to GitHub:
+   - Repository: https://github.com/lukestork839/SWOT_Dashboard
+   - Resolved merge conflicts with existing remote
+   - Verified data files excluded from commit
+   - Clean commit history
+
+**Benefits:**
+- **Version control**: Track changes to code over time
+- **Collaboration**: Others can clone, use, and contribute
+- **Documentation**: Professional README for users
+- **Data safety**: .gitignore prevents accidental large file commits
+- **Reproducibility**: Complete workflow documented and shareable
+- **Best practices**: Separates code (Git) from data (local)
+
+**Technical Details:**
+- Repository size: ~10MB (code + docs only, no data)
+- Files tracked: 11 core files (scripts, docs, configs)
+- Files gitignored: All data, temp files, workspace
+- Commit strategy: Merged with existing remote, kept improved local versions
+- Data remains local: Users run `Lugia.py` to generate their own data
+
+**Repository Contents:**
+- Core scripts: `Lugia.py`, `dashboard_lugia.py`
+- Dependencies: `requirements.txt`
+- Configuration: `river_poly.zip`, `.swot_cli_config.json`, `.gitignore`
+- Documentation: `README.md`, `SWOT_Processing_Documentation.md`, `Claude/` folder
+- Reference: `Claude/SWOT_Handbook.pdf`
+
 ---
 
 ## 10. Quick Reference Commands
@@ -458,6 +509,25 @@ ls -lh batch_outputs/*.csv
 duckdb -c "SELECT COUNT(*) FROM 'batch_outputs/master_all_data_part_*.parquet'"
 ```
 
+### Git/GitHub Commands
+```bash
+# Clone repository
+git clone https://github.com/lukestork839/SWOT_Dashboard.git
+
+# Check status
+git status
+
+# Commit changes
+git add <files>
+git commit -m "Description of changes"
+
+# Push to GitHub
+git push origin main
+
+# Pull latest changes
+git pull origin main
+```
+
 ---
 
 ## 11. Future Considerations
@@ -467,6 +537,9 @@ duckdb -c "SELECT COUNT(*) FROM 'batch_outputs/master_all_data_part_*.parquet'"
 - ✅ **Progress bars** (2026-02-10): Added tqdm for better UX
 - ✅ **Integrated optimization** (2026-02-10): No separate optimize.py needed
 - ✅ **Requirements.txt** (2026-02-10): Dependency management
+- ✅ **GitHub repository** (2026-02-10): Version control and public sharing
+- ✅ **Comprehensive .gitignore** (2026-02-10): Prevents data file commits
+- ✅ **Updated README** (2026-02-10): Professional documentation
 
 ### Potential Improvements (Not Confirmed)
 - Automate Version 2.0 priority checking
@@ -488,22 +561,29 @@ duckdb -c "SELECT COUNT(*) FROM 'batch_outputs/master_all_data_part_*.parquet'"
 ## 12. Important File Locations
 
 ### Configuration
-- **Anchor Point**: `Lugia.py` lines 21-24
-- **Name Mapping**: `Lugia.py` lines 27-30
+- **Anchor Point**: `Lugia.py` lines 31-34
+- **Name Mapping**: `Lugia.py` lines 37-40
+- **Classification Filter**: `Lugia.py` line 21 (`DEFAULT_CLASSES = [3,4]`)
+- **Optimization Settings**: `Lugia.py` lines 23-28 (`KEEP_COLUMNS`, `ROWS_PER_CHUNK`)
 - **Color Mapping**: `dashboard_lugia.py` lines 16-19
 - **Max Plot Points**: `dashboard_lugia.py` line 13
+- **Git Ignore Rules**: `.gitignore` (root directory)
 
 ### Data Paths
-- **Polygon Boundaries**: `/home/luke/University/SWOT/river_poly.zip`
-- **Output Directory**: `batch_outputs/`
-- **Temp Downloads**: `temp_swot_batch/` (auto-created, then deleted)
+- **Polygon Boundaries**: `river_poly.zip` (root directory)
+- **Output Directory**: `batch_outputs/` (gitignored)
+- **Temp Downloads**: `temp_swot_batch/` (gitignored, auto-created/deleted)
+- **Documentation**: `Claude/` folder
+- **Archive**: `old_stuff/` folder (not tracked in git)
 
 ### Critical Code Sections
-- **Distance Calculation**: `Lugia.py` lines 46-61 (`haversine_vectorized`)
-- **WSE Calculation**: `Lugia.py` line 157
-- **Slope Calculation**: `Lugia.py` lines 180-184
-- **Dashboard Sampling**: `dashboard_lugia.py` lines 98-117
-- **X-Axis Reversal**: `dashboard_lugia.py` line 197
+- **Distance Calculation**: `Lugia.py` (`haversine_vectorized` function)
+- **WSE Calculation**: `Lugia.py` (in `process_granule`)
+- **Slope Calculation**: `Lugia.py` (in `process_granule`)
+- **Checkpoint Detection**: `Lugia.py` (`is_date_already_processed` function)
+- **Master Rebuild**: `Lugia.py` (`rebuild_master_from_daily_csvs` function)
+- **Dashboard Sampling**: `dashboard_lugia.py` (systematic sampling logic)
+- **X-Axis Reversal**: `dashboard_lugia.py` (`fig.update_xaxes(autorange="reversed")`)
 
 ---
 
