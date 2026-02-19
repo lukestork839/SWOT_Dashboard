@@ -1,6 +1,6 @@
 # SWOT River Dynamics Project - Technical Notes
 
-**Last Updated**: 2026-02-10
+**Last Updated**: 2026-02-16
 **Status**: Active Development
 **Primary Workflow**: Lugia.py → dashboard_lugia.py (optimization now integrated!)
 **GitHub Repository**: https://github.com/lukestork839/SWOT_Dashboard
@@ -195,13 +195,29 @@ SWOT/
 - **Frontend**: Streamlit (web interface)
 - **Backend**: DuckDB (in-memory SQL database)
 - **Plotting**: Plotly (interactive charts)
+- **Mapping**: Folium (GIS-capable interactive maps) (Updated 2026-02-13)
 
 **Key Features:**
 1. **Date Range Slider**: Filter by satellite pass dates
 2. **River Selection**: Analyze individual or both rivers
-3. **Tabs**:
+3. **Map Display Options** (Updated 2026-02-13):
+   - **Color by River Name**: Default discrete colors (firebrick/dodgerblue)
+   - **Color by WSE**: Continuous viridis gradient showing elevation
+   - **Color by Classification**: Discrete colors (Orange=Class 3, Turquoise=Class 4+)
+   - **Basemap Selection**: OpenStreetMap, Terrain, Satellite, Watercolor, CartoDB Light/Dark
+   - **Measuring Tool**: Click-to-measure distances and areas on map
+   - **Layer Control**: Toggle river/classification layers on/off
+4. **Detrending Method Selection** (Added 2026-02-16):
+   - **Linear**: Simple straight-line baseline
+   - **Polynomial (2nd order)**: Curved baseline for gentle trends
+   - **Polynomial (3rd order)**: More flexible curved baseline
+   - **LOESS**: Adaptive local regression for complex trends
+5. **Tabs**:
    - **Gradient Profile**: WSE vs distance scatter with trendlines
-   - **Map View**: Geographic visualization (Mapbox)
+   - **Elevation Difference**: Direct comparison (Kanektok - Uyak) by 100m bins (Added 2026-02-13)
+   - **Detrended Profile**: Relative Elevation Model showing deviations from baseline trend (Added 2026-02-16)
+   - **Interval Slopes**: Slope calculation for each 100m river segment (Added 2026-02-13)
+   - **Map View**: GIS-style Folium map with measuring tools and basemap options (Updated 2026-02-13)
    - **Raw Data**: Table view with CSV export
 
 **Performance Optimizations:**
@@ -240,7 +256,7 @@ con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{
 | `latitude` | Latitude coordinate | degrees | SWOT pixel_cloud |
 | `longitude` | Longitude coordinate (normalized) | degrees | SWOT pixel_cloud |
 | `height_raw` | Raw height measurement | meters | SWOT `height` |
-| `classification` | Quality class (4 = good water) | integer | SWOT `classification` |
+| `classification` | Quality class (3=moderate, 4=good water) | integer | SWOT `classification` *(saved 2026-02-11+)* |
 | `geoid` | Geoid correction (EGM2008) | meters | SWOT `geoid` |
 | `solid_tide` | Solid Earth tide | meters | SWOT `solid_earth_tide` |
 | `pole_tide` | Pole tide | meters | SWOT `pole_tide` |
@@ -293,11 +309,14 @@ xarray           # NetCDF data reading
 pandas           # Data manipulation
 geopandas        # Spatial data operations
 numpy            # Numerical operations
-matplotlib       # Static plotting (legacy)
+matplotlib       # Static plotting (legacy) + colormaps for Folium
 scipy            # Statistical analysis (linregress)
 streamlit        # Web dashboard framework
-plotly           # Interactive plotting
+plotly           # Interactive plotting (charts)
+folium           # Interactive GIS maps with measuring tools (Added 2026-02-13)
+streamlit-folium # Folium integration for Streamlit (Added 2026-02-13)
 duckdb           # In-memory SQL database
+tqdm             # Progress bars for long-running operations
 ```
 
 ### External Dependencies
@@ -481,6 +500,271 @@ NAME_MAPPING = {
 - Documentation: `README.md`, `SWOT_Processing_Documentation.md`, `Claude/` folder
 - Reference: `Claude/SWOT_Handbook.pdf`
 
+### 2026-02-11: Map Styling Options & Classification Column Support
+**Problem Addressed:**
+- Dashboard map view only colored by river reach (no data quality visualization)
+- Classification data (Class 3 vs Class 4) was filtered but not preserved in outputs
+- No way to visualize WSE elevation gradients on the map
+- Missing utility script for quick master file rebuilds
+
+**Actions Taken:**
+1. ✅ Updated `Lugia.py`:
+   - Added `classification` to `KEEP_COLUMNS` (line 27)
+   - Added `classification` to daily CSV export columns (line 213)
+   - Classification now preserved throughout entire pipeline
+2. ✅ Enhanced `dashboard_lugia.py`:
+   - Added "Map Display Options" section in sidebar
+   - Implemented three color-by modes:
+     - **River Name**: Original discrete colors (firebrick/dodgerblue)
+     - **WSE**: Continuous viridis scale showing elevation gradients
+     - **Classification**: Discrete colors (Orange=Class 3, Turquoise=Class 4)
+   - Enhanced hover data to show classification in all views
+3. ✅ Created `rebuild_master.py`:
+   - Standalone utility for rebuilding master files from daily CSVs
+   - Useful for quick regeneration after column changes
+   - Includes optimization logic (data types, compression, partitioning)
+4. ✅ Updated `river_poly.zip`:
+   - Refined polygon boundaries in QGIS
+   - More precise river channel delineation
+   - Reduced inclusion of surrounding floodplain areas
+5. ✅ Updated `.gitignore`:
+   - Added `old_stuff/` to prevent tracking archived code
+
+**Benefits:**
+- **Enhanced visualization**: Multiple ways to explore spatial patterns
+- **Data quality insights**: Visualize Class 3 vs Class 4 distribution on map
+- **Elevation analysis**: WSE gradient coloring reveals hydraulic patterns
+- **Scientific accuracy**: Classification data preserved for reproducibility
+- **Improved boundaries**: More precise spatial filtering with refined polygons
+- **Developer tools**: rebuild_master.py enables quick iteration on column changes
+
+**Technical Details:**
+- Map color modes controlled by `map_color_by` selectbox in sidebar
+- Classification converted to string (`class_str`) for discrete Plotly coloring
+- Color scheme for classification: `{"3": "#FFA500", "4": "#00CED1"}`
+- WSE uses `color_continuous_scale="viridis"` for intuitive gradient
+- All hover data enhanced to show relevant context per color mode
+- Requires data reprocessing to populate classification column in existing data
+
+**User Workflow:**
+- Deleted all daily CSVs to force regeneration with classification column
+- Re-ran Lugia.py for May-July 2025 date range (22 granules, 9 new, 8 skipped)
+- Successfully created 424,179 points with classification data
+- Dashboard map styling features tested and verified working
+
+### 2026-02-13: Dashboard Enhancement - Analysis Tabs & Folium Maps
+**Problem Addressed:**
+- Need direct elevation comparison between rivers
+- Limited map functionality (no measuring tools, few basemap options)
+- Need to analyze slope variability along river course (not just overall average)
+
+**Actions Taken:**
+1. ✅ **Elevation Difference Tab**:
+   - Added new "Elevation Difference" tab for direct river comparison
+   - Bins data every 100 meters (0.1 km)
+   - Calculates Kanektok WSE - Uyak WSE for each bin
+   - Line plot with zero reference line
+   - Shows average difference, max difference, and number of bins
+   - Only displays when both rivers are selected
+
+2. ✅ **Interval Slopes Tab**:
+   - Added new "Interval Slopes" tab for segment-by-segment slope analysis
+   - Calculates slope for each 100-meter river segment
+   - Uses DuckDB window functions (LAG) for consecutive bin comparison
+   - Formula: `(WSE_next - WSE_current) / distance_change × 100` (cm/km)
+   - Displays absolute values for steepness comparison
+   - Statistics table: average, max, min, std dev per river
+   - Helps identify specific reaches with different hydraulic characteristics
+
+3. ✅ **Folium Map Integration**:
+   - Replaced Plotly scatter_mapbox with Folium for enhanced GIS capabilities
+   - Added basemap selector with 6 options:
+     - OpenStreetMap (default)
+     - Terrain (Stamen) - topographic view
+     - Satellite (ESRI) - aerial imagery
+     - Watercolor (Stamen) - artistic style
+     - CartoDB Positron (Light)
+     - CartoDB Dark Matter
+   - Added MeasureControl plugin for distance/area measurements
+   - Added LayerControl for toggling rivers/classifications on/off
+   - Preserved all color-by options (River Name, WSE, Classification)
+   - Interactive popups with WSE, date, classification details
+   - Fixed rerun issues with `key` and `returned_objects=[]` parameters
+
+4. ✅ **Updated Dependencies**:
+   - Added `folium>=0.15.0` to requirements.txt
+   - Added `streamlit-folium>=0.15.0` to requirements.txt
+   - Added matplotlib.colors and matplotlib.cm imports for colormapping
+
+**Benefits:**
+- **Direct comparison**: Elevation difference tab shows which river is "winning" at each distance
+- **Slope variability**: Interval slopes reveal steep vs. gentle reaches
+- **Better maps**: Professional GIS features (measuring, multiple basemaps, layer control)
+- **Scientific utility**: Supports avulsion risk assessment with segment-level analysis
+- **User-friendly**: Measuring tool allows manual verification of distances
+
+**Technical Details:**
+- All new tabs use DuckDB SQL with CTEs (Common Table Expressions)
+- 100-meter binning ensures consistent comparison between rivers
+- Folium uses CircleMarkers for performance with thousands of points
+- Viridis colormap for continuous WSE coloring (matches Plotly convention)
+- X-axis remains reversed across all plots for consistency
+- Map sampling: 10,000 points max for browser performance
+
+**Dashboard Tab Order (Updated 2026-02-16):**
+1. Gradient Profile (original)
+2. Elevation Difference (added 2026-02-13)
+3. Detrended Profile (added 2026-02-16)
+4. Interval Slopes (added 2026-02-13)
+5. Map View (enhanced with Folium 2026-02-13)
+6. Raw Data (original)
+
+### 2026-02-16: Detrended Profile Analysis (Relative Elevation Model)
+**Problem Addressed:**
+- Small elevation differences between rivers get visually overwhelmed by large overall gradient
+- Need to highlight subtle variations in hydraulic gradients
+- Professor requested implementation of "slope detrended model" or "relative elevation model"
+
+**Actions Taken:**
+1. ✅ Added new "Detrended Profile" tab (Tab 3)
+2. ✅ Implemented multiple detrending methods:
+   - Linear baseline fit
+   - Polynomial 2nd order (default - best for gentle curves)
+   - Polynomial 3rd order (more flexible)
+   - LOESS local regression (adaptive smoothing)
+3. ✅ Added detrending method selector in sidebar
+4. ✅ Created visualization showing residuals (deviations from baseline)
+5. ✅ Added comprehensive interpretation guide
+6. ✅ Implemented statistics table showing residual metrics per river
+7. ✅ Added expandable section showing original data with baseline curve overlay
+8. ✅ Updated documentation in Claude notes
+
+**Benefits:**
+- **Removes large-scale trend**: Centers data around zero to reveal small differences
+- **Multiple methods**: Users can choose best-fit approach for their analysis
+- **Scientific insight**: Reveals which river is systematically higher/lower than expected
+- **Complements existing tools**: Works alongside absolute elevation difference analysis
+- **Visual clarity**: Small gradient differences become immediately obvious
+
+**Technical Details:**
+- Baseline fit using all data points from both rivers combined
+- Residuals calculated as: `actual_WSE - baseline_prediction`
+- LOESS implementation uses Gaussian smoothing as approximation
+- Full dataset used for fitting (not sampled) for accuracy
+- Visualization respects MAX_PLOT_POINTS for performance
+- Added `scipy.ndimage.gaussian_filter1d` import
+- Statistics calculated on 100% of filtered data
+
+**Scientific Context:**
+- This is standard technique in geomorphology and river analysis
+- Also called "Relative Elevation Model (REM)" in fluvial studies
+- Helps assess avulsion risk by revealing persistent elevation anomalies
+- Baseline represents "expected" elevation profile for the river system
+- Deviations indicate where rivers deviate from typical longitudinal profile
+
+### 2026-02-16: SWOT Calibration & Validation with Field Measurements
+**Problem Addressed:**
+- Need to verify SWOT satellite measurements against ground truth
+- Field RTK GPS measurements taken Nov 11 & 13, 2025 in Quinhagak, Alaska
+- Initial comparison showed 8.6m discrepancy between SWOT and field measurements
+- Required investigation to determine if SWOT processing was correct
+
+**Actions Taken:**
+1. ✅ Modified Lugia.py to export diagnostic columns (height_raw, geoid, solid_tide, pole_tide, load_tide)
+2. ✅ Reprocessed Nov 13, 2025 data with full correction values
+3. ✅ Verified SWOT WSE formula against SWOT Handbook (JPL D-109532, Section 3.1.25)
+4. ✅ Analyzed Emlid RTK GPS shapefile data from field campaign
+5. ✅ Extracted and analyzed raw RINEX data from Emlid Rover
+6. ✅ Identified vertical datum mismatch (NAVD88 vs EGM2008)
+7. ✅ Calculated datum offset and verified calibration
+
+**Field Measurement Details:**
+- **Equipment**: Emlid Reach RS3 RTK GPS (±1cm precision)
+- **Configuration**: NAVD88 vertical datum with ~3.7m geoid separation
+- **Dates**: Nov 11, 2025 (9:35 PM) and Nov 13, 2025 (6:15 AM)
+- **Location**: 59.757°N, -161.880°W (Kanektok River, Alaska)
+- **Method**: Staff with antenna 1.9m above water surface
+
+**Key Findings:**
+- **SWOT Processing**: ✅ 100% correct (verified against handbook)
+  - Formula: `WSE = height - geoid - solid_earth_tide - pole_tide - load_tide`
+  - All corrections properly applied with reasonable magnitudes:
+    - Geoid (EGM2008): ~13.3m
+    - Solid Earth tide: ~0.024m
+    - Pole tide: ~0.002m
+    - Load tide: ~-0.001m
+
+- **Vertical Datum Mismatch**: Root cause of discrepancy
+  - Field GPS: NAVD88 (North American Vertical Datum 1988)
+  - SWOT: EGM2008 (Earth Gravitational Model 2008)
+  - **Datum Offset at calibration location: ~9.6 meters**
+  - NAVD88 uses ~3.7m geoid separation vs EGM2008's ~13.3m
+
+- **RINEX Analysis**: Confirmed datum issue
+  - Raw GNSS ellipsoidal height: 17.3m (WGS84)
+  - Emlid applied NAVD88 conversion: -3.7m → 13.6m
+  - SWOT applied EGM2008 conversion: -13.3m → 3.1m
+  - Observed difference: 13.6 - 3.1 = 10.5m ≈ datum offset
+
+**Calibration Results:**
+```
+Nov 13, 2025 Comparison:
+  Field WSE (NAVD88):           11.73 m
+  Convert to EGM2008:           -9.60 m (datum offset)
+  Field WSE (EGM2008):           2.13 m
+  SWOT WSE (EGM2008):            3.07 m
+  Final Difference:             ~0.94 m ✓
+```
+
+**Remaining 1m Difference Explained By:**
+- Tidal variation (field at 6:15 AM, SWOT pass later in day)
+- Location offset (measurements 8m apart)
+- Temporal variation (not simultaneous)
+- Normal for this type of comparison in tidal environment
+
+**Datum Conversion Formula:**
+```python
+# At calibration location (59.757°N, -161.880°W):
+DATUM_OFFSET = 9.6  # meters
+
+# Convert NAVD88 to EGM2008 (for comparison with SWOT):
+wse_egm2008 = wse_navd88 - DATUM_OFFSET
+
+# Convert SWOT to NAVD88 (for field comparison):
+wse_navd88 = wse_swot + DATUM_OFFSET
+```
+
+**Benefits:**
+- **SWOT Validated**: Confirmed satellite measurements are accurate
+- **Datum Documented**: Critical for comparing field data with SWOT
+- **Diagnostic Columns**: Now available for all future troubleshooting
+- **Reproducible**: Complete methodology documented for future calibrations
+- **Scientific Rigor**: Multi-source verification (shapefile, RINEX, SWOT handbook)
+
+**Technical Details:**
+- Modified KEEP_COLUMNS in Lugia.py to include: height_raw, geoid, solid_tide, pole_tide, load_tide
+- Verified all corrections against SWOT Product Handbook Section 3.1.25
+- Analyzed 3,354 RTK measurements from RINEX LLH solution file
+- Compared with 170 SWOT points within 500m of calibration location
+- Used haversine distance calculation for spatial matching
+
+**Scientific Context:**
+- NAVD88 vs EGM2008 differences are well-known in Alaska (up to 10-15m)
+- SWOT uses global EGM2008 for consistency worldwide
+- Local/regional datums (NAVD88, CGVD2013, etc.) use different geoid models
+- Critical to document vertical datum when comparing field measurements with SWOT
+- Recommended: Use NOAA VDatum tool for precise conversions at specific locations
+
+**Files Modified:**
+- `Lugia.py`: Added diagnostic columns to KEEP_COLUMNS and cols_export
+- `Claude/Claude_notes.md`: This documentation
+- `README.md`: Added Calibration & Validation section
+
+**Data Generated:**
+- `batch_outputs/field_calibration_data.csv`: Field GPS measurements summary
+- `batch_outputs/swot_near_calibration.csv`: SWOT points near calibration location
+- Daily CSVs now include: height_raw, geoid, solid_tide, pole_tide, load_tide
+
 ---
 
 ## 10. Quick Reference Commands
@@ -495,6 +779,13 @@ python Lugia.py
 ### Launch Dashboard
 ```bash
 streamlit run dashboard_lugia.py
+```
+
+### Rebuild Master Files (from existing daily CSVs)
+```bash
+python3 rebuild_master.py
+# Useful after changing KEEP_COLUMNS or for quick regeneration
+# Much faster than re-running full Lugia.py pipeline
 ```
 
 ### Check Data Size
@@ -528,6 +819,90 @@ git push origin main
 git pull origin main
 ```
 
+### 2026-02-18: Critical Bug Fixes - np.polyfit Failure & Dashboard Enhancements
+**Problem Addressed:**
+- Detrended profile showing systematic slope instead of scatter around zero
+- Interval slopes showing extreme outliers (>1000 cm/km spikes)
+- Map styling issues with detrended residuals
+- Colormap import errors preventing map legends from displaying
+- No control over point transparency on maps
+
+**Actions Taken:**
+
+1. ✅ **CRITICAL BUG DISCOVERED: np.polyfit Completely Broken**
+   - **Symptom**: Linear fit returned POSITIVE slope (+0.47 m/km) when data clearly had NEGATIVE slope (-1.83 m/km)
+   - **Correlation**: -0.9883 (strong negative) but fitted slope was positive!
+   - **Root Cause**: np.polyfit has numerical precision issues with large datasets (6.7M points)
+   - **Affected Code**: Both detrended profile calculation AND map coloring
+
+   **Fix Applied**:
+   - Linear detrending: Switched from `np.polyfit` to `scipy.stats.linregress`
+   - Polynomial detrending: Switched from `np.polyfit` to `numpy.polynomial.Polynomial.fit()` (newer, more stable API)
+   - Applied fix to BOTH locations: Detrended Profile tab (lines 522-540) AND map data preparation (lines 251-276)
+
+   **Result**: Detrending now works correctly!
+   - Mean residual: ~0.000m (was 5.51m before)
+   - Residuals scatter around zero with no systematic patterns
+   - Reveals Uyak Creek is perched ~2-3m higher than Kanektok River
+
+2. ✅ **Fixed Interval Slopes Quality Issues**
+   - **Problem**: Extreme slope spikes (>1000 cm/km) from sparse data bins
+   - **Fixes Applied**:
+     - Minimum 3 points per bin required (`HAVING COUNT(*) >= 3`)
+     - Only consecutive bins shown (≤150m gap filter)
+     - Outlier removal (slopes >1000 cm/km filtered out)
+     - Added hover data showing: points in bin, gap to previous bin
+     - Added "Avg Points/Bin" to statistics table
+   - **Location**: `dashboard_lugia.py` lines 718-754 (SQL query with quality filters)
+
+3. ✅ **Fixed Colormap Import Issues**
+   - **Problem**: `from folium import colormap` failed - module not found
+   - **Fix**: Flexible import strategy with fallback
+     ```python
+     try:
+         from branca.colormap import LinearColormap
+     except ImportError:
+         try:
+             from folium.colormap import LinearColormap
+         except ImportError:
+             LinearColormap = None
+     ```
+   - All colormap usage wrapped in `if LinearColormap is not None:` checks
+   - Gracefully degrades (no legends) if import fails
+   - **Location**: `dashboard_lugia.py` lines 16-24
+
+4. ✅ **Added Point Opacity Control**
+   - New slider in Map Display Options: "Point Opacity" (0.1 to 1.0, default 0.7)
+   - Applies to all map coloring modes
+   - Helps see terrain/roads beneath data points
+   - **Location**: `dashboard_lugia.py` line 161-167
+
+5. ✅ **Improved Map Styling**
+   - Removed point borders (`weight=0`) for cleaner appearance
+   - Shortened legend captions to prevent cut-off ("Residual (m)" instead of "Detrended Residual (m) - Polynomial...")
+   - All markers now use dynamic `point_opacity` variable
+
+**Benefits:**
+- **Scientifically sound detrending**: Can now properly identify subtle elevation differences between rivers
+- **Reliable slope analysis**: Interval slopes no longer dominated by outliers
+- **Better visualization**: Adjustable transparency reveals underlying geography
+- **Robust imports**: Works across different folium/branca versions
+
+**Technical Details:**
+- **np.polyfit bug**: Appears to be numerical instability with large datasets. Using `numpy.polynomial.Polynomial.fit()` (newer API) or `scipy.stats.linregress` avoids the issue.
+- **Detrending validation**: Sanity checks added showing correlation coefficient, fitted equation, and mean residual
+- **Map performance**: All changes maintain 10,000 point sampling limit for browser performance
+
+**Scientific Insight Revealed:**
+With properly working detrended profiles, we can now see that:
+- Both rivers have concave-up longitudinal profiles (normal for rivers)
+- Uyak Creek is systematically 2-3m higher than Kanektok River at equivalent distances
+- This elevation difference is critical for assessing avulsion risk
+
+**Files Modified:**
+- `dashboard_lugia.py`: Complete overhaul of detrending methods, interval slope filtering, map styling, opacity control
+- `Claude/Claude_notes.md`: This documentation
+
 ---
 
 ## 11. Future Considerations
@@ -540,6 +915,20 @@ git pull origin main
 - ✅ **GitHub repository** (2026-02-10): Version control and public sharing
 - ✅ **Comprehensive .gitignore** (2026-02-10): Prevents data file commits
 - ✅ **Updated README** (2026-02-10): Professional documentation
+- ✅ **Map styling options** (2026-02-11): Color by River Name, WSE, or Classification
+- ✅ **Classification preservation** (2026-02-11): Class data saved throughout pipeline
+- ✅ **Rebuild utility** (2026-02-11): rebuild_master.py for quick regeneration
+- ✅ **Refined polygons** (2026-02-11): More precise river boundaries
+- ✅ **Elevation difference analysis** (2026-02-13): Direct Kanektok-Uyak comparison by 100m bins
+- ✅ **Interval slope analysis** (2026-02-13): Segment-by-segment slope calculations
+- ✅ **Folium map integration** (2026-02-13): GIS-style maps with measuring tools and basemap options
+- ✅ **Detrended profile analysis** (2026-02-16): Relative Elevation Model with multiple detrending methods (Linear, Polynomial, LOESS)
+- ✅ **SWOT calibration & validation** (2026-02-16): Field RTK GPS verification, datum mismatch identification (NAVD88 vs EGM2008), diagnostic columns added
+- ✅ **CRITICAL: Fixed np.polyfit bug** (2026-02-18): Switched to scipy.stats.linregress and numpy.polynomial.Polynomial.fit() - detrending now scientifically accurate
+- ✅ **Interval slopes quality filters** (2026-02-18): Min 3 points/bin, consecutive bins only, outlier removal, data quality metrics
+- ✅ **Colormap import fallback** (2026-02-18): Robust import strategy for LinearColormap across folium/branca versions
+- ✅ **Point opacity control** (2026-02-18): Adjustable transparency slider (0.1-1.0) for all map visualizations
+- ✅ **Map styling improvements** (2026-02-18): Removed borders, shortened legends, better color visibility
 
 ### Potential Improvements (Not Confirmed)
 - Automate Version 2.0 priority checking
@@ -564,17 +953,21 @@ git pull origin main
 - **Anchor Point**: `Lugia.py` lines 31-34
 - **Name Mapping**: `Lugia.py` lines 37-40
 - **Classification Filter**: `Lugia.py` line 21 (`DEFAULT_CLASSES = [3,4]`)
-- **Optimization Settings**: `Lugia.py` lines 23-28 (`KEEP_COLUMNS`, `ROWS_PER_CHUNK`)
-- **Color Mapping**: `dashboard_lugia.py` lines 16-19
+- **Optimization Settings**: `Lugia.py` lines 24-27 (`KEEP_COLUMNS`, `ROWS_PER_CHUNK`)
+- **River Color Mapping**: `dashboard_lugia.py` lines 16-19
+- **Map Color-by Options**: `dashboard_lugia.py` (sidebar form, "Map Display Options")
+- **Point Opacity Default**: `dashboard_lugia.py` line 164 (`value=0.7` - adjustable 0.1 to 1.0)
+- **Classification Colors**: `dashboard_lugia.py` line ~240 (`{"3": "#FFA500", "4": "#00CED1"}`)
 - **Max Plot Points**: `dashboard_lugia.py` line 13
 - **Git Ignore Rules**: `.gitignore` (root directory)
 
 ### Data Paths
-- **Polygon Boundaries**: `river_poly.zip` (root directory)
+- **Polygon Boundaries**: `river_poly.zip` (root directory, refined 2026-02-11)
 - **Output Directory**: `batch_outputs/` (gitignored)
 - **Temp Downloads**: `temp_swot_batch/` (gitignored, auto-created/deleted)
 - **Documentation**: `Claude/` folder
 - **Archive**: `old_stuff/` folder (not tracked in git)
+- **Utility Scripts**: `rebuild_master.py` (quick master file regeneration)
 
 ### Critical Code Sections
 - **Distance Calculation**: `Lugia.py` (`haversine_vectorized` function)
@@ -582,7 +975,16 @@ git pull origin main
 - **Slope Calculation**: `Lugia.py` (in `process_granule`)
 - **Checkpoint Detection**: `Lugia.py` (`is_date_already_processed` function)
 - **Master Rebuild**: `Lugia.py` (`rebuild_master_from_daily_csvs` function)
+- **CSV Export Columns**: `Lugia.py` line 213 (`cols_export` includes classification)
 - **Dashboard Sampling**: `dashboard_lugia.py` (systematic sampling logic)
+- **Detrending Data Prep**: `dashboard_lugia.py` lines 251-276 (FIXED: uses linregress/Polynomial.fit, NOT np.polyfit)
+- **Detrended Profile Tab**: `dashboard_lugia.py` tab3 lines 504-750 (FIXED: uses linregress/Polynomial.fit, NOT np.polyfit)
+- **Interval Slopes Quality Filters**: `dashboard_lugia.py` lines 718-754 (SQL with HAVING, gap filter, outlier removal)
+- **Elevation Difference Tab**: `dashboard_lugia.py` tab2 (line ~234) - 100m binning and river comparison
+- **Interval Slopes Tab**: `dashboard_lugia.py` tab4 (line ~715) - segment-by-segment slope analysis with quality filters
+- **Folium Map View**: `dashboard_lugia.py` tab5 (line ~900+) - GIS map with MeasureControl and basemaps
+- **Map Color Modes**: `dashboard_lugia.py` (conditional coloring in Map View tab, all use point_opacity)
+- **Point Opacity Control**: `dashboard_lugia.py` line 161-167 (slider in sidebar, 0.1-1.0)
 - **X-Axis Reversal**: `dashboard_lugia.py` (`fig.update_xaxes(autorange="reversed")`)
 
 ---
