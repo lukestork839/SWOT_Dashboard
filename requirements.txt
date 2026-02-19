@@ -13,6 +13,8 @@ scipy>=1.10.0          # Statistical functions (linregress)
 streamlit>=1.28.0      # Web dashboard framework
 plotly>=5.17.0         # Interactive plotting
 matplotlib>=3.7.0      # Static plotting (legacy/fallback)
+folium>=0.15.0         # Interactive maps with measuring tools
+streamlit-folium>=0.15.0  # Folium integration for Streamlit
 
 # Database & Optimization
 duckdb>=0.9.0          # In-memory SQL database for dashboard
