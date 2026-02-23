@@ -7,7 +7,6 @@ from scipy.ndimage import gaussian_filter1d
 import numpy as np
 import duckdb
 import os
-import gc  # Memory management
 import folium
 from folium import plugins
 from folium.plugins import MeasureControl
@@ -29,7 +28,6 @@ except ImportError:
 PAGE_TITLE = "SWOT River Dynamics: Kanektok & Uyak"
 DATA_DIR = "batch_outputs"
 MAX_PLOT_POINTS = 25000  # Safety Cap for browser rendering
-MAX_BASELINE_POINTS = 50000  # Limit for baseline fitting (prevents memory issues)
 
 # FIXED COLORS
 COLOR_MAP = {
@@ -39,79 +37,16 @@ COLOR_MAP = {
 
 st.set_page_config(page_title=PAGE_TITLE, layout="wide", page_icon="🌊")
 
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def calculate_detrending(dist_km, wse, method):
-    """
-    Calculate baseline and residuals for detrended profile.
-    Cached to avoid recomputing on every interaction.
-
-    Args:
-        dist_km: Distance values (list/array)
-        wse: Water surface elevation values (list/array)
-        method: Detrending method name
-
-    Returns:
-        tuple: (baseline_pred, coeffs/None, method_name)
-    """
-    x_all = np.array(dist_km)
-    y_all = np.array(wse)
-
-    if method == "Linear":
-        slope_manual, intercept_manual, r_value, p_value, std_err = stats.linregress(x_all, y_all)
-        baseline_pred = slope_manual * x_all + intercept_manual
-        coeffs = [slope_manual, intercept_manual]
-        method_name = "Linear Fit"
-    elif method == "Polynomial (2nd order)":
-        poly = np.polynomial.Polynomial.fit(x_all, y_all, 2)
-        baseline_pred = poly(x_all)
-        coeffs = poly.coef
-        method_name = "2nd Order Polynomial"
-    elif method == "Polynomial (3rd order)":
-        poly = np.polynomial.Polynomial.fit(x_all, y_all, 3)
-        baseline_pred = poly(x_all)
-        coeffs = poly.coef
-        method_name = "3rd Order Polynomial"
-    else:  # LOESS
-        sorted_idx = np.argsort(x_all)
-        x_sorted = x_all[sorted_idx]
-        y_sorted = y_all[sorted_idx]
-        sigma = len(x_all) * 0.15 / 3
-        y_smooth = gaussian_filter1d(y_sorted, sigma=sigma, mode='nearest')
-        baseline_pred = np.zeros_like(y_all)
-        baseline_pred[sorted_idx] = y_smooth
-        coeffs = None
-        method_name = "LOESS (Local Regression)"
-
-    return baseline_pred, coeffs, method_name
-
 @st.cache_resource
 def get_database_connection():
-    """
-    Initialize DuckDB connection with parquet data.
-    Cached as a resource to prevent reconnecting on every interaction.
-    """
+    con = duckdb.connect(database=':memory:')
+    parquet_pattern = os.path.join(DATA_DIR, "master_all_data_part_*.parquet")
+    
     try:
-        con = duckdb.connect(database=':memory:')
-        parquet_pattern = os.path.join(DATA_DIR, "master_all_data_part_*.parquet")
-
-        # Check if parquet files exist
-        import glob
-        parquet_files = glob.glob(parquet_pattern)
-        if not parquet_files:
-            st.error(f"❌ No parquet files found at: {parquet_pattern}")
-            st.info("💡 Run `python Lugia.py` to generate data files.")
-            return None
-
-        # Create view from parquet files
         con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{parquet_pattern}')")
-
-        # Memory optimization: Set DuckDB memory limit (recommended for Streamlit Cloud)
-        con.execute("SET memory_limit='800MB'")
-
         return con
     except Exception as e:
         st.error(f"❌ Could not connect to data: {e}")
-        st.info("💡 This usually means the parquet files are missing or corrupted.")
         return None
 
 def main():
@@ -295,11 +230,10 @@ def main():
 
     # --- MAIN PAGE ---
     st.title(PAGE_TITLE)
-
-    col1, col2, col3 = st.columns(3)
+    
+    col1, col2 = st.columns(2)
     col1.metric("Passes Analyzed", viz_df['Pass_Date'].nunique())
-    col2.metric("Total Data Points", f"{count:,}")
-    col3.metric("Visualization Sample", f"{len(viz_df):,}") 
+    col2.metric("Total Data Points", count) 
 
     # --- SUMMARY STATS TABLE ---
     st.subheader("Summary Stats (Calculated on 100% of Data)")
@@ -323,13 +257,34 @@ def main():
     # --- CALCULATE ADVANCED METRICS FOR MAP VISUALIZATION ---
     # These are used for map coloring options
 
-    # 1. Calculate Detrended Residuals (using cached function for performance)
-    baseline_pred, _, _ = calculate_detrending(
-        viz_df['dist_km'].tolist(),
-        viz_df['wse'].tolist(),
-        detrend_method
-    )
-    viz_df['detrended_residual'] = viz_df['wse'].values - baseline_pred
+    # 1. Calculate Detrended Residuals (using fixed methods, not broken np.polyfit)
+    x_all = viz_df['dist_km'].values
+    y_all = viz_df['wse'].values
+
+    # Use selected detrending method (same fixed methods as Detrended Profile tab)
+    if detrend_method == "Linear":
+        # Use scipy.stats.linregress (np.polyfit has numerical issues)
+        slope, intercept, _, _, _ = stats.linregress(x_all, y_all)
+        baseline_pred = slope * x_all + intercept
+    elif detrend_method == "Polynomial (2nd order)":
+        # Use numpy.polynomial.Polynomial.fit (more stable than polyfit)
+        poly = np.polynomial.Polynomial.fit(x_all, y_all, 2)
+        baseline_pred = poly(x_all)
+    elif detrend_method == "Polynomial (3rd order)":
+        # Use numpy.polynomial.Polynomial.fit (more stable than polyfit)
+        poly = np.polynomial.Polynomial.fit(x_all, y_all, 3)
+        baseline_pred = poly(x_all)
+    else:  # LOESS
+        # Simple LOESS approximation using Gaussian smoothing
+        sorted_idx = np.argsort(x_all)
+        x_sorted = x_all[sorted_idx]
+        y_sorted = y_all[sorted_idx]
+        sigma = len(x_all) * 0.15 / 3
+        y_smooth = gaussian_filter1d(y_sorted, sigma=sigma, mode='nearest')
+        baseline_pred = np.zeros_like(y_all)
+        baseline_pred[sorted_idx] = y_smooth
+
+    viz_df['detrended_residual'] = y_all - baseline_pred
 
     # 2. Calculate Interval Slopes (100m bins)
     viz_df['dist_bin'] = (viz_df['dist_km'] / 0.1).round() * 0.1
@@ -559,50 +514,48 @@ def main():
             return y_result
 
         try:
-            # Get dataset for baseline (with memory-safe limit for Streamlit Cloud)
-            # Check total count first
-            count_query = f"SELECT COUNT(*) FROM river_data {where_clause}"
-            total_count = con.execute(count_query).fetchone()[0]
-
-            # Use sampling if dataset is too large (prevents memory issues)
-            if total_count > MAX_BASELINE_POINTS:
-                st.info(f"📊 Using {MAX_BASELINE_POINTS:,} sampled points for baseline fitting (out of {total_count:,} total) to optimize performance.")
-                baseline_query = f"""
-                    SELECT * FROM (
-                        SELECT dist_km, wse, Reach_Name,
-                               row_number() OVER (ORDER BY RANDOM()) as rn
-                        FROM river_data
-                        {where_clause}
-                    ) sub
-                    WHERE rn <= {MAX_BASELINE_POINTS}
-                    ORDER BY dist_km
-                """
-            else:
-                baseline_query = f"""
-                    SELECT dist_km, wse, Reach_Name
-                    FROM river_data
-                    {where_clause}
-                    ORDER BY dist_km
-                """
-
+            # Get full dataset for both rivers (for accurate baseline)
+            baseline_query = f"""
+                SELECT dist_km, wse, Reach_Name
+                FROM river_data
+                {where_clause}
+                ORDER BY dist_km
+            """
             baseline_df = con.execute(baseline_query).fetchdf()
 
             if len(baseline_df) == 0:
                 st.warning("No data available for detrending analysis.")
             else:
-                # Use cached detrending function for performance
-                baseline_pred, coeffs, method_name = calculate_detrending(
-                    baseline_df['dist_km'].tolist(),
-                    baseline_df['wse'].tolist(),
-                    detrend_method
-                )
+                # Prepare data for baseline fitting (combine both rivers)
+                x_all = baseline_df['dist_km'].values
+                y_all = baseline_df['wse'].values
+
+                # Fit baseline based on selected method
+                if detrend_method == "Linear":
+                    # Use scipy.stats.linregress (np.polyfit has numerical issues with large datasets)
+                    slope_manual, intercept_manual, r_value, p_value, std_err = stats.linregress(x_all, y_all)
+                    baseline_pred = slope_manual * x_all + intercept_manual
+                    coeffs = [slope_manual, intercept_manual]
+                    method_name = "Linear Fit"
+                elif detrend_method == "Polynomial (2nd order)":
+                    # Use numpy.polynomial.Polynomial.fit (more numerically stable than polyfit)
+                    poly = np.polynomial.Polynomial.fit(x_all, y_all, 2)
+                    baseline_pred = poly(x_all)
+                    coeffs = poly.coef
+                    method_name = "2nd Order Polynomial"
+                elif detrend_method == "Polynomial (3rd order)":
+                    # Use numpy.polynomial.Polynomial.fit (more numerically stable than polyfit)
+                    poly = np.polynomial.Polynomial.fit(x_all, y_all, 3)
+                    baseline_pred = poly(x_all)
+                    coeffs = poly.coef
+                    method_name = "3rd Order Polynomial"
+                else:  # LOESS
+                    baseline_pred = loess_smooth(x_all, y_all, frac=0.15)
+                    method_name = "LOESS (Local Regression)"
 
                 # Calculate residuals
-                baseline_df['residual'] = baseline_df['wse'].values - baseline_pred
+                baseline_df['residual'] = y_all - baseline_pred
                 baseline_df['baseline'] = baseline_pred
-
-                # Clean up memory after large operations
-                gc.collect()
 
                 # Check detrending quality
                 overall_mean_residual = baseline_df['residual'].mean()

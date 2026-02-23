@@ -22,9 +22,16 @@ ENV/
 *~
 
 # Project-specific: Large data files
+# Ignore batch_outputs folder...
 batch_outputs/
+
+# ...BUT track optimized parquet partition files (via Git LFS) for Streamlit Cloud
+!batch_outputs/master_all_data_part_*.parquet
+
+# Ignore temp directories
 temp_swot_batch/
 temp_classification_check/
+temp_calibration_data/
 
 # Project-specific: Claude Code workspace
 .claude/
