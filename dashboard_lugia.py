@@ -28,8 +28,9 @@ except ImportError:
 # --- CONFIGURATION ---
 PAGE_TITLE = "SWOT River Dynamics: Kanektok & Uyak"
 DATA_DIR = "batch_outputs"
-MAX_PLOT_POINTS = 25000  # Safety Cap for browser rendering
-MAX_BASELINE_POINTS = 50000  # Limit for baseline fitting (prevents memory issues)
+MAX_PLOT_POINTS = 15000  # Reduced for large datasets (was 25000)
+MAX_BASELINE_POINTS = 30000  # Reduced for Streamlit Cloud (was 50000)
+MAX_MAP_POINTS = 5000  # Strict limit for map rendering
 
 # FIXED COLORS
 COLOR_MAP = {
@@ -122,16 +123,17 @@ def main():
 
     st.sidebar.title("🌊 Analysis Controls")
 
-    # 1. Get Metadata
+    # 1. Get Metadata (with loading indicator for large datasets)
     try:
-        date_range = con.execute("SELECT MIN(Pass_Date), MAX(Pass_Date) FROM river_data").fetchone()
-        if date_range is None or date_range[0] is None:
-            st.error("❌ No data found in parquet files. Please run Lugia.py first to generate data.")
-            st.stop()
+        with st.spinner("Loading data metadata..."):
+            date_range = con.execute("SELECT MIN(Pass_Date), MAX(Pass_Date) FROM river_data").fetchone()
+            if date_range is None or date_range[0] is None:
+                st.error("❌ No data found in parquet files. Please run Lugia.py first to generate data.")
+                st.stop()
 
-        min_date = pd.to_datetime(date_range[0])
-        max_date = pd.to_datetime(date_range[1])
-        available_reaches = con.execute("SELECT DISTINCT Reach_Name FROM river_data").fetchdf()['Reach_Name'].tolist()
+            min_date = pd.to_datetime(date_range[0])
+            max_date = pd.to_datetime(date_range[1])
+            available_reaches = con.execute("SELECT DISTINCT Reach_Name FROM river_data").fetchdf()['Reach_Name'].tolist()
     except Exception as e:
         st.error(f"❌ Could not read metadata: {e}")
         st.info("💡 This usually means the parquet files are missing or corrupted. Try running `python Lugia.py` to regenerate the data.")
@@ -243,17 +245,18 @@ def main():
 
     # 3. FILTER DATA
     rivers_sql = "'" + "','".join(selected_reaches) + "'"
-    
+
     # Base conditions
     where_clause = f"""
         WHERE Reach_Name IN ({rivers_sql})
         AND Pass_Date >= '{start_date}'
         AND Pass_Date <= '{end_date}'
     """
-    
-    # Check total count first
+
+    # Check total count first (with timeout protection)
     try:
-        count = con.execute(f"SELECT COUNT(*) FROM river_data {where_clause}").fetchone()[0]
+        with st.spinner("Querying database..."):
+            count = con.execute(f"SELECT COUNT(*) FROM river_data {where_clause}").fetchone()[0]
     except Exception as e:
         st.error(f"Query failed: {e}")
         st.stop()
@@ -969,10 +972,10 @@ def main():
     with tab5:
         st.subheader("Satellite Data Point Locations")
 
-        # Sample data if too large (for performance)
-        if len(viz_df) > 10000:
-            map_df = viz_df.sample(10000)
-            st.info(f"📍 Showing 10,000 sampled points (out of {len(viz_df):,}) for map performance.")
+        # Sample data if too large (for performance) - STRICT limit for large datasets
+        if len(viz_df) > MAX_MAP_POINTS:
+            map_df = viz_df.sample(MAX_MAP_POINTS)
+            st.info(f"📍 Showing {MAX_MAP_POINTS:,} sampled points (out of {len(viz_df):,}) for map performance.")
         else:
             map_df = viz_df
 
