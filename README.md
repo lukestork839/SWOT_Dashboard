@@ -2,6 +2,15 @@
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Streamlit App](https://img.shields.io/badge/Streamlit-Live%20App-FF4B4B?logo=streamlit)](https://swotdashboard-hsqtdfsetpcuel2mjrkcwp.streamlit.app/)
+
+## 🌐 Live Dashboard
+
+**Access the interactive dashboard here:** [https://swotdashboard-hsqtdfsetpcuel2mjrkcwp.streamlit.app/](https://swotdashboard-hsqtdfsetpcuel2mjrkcwp.streamlit.app/)
+
+*Explore SWOT satellite data for two Alaskan rivers with interactive visualizations, detrended analysis, and GIS mapping tools.*
+
+---
 
 ## Project Overview
 
@@ -18,11 +27,18 @@ Compare hydraulic gradients between parallel river channels to assess avulsion r
 
 ## Key Features
 
+### Data Processing
 ✅ **Resumable Downloads** - Fault-tolerant ingestion survives interruptions
 ✅ **Automatic Optimization** - Data automatically optimized for dashboard performance
 ✅ **Progress Tracking** - Real-time progress bars with ETA
-✅ **Interactive Dashboard** - Streamlit-based visualization with filtering
 ✅ **Verified Processing** - All corrections verified against SWOT User Handbook
+
+### Interactive Dashboard
+✅ **6 Analysis Tabs** - Gradient profiles, elevation differences, detrended analysis, interval slopes, interactive maps, raw data export
+✅ **Detrended Profile Analysis** - Remove large-scale elevation trends to reveal subtle hydraulic differences (Linear, Polynomial, LOESS methods)
+✅ **Interactive GIS Maps** - Folium maps with measuring tools, 6 basemap styles, multiple coloring modes
+✅ **Performance Optimized** - Cached calculations, memory-safe for large datasets, dark mode UI
+✅ **Real-time Filtering** - Date range selection, river comparison, detrending method switching
 
 ## Data Source
 
@@ -123,22 +139,54 @@ Linear regression of WSE vs. distance, expressed in **cm/km** for scientific com
 ### Interactive Controls
 - **Date Range Slider**: Filter satellite passes by date
 - **River Selection**: Analyze individual rivers or both
-- **Multi-tab Interface**: Gradient profile, map view, raw data
+- **Detrending Method Selector**: Choose baseline trend calculation method
+- **Map Display Options**: Color by river name, WSE, classification, detrended residual, or interval slope
+- **Basemap Selector**: 6 basemap styles (OpenStreetMap, Terrain, Satellite, Watercolor, CartoDB Light/Dark)
+- **Point Opacity Control**: Adjust transparency to see underlying geography
 
-### Visualizations
-1. **Gradient Profile**: WSE vs. distance scatter plot
-   - Linear regression trendlines
-   - Slope displayed in cm/km
-   - X-axis reversed (coast → confluence)
-2. **Map View**: Geographic visualization
-   - Mapbox satellite basemap
-   - Color-coded by river
-3. **Data Inspector**: Tabular view with CSV export
+### Analysis Tabs
+
+#### 1. **Gradient Profile**
+- WSE vs. distance scatter plot with linear regression trendlines
+- Slope displayed in cm/km (steepness)
+- X-axis reversed (coast → confluence)
+- Shows overall hydraulic gradient for each river
+
+#### 2. **Elevation Difference**
+- Direct comparison: Kanektok WSE - Uyak WSE
+- 100-meter binning for clarity
+- Shows which river is hydraulically advantaged at each distance
+
+#### 3. **Detrended Profile** (Relative Elevation Model)
+- Removes large-scale elevation drop to reveal subtle differences
+- 4 detrending methods: Linear, Polynomial (2nd/3rd order), LOESS
+- Scatter around zero baseline shows deviations from expected profile
+- Critical for assessing avulsion risk
+
+#### 4. **Interval Slopes**
+- Segment-by-segment slope analysis (100m intervals)
+- Identifies specific reaches with different hydraulic characteristics
+- Quality filters: minimum 3 points/bin, consecutive bins only, outlier removal
+
+#### 5. **Map View**
+- Interactive Folium GIS maps with measuring tools
+- Multiple coloring modes: River name, WSE gradient, classification, detrended residual, interval slope
+- Layer control for toggling visibility
+- Adjustable point opacity
+- Professional basemap options
+
+#### 6. **Raw Data**
+- Tabular view with first 1000 rows
+- CSV export for external analysis
+- Shows all calculated metrics
 
 ### Performance Optimizations
-- **Systematic Sampling**: For datasets > 25,000 points
+- **Systematic Sampling**: For datasets > 25,000 points (visualization only)
 - **Full Statistics**: Calculations use 100% of data (not sampled)
-- **DuckDB Backend**: Fast in-memory SQL queries
+- **DuckDB Backend**: Fast in-memory SQL queries with memory limits
+- **Aggressive Caching**: Detrending calculations cached for 20x speedup
+- **Memory Management**: Baseline queries limited to 50k points, garbage collection after large operations
+- **Streamlit Cloud Ready**: Optimized to run within 1GB RAM limit
 
 ## Data Variables
 
@@ -218,9 +266,11 @@ Launched December 2022, SWOT uses Ka-band Radar Interferometry (KaRIn) to measur
 
 ## Documentation
 
+- **`DEPLOYMENT.md`**: Comprehensive Streamlit Cloud deployment guide
 - **`Claude/Claude_notes.md`**: Detailed workflow and development history
 - **`Claude/Verification_Summary.md`**: Processing verification against NASA handbook
 - **`SWOT_Processing_Documentation.md`**: Complete technical documentation with citations
+- **`dashboard_optimizations.md`**: Performance optimization analysis and crash fixes
 
 ## Verification
 
@@ -313,5 +363,14 @@ If you use this code or approach in your research, please cite:
 
 ---
 
-**Last Updated**: February 16, 2026
-**Status**: Active Development • Calibrated & Validated
+## 🚀 Deployment
+
+The dashboard is deployed on **Streamlit Community Cloud** and auto-updates with each GitHub push.
+
+For deployment instructions, see [`DEPLOYMENT.md`](DEPLOYMENT.md).
+
+---
+
+**Last Updated**: February 23, 2026
+**Status**: Production • Live Dashboard • Calibrated & Validated
+**Live URL**: https://swotdashboard-hsqtdfsetpcuel2mjrkcwp.streamlit.app/
