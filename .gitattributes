@@ -1,0 +1,9 @@
+# Git LFS Configuration for SWOT Dashboard
+# Track large parquet files using Git Large File Storage
+
+# Optimized parquet partition files (for dashboard deployment)
+batch_outputs/master_all_data_part_*.parquet filter=lfs diff=lfs merge=lfs -text
+
+# Note: This allows partition files (~1.6MB each, ~110MB total) to be stored
+# efficiently in Git LFS while keeping the repository size manageable.
+# The master CSV and full parquet file remain gitignored (too large).

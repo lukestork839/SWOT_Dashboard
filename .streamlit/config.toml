@@ -1,0 +1,48 @@
+# Streamlit Configuration for Cloud Deployment
+# Optimized for SWOT River Dynamics Dashboard
+
+[server]
+# File upload size (for future data upload features)
+maxUploadSize = 200
+
+# Performance optimizations
+enableCORS = false
+enableXsrfProtection = true
+enableWebsocketCompression = true
+
+# Prevent timeouts during large operations
+maxMessageSize = 200
+
+[browser]
+# Don't gather usage stats in production
+gatherUsageStats = false
+
+# Server address (leave default for Streamlit Cloud)
+serverAddress = "0.0.0.0"
+
+[runner]
+# Performance settings
+magicEnabled = false  # Disable magic commands for slight performance boost
+fastReruns = true  # Enable fast reruns
+postScriptGC = true  # Run garbage collection after script execution
+
+[client]
+# Show detailed errors for debugging (can disable in production)
+showErrorDetails = true
+toolbarMode = "minimal"
+
+[logger]
+# Log level for production
+level = "info"
+
+# Performance monitoring
+enableProfilingStats = false
+
+[theme]
+# Custom theme - dark mode (matches SWOT branding)
+base = "dark"
+primaryColor = "#1f77b4"  # Dodger blue (matches Uyak Creek)
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#262730"
+textColor = "#fafafa"
+font = "sans serif"
