@@ -93,21 +93,33 @@ def get_database_connection():
     """
     try:
         con = duckdb.connect(database=':memory:')
-        parquet_pattern = os.path.join(DATA_DIR, "master_all_data_part_*.parquet")
 
-        # Check if parquet files exist
+        # Use optimized single file for dashboard (faster, less memory)
+        parquet_file = os.path.join(DATA_DIR, "dashboard_data_optimized.parquet")
+
+        # Fallback to partition files if optimized file doesn't exist (local development)
+        if not os.path.exists(parquet_file):
+            parquet_file = os.path.join(DATA_DIR, "master_all_data_part_*.parquet")
+            st.info("ℹ️ Using full dataset (partition files). For deployment, use dashboard_data_optimized.parquet")
+
+        # Check if data file exists
         import glob
-        parquet_files = glob.glob(parquet_pattern)
-        if not parquet_files:
-            st.error(f"❌ No parquet files found at: {parquet_pattern}")
+        if '*' in parquet_file:
+            parquet_files = glob.glob(parquet_file)
+            if not parquet_files:
+                st.error(f"❌ No parquet files found at: {parquet_file}")
+                st.info("💡 Run `python Lugia.py` to generate data files.")
+                return None
+        elif not os.path.exists(parquet_file):
+            st.error(f"❌ Data file not found: {parquet_file}")
             st.info("💡 Run `python Lugia.py` to generate data files.")
             return None
 
-        # Create view from parquet files
-        con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{parquet_pattern}')")
+        # Create view from parquet file(s)
+        con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{parquet_file}')")
 
         # Memory optimization: Set DuckDB memory limit (recommended for Streamlit Cloud)
-        con.execute("SET memory_limit='800MB'")
+        con.execute("SET memory_limit='600MB'")  # Reduced for smaller dataset
 
         return con
     except Exception as e:

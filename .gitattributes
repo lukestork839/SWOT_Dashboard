@@ -1,9 +1,9 @@
 # Git LFS Configuration for SWOT Dashboard
 # Track large parquet files using Git Large File Storage
 
-# Optimized parquet partition files (for dashboard deployment)
-batch_outputs/master_all_data_part_*.parquet filter=lfs diff=lfs merge=lfs -text
+# Optimized dashboard data file (single file, ~23MB, 1.9M rows)
+batch_outputs/dashboard_data_optimized.parquet filter=lfs diff=lfs merge=lfs -text
 
-# Note: This allows partition files (~1.6MB each, ~110MB total) to be stored
-# efficiently in Git LFS while keeping the repository size manageable.
-# The master CSV and full parquet file remain gitignored (too large).
+# Note: This file contains last 6 months of data (sampled 50%) for fast dashboard performance.
+# Reduces from 6.7M rows → 1.9M rows for Streamlit Cloud's 1GB RAM limit.
+# Full dataset remains local only (gitignored).
