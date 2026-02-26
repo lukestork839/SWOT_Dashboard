@@ -85,6 +85,62 @@ def calculate_detrending(dist_km, wse, method):
 
     return baseline_pred, coeffs, method_name
 
+def download_data_if_needed():
+    """
+    Download parquet data from GitHub Releases if not available locally.
+    Handles Git LFS limitation on Streamlit Cloud.
+
+    Returns:
+        str: Path to the parquet file, or None if download failed
+    """
+    import urllib.request
+    import shutil
+
+    parquet_file = os.path.join(DATA_DIR, "dashboard_data_optimized.parquet")
+
+    # Create directory if it doesn't exist
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    # Check if file exists and is valid (not a Git LFS pointer)
+    file_is_valid = False
+    if os.path.exists(parquet_file):
+        file_size = os.path.getsize(parquet_file)
+        # Git LFS pointer files are tiny (<200 bytes), real parquet should be >1MB
+        if file_size > 1_000_000:
+            file_is_valid = True
+        else:
+            st.warning(f"⚠️ Detected Git LFS pointer file ({file_size} bytes). Downloading actual data...")
+
+    # Download from GitHub Releases if needed
+    if not file_is_valid:
+        GITHUB_RELEASE_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v1.0-data/dashboard_data_optimized.parquet"
+
+        try:
+            with st.spinner("📥 Downloading data from GitHub Releases (24MB)... This may take 30-60 seconds."):
+                # Download with progress (if possible)
+                urllib.request.urlretrieve(GITHUB_RELEASE_URL, parquet_file)
+
+                # Verify download
+                final_size = os.path.getsize(parquet_file)
+                if final_size < 1_000_000:
+                    st.error(f"❌ Download failed. File is too small ({final_size} bytes).")
+                    return None
+
+                st.success(f"✅ Data downloaded successfully ({final_size / 1_000_000:.1f} MB)")
+                return parquet_file
+
+        except Exception as e:
+            st.error(f"❌ Failed to download data: {e}")
+            st.info("""
+            **Troubleshooting:**
+            1. Check that the GitHub Release exists at: https://github.com/lukestork839/SWOT_Dashboard/releases
+            2. Ensure the release has the file: `dashboard_data_optimized.parquet`
+            3. If running locally, run `python Lugia.py` to generate data files
+            """)
+            return None
+
+    return parquet_file
+
 @st.cache_resource
 def get_database_connection():
     """
@@ -92,39 +148,28 @@ def get_database_connection():
     Cached as a resource to prevent reconnecting on every interaction.
     """
     try:
-        con = duckdb.connect(database=':memory:')
+        # Download data if needed (handles Git LFS on Streamlit Cloud)
+        parquet_file = download_data_if_needed()
 
-        # Use optimized single file for dashboard (faster, less memory)
-        parquet_file = os.path.join(DATA_DIR, "dashboard_data_optimized.parquet")
-
-        # Fallback to partition files if optimized file doesn't exist (local development)
-        if not os.path.exists(parquet_file):
-            parquet_file = os.path.join(DATA_DIR, "master_all_data_part_*.parquet")
-            st.info("ℹ️ Using full dataset (partition files). For deployment, use dashboard_data_optimized.parquet")
-
-        # Check if data file exists
-        import glob
-        if '*' in parquet_file:
-            parquet_files = glob.glob(parquet_file)
-            if not parquet_files:
-                st.error(f"❌ No parquet files found at: {parquet_file}")
-                st.info("💡 Run `python Lugia.py` to generate data files.")
-                return None
-        elif not os.path.exists(parquet_file):
-            st.error(f"❌ Data file not found: {parquet_file}")
-            st.info("💡 Run `python Lugia.py` to generate data files.")
+        if parquet_file is None:
             return None
 
-        # Create view from parquet file(s)
+        # Initialize DuckDB connection
+        con = duckdb.connect(database=':memory:')
+
+        # Create view from parquet file
         con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{parquet_file}')")
 
         # Memory optimization: Set DuckDB memory limit (recommended for Streamlit Cloud)
         con.execute("SET memory_limit='600MB'")  # Reduced for smaller dataset
 
         return con
+
     except Exception as e:
         st.error(f"❌ Could not connect to data: {e}")
         st.info("💡 This usually means the parquet files are missing or corrupted.")
+        import traceback
+        st.code(traceback.format_exc())
         return None
 
 def main():
@@ -331,7 +376,7 @@ def main():
     
     st.dataframe(
         display_stats.style.format({"Avg WSE (m)": "{:.2f}", "Avg Gradient (cm/km)": "{:.2f}"}),
-        use_container_width=True,
+        width='stretch',
         hide_index=True
     )
 
@@ -414,7 +459,7 @@ def main():
         fig.update_xaxes(autorange="reversed")
 
         fig.update_layout(height=600, template="plotly_white")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         # Add interpretation guide
         st.info("""
@@ -529,7 +574,7 @@ def main():
                     # Reverse x-axis to match other plots (Coast on left, Confluence on right)
                     fig_diff.update_xaxes(autorange="reversed")
 
-                    st.plotly_chart(fig_diff, use_container_width=True)
+                    st.plotly_chart(fig_diff, width="stretch")
 
                     # Add interpretation guide
                     st.info("""
@@ -682,7 +727,7 @@ def main():
                 # Reverse x-axis to match other plots
                 fig_detrend.update_xaxes(autorange="reversed")
 
-                st.plotly_chart(fig_detrend, use_container_width=True)
+                st.plotly_chart(fig_detrend, width="stretch")
 
                 # Show fit quality metrics
                 col1, col2, col3 = st.columns(3)
@@ -789,7 +834,7 @@ def main():
                             "Max Residual (m)": "{:.3f}",
                             "Range (m)": "{:.3f}"
                         }),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True
                     )
 
@@ -832,7 +877,7 @@ def main():
                     )
 
                     fig_baseline.update_xaxes(autorange="reversed")
-                    st.plotly_chart(fig_baseline, use_container_width=True)
+                    st.plotly_chart(fig_baseline, width="stretch")
 
         except Exception as e:
             st.error(f"Error calculating detrended profile: {e}")
@@ -931,7 +976,7 @@ def main():
                 # Reverse x-axis to match other plots
                 fig_slopes.update_xaxes(autorange="reversed")
 
-                st.plotly_chart(fig_slopes, use_container_width=True)
+                st.plotly_chart(fig_slopes, width="stretch")
 
                 # Add interpretation guide
                 st.info("""
@@ -974,7 +1019,7 @@ def main():
                             "Min Slope (cm/km)": "{:.2f}",
                             "Std Dev (cm/km)": "{:.2f}"
                         }),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True
                     )
 
@@ -1273,7 +1318,7 @@ def main():
 
     with tab6:
         st.subheader("Data Inspector")
-        st.dataframe(viz_df.head(1000), use_container_width=True)
+        st.dataframe(viz_df.head(1000), width="stretch")
         st.caption(f"Showing first 1000 rows of visualization sample.")
         
         csv = viz_df.to_csv(index=False).encode('utf-8')
