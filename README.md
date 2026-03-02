@@ -2,13 +2,13 @@
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Streamlit App](https://img.shields.io/badge/Streamlit-Live%20App-FF4B4B?logo=streamlit)](https://swotdashboard-hsqtdfsetpcuel2mjrkcwp.streamlit.app/)
+[![Streamlit App](https://img.shields.io/badge/Streamlit-Live%20App-FF4B4B?logo=streamlit)](https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/)
 
 ---
 
 ## 🌐 Live Dashboard
 
-**Try it now:** [https://swotdashboard-hsqtdfsetpcuel2mjrkcwp.streamlit.app/](https://swotdashboard-hsqtdfsetpcuel2mjrkcwp.streamlit.app/)
+**Try it now:** [https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/](https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/)
 
 Interactive visualization of NASA SWOT satellite data for two Alaskan rivers (Kanektok River and Uyak Creek), comparing hydraulic gradients to assess avulsion risk.
 
@@ -321,4 +321,4 @@ MIT License - SWOT data is publicly available through NASA Earthdata
 
 **Last Updated:** March 2, 2026
 **Status:** ✅ Production • Live Dashboard • Field-Validated
-**Live URL:** https://swotdashboard-hsqtdfsetpcuel2mjrkcwp.streamlit.app/
+**Live URL:** https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/
