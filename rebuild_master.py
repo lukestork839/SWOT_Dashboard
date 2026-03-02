@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
 Quick rebuild of master parquet files from existing daily CSVs.
-This is faster than re-running the full Lugia.py pipeline.
+This is faster than re-running the full SWOT_Pull.py pipeline.
 """
 
 import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
 
-# Import settings from Lugia.py
+# Import settings from SWOT_Pull.py
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
-from Lugia import KEEP_COLUMNS, ROWS_PER_CHUNK
+from SWOT_Pull import KEEP_COLUMNS, ROWS_PER_CHUNK
 
 DATA_DIR = Path("batch_outputs/data")
 OUTPUT_DIR = Path("batch_outputs")

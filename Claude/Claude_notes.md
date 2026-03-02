@@ -2,7 +2,7 @@
 
 **Last Updated**: 2026-02-16
 **Status**: Active Development
-**Primary Workflow**: Lugia.py → dashboard_lugia.py (optimization now integrated!)
+**Primary Workflow**: SWOT_Pull.py → dashboard_swot.py (optimization now integrated!)
 **GitHub Repository**: https://github.com/lukestork839/SWOT_Dashboard
 
 ---
@@ -58,7 +58,7 @@ Version D (Provisional) + Version 2.0 (Validated)
 ### Quality Filtering
 **Classification Filter:**
 - We strictly use **Class 4** (Good water detection) points only
-- Defined in `DEFAULT_CLASSES = [4]` in Lugia.py
+- Defined in `DEFAULT_CLASSES = [4]` in SWOT_Pull.py
 
 **Cross-Track Filter:**
 - Generally filtered between 10km–60km to avoid:
@@ -99,8 +99,8 @@ slope_calc = slope * 100  # Convert to cm/km
 ### Directory Structure (Updated 2026-02-10)
 ```
 SWOT/
-├── Lugia.py                    # Main data ingestion + optimization pipeline
-├── dashboard_lugia.py          # Streamlit visualization dashboard
+├── SWOT_Pull.py                    # Main data ingestion + optimization pipeline
+├── dashboard_swot.py          # Streamlit visualization dashboard
 ├── requirements.txt            # Python dependencies
 ├── river_poly.zip              # Polygon boundaries (2 reaches)
 ├── .swot_cli_config.json       # SWOT CLI configuration
@@ -115,7 +115,7 @@ SWOT/
 │   └── Claude_notes.md         # This file
 ├── old_stuff/                  # Archive of deprecated code
 │   ├── 2025/                   # Old 2025 versions
-│   ├── optimize.py             # Now integrated into Lugia.py (2026-02-10)
+│   ├── optimize.py             # Now integrated into SWOT_Pull.py (2026-02-10)
 │   ├── finish_job.py           # Post-processing utility
 │   ├── split_parquet.py        # Parquet splitting utility
 │   ├── profile_Polywhirl.py    # Legacy profiling script
@@ -128,7 +128,7 @@ SWOT/
 
 ### Pipeline: Two-Stage Workflow (Streamlined 2026-02-10)
 
-#### Stage 1: Data Ingestion (`Lugia.py`)
+#### Stage 1: Data Ingestion (`SWOT_Pull.py`)
 **Purpose**: Download and process raw SWOT satellite data
 
 **Process:**
@@ -188,7 +188,7 @@ SWOT/
 - `batch_outputs/master_all_data.parquet` (optimized single file)
 - `batch_outputs/master_all_data_part_*.parquet` (optimized partitions for dashboard)
 
-#### Stage 2: Visualization (`dashboard_lugia.py`)
+#### Stage 2: Visualization (`dashboard_swot.py`)
 **Purpose**: Interactive Streamlit dashboard for data exploration
 
 **Framework:**
@@ -335,15 +335,15 @@ NAME_MAPPING = {
     2: "Kanektok_River"
 }
 ```
-- Defined in `Lugia.py` lines 27-30
+- Defined in `SWOT_Pull.py` lines 27-30
 - Maps polygon IDs from `river_poly.zip` to readable names
 
 ### Legacy Naming ("Polywhirl" Era)
 **Historical Context**: Earlier versions used Pokemon-themed naming:
-- "Polywhirl" = Old processing script
-- "Lugia" = Current processing script (legendary upgrade!)
+- "Polywhirl" = Old processing script (archived)
+- "Lugia" = Processing script (2025-2026, now renamed to SWOT_Pull.py)
 
-**Why Changed**: Professor preferred more systematic naming for production
+**Why Changed**: Professor preferred more systematic naming for production. Further renamed to SWOT_Pull.py for clarity when sharing with external collaborators.
 
 **Archive Location**: All old "Polywhirl" code moved to `old_stuff/`
 
@@ -353,8 +353,8 @@ NAME_MAPPING = {
 
 ### Confirmed Working Workflow
 ✅ **Current Best Practice** (Updated 2026-02-10):
-1. Download and process data using `Lugia.py` (optimization now automatic!)
-2. Display data using `dashboard_lugia.py` (Streamlit)
+1. Download and process data using `SWOT_Pull.py` (optimization now automatic!)
+2. Display data using `dashboard_swot.py` (Streamlit)
 
 ### Scientific Accuracy Priority
 - Statistics must use 100% of data (not sampled)
@@ -383,7 +383,7 @@ NAME_MAPPING = {
 4. ✅ Updated and reformatted this technical notes file
 
 **Current Clean Structure (Updated 2026-02-10):**
-- 2 active Python scripts (`Lugia.py`, `dashboard_lugia.py`)
+- 2 active Python scripts (`SWOT_Pull.py`, `dashboard_swot.py`)
 - 1 requirements file (`requirements.txt`)
 - 1 data directory (`batch_outputs/`)
 - 1 configuration file (`.swot_cli_config.json`)
@@ -425,7 +425,7 @@ NAME_MAPPING = {
 
 **Actions Taken:**
 1. ✅ Created `requirements.txt` with all project dependencies
-2. ✅ Added `tqdm` progress bars to Lugia.py for:
+2. ✅ Added `tqdm` progress bars to SWOT_Pull.py for:
    - Granule processing loop (shows ETA and speed)
    - CSV aggregation during rebuild
    - Partition creation
@@ -438,7 +438,7 @@ NAME_MAPPING = {
 5. ✅ Updated documentation to reflect streamlined 2-stage workflow
 
 **Benefits:**
-- **Simplified workflow**: Just run `Lugia.py` and you're done
+- **Simplified workflow**: Just run `SWOT_Pull.py` and you're done
 - **Better UX**: Progress bars show completion status and time estimates
 - **Always optimized**: Dashboard-ready files created automatically
 - **No manual steps**: Can't forget to run optimization
@@ -491,10 +491,10 @@ NAME_MAPPING = {
 - Files tracked: 11 core files (scripts, docs, configs)
 - Files gitignored: All data, temp files, workspace
 - Commit strategy: Merged with existing remote, kept improved local versions
-- Data remains local: Users run `Lugia.py` to generate their own data
+- Data remains local: Users run `SWOT_Pull.py` to generate their own data
 
 **Repository Contents:**
-- Core scripts: `Lugia.py`, `dashboard_lugia.py`
+- Core scripts: `SWOT_Pull.py`, `dashboard_swot.py`
 - Dependencies: `requirements.txt`
 - Configuration: `river_poly.zip`, `.swot_cli_config.json`, `.gitignore`
 - Documentation: `README.md`, `SWOT_Processing_Documentation.md`, `Claude/` folder
@@ -508,11 +508,11 @@ NAME_MAPPING = {
 - Missing utility script for quick master file rebuilds
 
 **Actions Taken:**
-1. ✅ Updated `Lugia.py`:
+1. ✅ Updated `SWOT_Pull.py`:
    - Added `classification` to `KEEP_COLUMNS` (line 27)
    - Added `classification` to daily CSV export columns (line 213)
    - Classification now preserved throughout entire pipeline
-2. ✅ Enhanced `dashboard_lugia.py`:
+2. ✅ Enhanced `dashboard_swot.py`:
    - Added "Map Display Options" section in sidebar
    - Implemented three color-by modes:
      - **River Name**: Original discrete colors (firebrick/dodgerblue)
@@ -548,7 +548,7 @@ NAME_MAPPING = {
 
 **User Workflow:**
 - Deleted all daily CSVs to force regeneration with classification column
-- Re-ran Lugia.py for May-July 2025 date range (22 granules, 9 new, 8 skipped)
+- Re-ran SWOT_Pull.py for May-July 2025 date range (22 granules, 9 new, 8 skipped)
 - Successfully created 424,179 points with classification data
 - Dashboard map styling features tested and verified working
 
@@ -670,7 +670,7 @@ NAME_MAPPING = {
 - Required investigation to determine if SWOT processing was correct
 
 **Actions Taken:**
-1. ✅ Modified Lugia.py to export diagnostic columns (height_raw, geoid, solid_tide, pole_tide, load_tide)
+1. ✅ Modified SWOT_Pull.py to export diagnostic columns (height_raw, geoid, solid_tide, pole_tide, load_tide)
 2. ✅ Reprocessed Nov 13, 2025 data with full correction values
 3. ✅ Verified SWOT WSE formula against SWOT Handbook (JPL D-109532, Section 3.1.25)
 4. ✅ Analyzed Emlid RTK GPS shapefile data from field campaign
@@ -742,7 +742,7 @@ wse_navd88 = wse_swot + DATUM_OFFSET
 - **Scientific Rigor**: Multi-source verification (shapefile, RINEX, SWOT handbook)
 
 **Technical Details:**
-- Modified KEEP_COLUMNS in Lugia.py to include: height_raw, geoid, solid_tide, pole_tide, load_tide
+- Modified KEEP_COLUMNS in SWOT_Pull.py to include: height_raw, geoid, solid_tide, pole_tide, load_tide
 - Verified all corrections against SWOT Product Handbook Section 3.1.25
 - Analyzed 3,354 RTK measurements from RINEX LLH solution file
 - Compared with 170 SWOT points within 500m of calibration location
@@ -756,7 +756,7 @@ wse_navd88 = wse_swot + DATUM_OFFSET
 - Recommended: Use NOAA VDatum tool for precise conversions at specific locations
 
 **Files Modified:**
-- `Lugia.py`: Added diagnostic columns to KEEP_COLUMNS and cols_export
+- `SWOT_Pull.py`: Added diagnostic columns to KEEP_COLUMNS and cols_export
 - `Claude/Claude_notes.md`: This documentation
 - `README.md`: Added Calibration & Validation section
 
@@ -771,21 +771,21 @@ wse_navd88 = wse_swot + DATUM_OFFSET
 
 ### Run Data Ingestion (with automatic optimization)
 ```bash
-python Lugia.py
+python SWOT_Pull.py
 # Prompts for: Start Date (YYYY-MM-DD), End Date (YYYY-MM-DD)
 # Automatically creates optimized parquet files ready for dashboard
 ```
 
 ### Launch Dashboard
 ```bash
-streamlit run dashboard_lugia.py
+streamlit run dashboard_swot.py
 ```
 
 ### Rebuild Master Files (from existing daily CSVs)
 ```bash
 python3 rebuild_master.py
 # Useful after changing KEEP_COLUMNS or for quick regeneration
-# Much faster than re-running full Lugia.py pipeline
+# Much faster than re-running full SWOT_Pull.py pipeline
 ```
 
 ### Check Data Size
@@ -853,7 +853,7 @@ git pull origin main
      - Outlier removal (slopes >1000 cm/km filtered out)
      - Added hover data showing: points in bin, gap to previous bin
      - Added "Avg Points/Bin" to statistics table
-   - **Location**: `dashboard_lugia.py` lines 718-754 (SQL query with quality filters)
+   - **Location**: `dashboard_swot.py` lines 718-754 (SQL query with quality filters)
 
 3. ✅ **Fixed Colormap Import Issues**
    - **Problem**: `from folium import colormap` failed - module not found
@@ -869,13 +869,13 @@ git pull origin main
      ```
    - All colormap usage wrapped in `if LinearColormap is not None:` checks
    - Gracefully degrades (no legends) if import fails
-   - **Location**: `dashboard_lugia.py` lines 16-24
+   - **Location**: `dashboard_swot.py` lines 16-24
 
 4. ✅ **Added Point Opacity Control**
    - New slider in Map Display Options: "Point Opacity" (0.1 to 1.0, default 0.7)
    - Applies to all map coloring modes
    - Helps see terrain/roads beneath data points
-   - **Location**: `dashboard_lugia.py` line 161-167
+   - **Location**: `dashboard_swot.py` line 161-167
 
 5. ✅ **Improved Map Styling**
    - Removed point borders (`weight=0`) for cleaner appearance
@@ -900,7 +900,7 @@ With properly working detrended profiles, we can now see that:
 - This elevation difference is critical for assessing avulsion risk
 
 **Files Modified:**
-- `dashboard_lugia.py`: Complete overhaul of detrending methods, interval slope filtering, map styling, opacity control
+- `dashboard_swot.py`: Complete overhaul of detrending methods, interval slope filtering, map styling, opacity control
 - `Claude/Claude_notes.md`: This documentation
 
 ### 2026-02-25: Streamlit Cloud Deployment Fix - Git LFS Workaround
@@ -925,7 +925,7 @@ With properly working detrended profiles, we can now see that:
    - Release notes document purpose: "Work around Git LFS limitations on Streamlit Cloud"
 
 2. ✅ **Added Automatic Data Download Function**
-   - Created `download_data_if_needed()` function in `dashboard_lugia.py`
+   - Created `download_data_if_needed()` function in `dashboard_swot.py`
    - Detects Git LFS pointer files (< 1MB) vs actual data (> 1MB)
    - Downloads from GitHub Release URL if file is missing or too small
    - Uses `urllib.request.urlretrieve()` for download
@@ -986,7 +986,7 @@ Watch Streamlit Cloud logs for:
 - Dashboard should then load normally
 
 **Files Modified:**
-- `dashboard_lugia.py`: Added `download_data_if_needed()`, modified `get_database_connection()`, fixed deprecation warnings
+- `dashboard_swot.py`: Added `download_data_if_needed()`, modified `get_database_connection()`, fixed deprecation warnings
 - `.gitattributes`: Git LFS configuration (already existed)
 - `Claude/Claude_notes.md`: This documentation
 
@@ -1034,7 +1034,7 @@ Watch Streamlit Cloud logs for:
 ### Potential Improvements (Not Confirmed)
 - Automate Version 2.0 priority checking
 - Add height_uncertainty filtering thresholds
-- Implement cross-track filtering in Lugia.py (currently in dashboard)
+- Implement cross-track filtering in SWOT_Pull.py (currently in dashboard)
 - Create automated re-processing script for Part 1 data
 - Add data quality metrics dashboard
 - Export high-resolution plots for publications
@@ -1051,15 +1051,15 @@ Watch Streamlit Cloud logs for:
 ## 12. Important File Locations
 
 ### Configuration
-- **Anchor Point**: `Lugia.py` lines 31-34
-- **Name Mapping**: `Lugia.py` lines 37-40
-- **Classification Filter**: `Lugia.py` line 21 (`DEFAULT_CLASSES = [3,4]`)
-- **Optimization Settings**: `Lugia.py` lines 24-27 (`KEEP_COLUMNS`, `ROWS_PER_CHUNK`)
-- **River Color Mapping**: `dashboard_lugia.py` lines 16-19
-- **Map Color-by Options**: `dashboard_lugia.py` (sidebar form, "Map Display Options")
-- **Point Opacity Default**: `dashboard_lugia.py` line 164 (`value=0.7` - adjustable 0.1 to 1.0)
-- **Classification Colors**: `dashboard_lugia.py` line ~240 (`{"3": "#FFA500", "4": "#00CED1"}`)
-- **Max Plot Points**: `dashboard_lugia.py` line 13
+- **Anchor Point**: `SWOT_Pull.py` lines 31-34
+- **Name Mapping**: `SWOT_Pull.py` lines 37-40
+- **Classification Filter**: `SWOT_Pull.py` line 21 (`DEFAULT_CLASSES = [3,4]`)
+- **Optimization Settings**: `SWOT_Pull.py` lines 24-27 (`KEEP_COLUMNS`, `ROWS_PER_CHUNK`)
+- **River Color Mapping**: `dashboard_swot.py` lines 16-19
+- **Map Color-by Options**: `dashboard_swot.py` (sidebar form, "Map Display Options")
+- **Point Opacity Default**: `dashboard_swot.py` line 164 (`value=0.7` - adjustable 0.1 to 1.0)
+- **Classification Colors**: `dashboard_swot.py` line ~240 (`{"3": "#FFA500", "4": "#00CED1"}`)
+- **Max Plot Points**: `dashboard_swot.py` line 13
 - **Git Ignore Rules**: `.gitignore` (root directory)
 
 ### Data Paths
@@ -1071,22 +1071,22 @@ Watch Streamlit Cloud logs for:
 - **Utility Scripts**: `rebuild_master.py` (quick master file regeneration)
 
 ### Critical Code Sections
-- **Distance Calculation**: `Lugia.py` (`haversine_vectorized` function)
-- **WSE Calculation**: `Lugia.py` (in `process_granule`)
-- **Slope Calculation**: `Lugia.py` (in `process_granule`)
-- **Checkpoint Detection**: `Lugia.py` (`is_date_already_processed` function)
-- **Master Rebuild**: `Lugia.py` (`rebuild_master_from_daily_csvs` function)
-- **CSV Export Columns**: `Lugia.py` line 213 (`cols_export` includes classification)
-- **Dashboard Sampling**: `dashboard_lugia.py` (systematic sampling logic)
-- **Detrending Data Prep**: `dashboard_lugia.py` lines 251-276 (FIXED: uses linregress/Polynomial.fit, NOT np.polyfit)
-- **Detrended Profile Tab**: `dashboard_lugia.py` tab3 lines 504-750 (FIXED: uses linregress/Polynomial.fit, NOT np.polyfit)
-- **Interval Slopes Quality Filters**: `dashboard_lugia.py` lines 718-754 (SQL with HAVING, gap filter, outlier removal)
-- **Elevation Difference Tab**: `dashboard_lugia.py` tab2 (line ~234) - 100m binning and river comparison
-- **Interval Slopes Tab**: `dashboard_lugia.py` tab4 (line ~715) - segment-by-segment slope analysis with quality filters
-- **Folium Map View**: `dashboard_lugia.py` tab5 (line ~900+) - GIS map with MeasureControl and basemaps
-- **Map Color Modes**: `dashboard_lugia.py` (conditional coloring in Map View tab, all use point_opacity)
-- **Point Opacity Control**: `dashboard_lugia.py` line 161-167 (slider in sidebar, 0.1-1.0)
-- **X-Axis Reversal**: `dashboard_lugia.py` (`fig.update_xaxes(autorange="reversed")`)
+- **Distance Calculation**: `SWOT_Pull.py` (`haversine_vectorized` function)
+- **WSE Calculation**: `SWOT_Pull.py` (in `process_granule`)
+- **Slope Calculation**: `SWOT_Pull.py` (in `process_granule`)
+- **Checkpoint Detection**: `SWOT_Pull.py` (`is_date_already_processed` function)
+- **Master Rebuild**: `SWOT_Pull.py` (`rebuild_master_from_daily_csvs` function)
+- **CSV Export Columns**: `SWOT_Pull.py` line 213 (`cols_export` includes classification)
+- **Dashboard Sampling**: `dashboard_swot.py` (systematic sampling logic)
+- **Detrending Data Prep**: `dashboard_swot.py` lines 251-276 (FIXED: uses linregress/Polynomial.fit, NOT np.polyfit)
+- **Detrended Profile Tab**: `dashboard_swot.py` tab3 lines 504-750 (FIXED: uses linregress/Polynomial.fit, NOT np.polyfit)
+- **Interval Slopes Quality Filters**: `dashboard_swot.py` lines 718-754 (SQL with HAVING, gap filter, outlier removal)
+- **Elevation Difference Tab**: `dashboard_swot.py` tab2 (line ~234) - 100m binning and river comparison
+- **Interval Slopes Tab**: `dashboard_swot.py` tab4 (line ~715) - segment-by-segment slope analysis with quality filters
+- **Folium Map View**: `dashboard_swot.py` tab5 (line ~900+) - GIS map with MeasureControl and basemaps
+- **Map Color Modes**: `dashboard_swot.py` (conditional coloring in Map View tab, all use point_opacity)
+- **Point Opacity Control**: `dashboard_swot.py` line 161-167 (slider in sidebar, 0.1-1.0)
+- **X-Axis Reversal**: `dashboard_swot.py` (`fig.update_xaxes(autorange="reversed")`)
 
 ---
 

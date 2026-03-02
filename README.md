@@ -16,6 +16,8 @@
 
 This project analyzes NASA SWOT (Surface Water and Ocean Topography) satellite data to study the hydraulic dynamics of two Alaskan rivers: the **Kanektok River** and **Uyak Creek**. The primary scientific goal is to compare gradient profiles and water surface elevations (WSE) to assess **avulsion risk** at their confluence.
 
+> **📋 For Scientific Reviewers:** See [`SCIENTIFIC_METHODOLOGY.md`](SCIENTIFIC_METHODOLOGY.md) for complete verification of our data processing against the SWOT Science Data Products User Handbook (JPL D-109532), including code implementation references and field calibration results.
+
 ### Study Area
 - **Location**: Alaska, USA
 - **Primary River**: Kanektok River (main stem, Reach 2)
@@ -69,7 +71,7 @@ Register for a free account at: https://urs.earthdata.nasa.gov/
 ### 3. Run Data Ingestion
 
 ```bash
-python Lugia.py
+python SWOT_Pull.py
 # Enter start date (YYYY-MM-DD)
 # Enter end date (YYYY-MM-DD)
 ```
@@ -84,7 +86,7 @@ python Lugia.py
 ### 4. Launch Dashboard
 
 ```bash
-streamlit run dashboard_lugia.py
+streamlit run dashboard_swot.py
 ```
 
 Open browser to `http://localhost:8501`
@@ -93,8 +95,8 @@ Open browser to `http://localhost:8501`
 
 ```
 SWOT_Dashboard/
-├── Lugia.py                    # Main data ingestion + optimization pipeline
-├── dashboard_lugia.py          # Streamlit interactive dashboard
+├── SWOT_Pull.py                # Main data ingestion + optimization pipeline
+├── dashboard_swot.py           # Streamlit interactive dashboard
 ├── requirements.txt            # Python dependencies
 ├── river_poly.zip              # Polygon boundaries (2 river reaches)
 ├── .swot_cli_config.json       # SWOT CLI configuration
@@ -213,7 +215,7 @@ Linear regression of WSE vs. distance, expressed in **cm/km** for scientific com
 - **Excludes**: Classes 5-7 (dark water, low-coherence)
 
 ### Anchor Point
-Defined in `Lugia.py`:
+Defined in `SWOT_Pull.py`:
 ```python
 ANCHOR_LAT = 59.826973
 ANCHOR_LON = -161.372337
@@ -239,7 +241,7 @@ See `requirements.txt`. Key packages:
 ### Data Reprocessing Needed
 - **Issue**: Jan-May 2024 data contains mixed versions (V_D + V2.0)
 - **Impact**: Potential geolocation errors in early 2024 data
-- **Resolution**: Re-run Lugia.py for Jan-May 2024 (now easier with resumable downloads!)
+- **Resolution**: Re-run SWOT_Pull.py for Jan-May 2024 (now easier with resumable downloads!)
 
 ### Potential Enhancements
 - Add uncertainty propagation using `height_uncert` field
@@ -266,10 +268,16 @@ Launched December 2022, SWOT uses Ka-band Radar Interferometry (KaRIn) to measur
 
 ## Documentation
 
-- **`DEPLOYMENT.md`**: Comprehensive Streamlit Cloud deployment guide
-- **`Claude/Claude_notes.md`**: Detailed workflow and development history
-- **`Claude/Verification_Summary.md`**: Processing verification against NASA handbook
+### For Scientific Review & Verification
+- **`SCIENTIFIC_METHODOLOGY.md`**: **→ START HERE** Complete scientific verification guide with SWOT handbook references and code implementation details
+
+### Technical Documentation
 - **`SWOT_Processing_Documentation.md`**: Complete technical documentation with citations
+- **`Claude/Verification_Summary.md`**: Processing verification against NASA handbook
+- **`Claude/Claude_notes.md`**: Detailed workflow and development history
+
+### Deployment & Performance
+- **`DEPLOYMENT.md`**: Comprehensive Streamlit Cloud deployment guide
 - **`dashboard_optimizations.md`**: Performance optimization analysis and crash fixes
 
 ## Verification

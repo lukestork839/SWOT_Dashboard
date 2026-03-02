@@ -281,7 +281,7 @@ Trendlines: Linear regression (dashed lines) with slope displayed in legend
 ### Complete Processing Chain
 
 ```
-NASA Earthdata → earthaccess API → NetCDF download → Lugia.py
+NASA Earthdata → earthaccess API → NetCDF download → SWOT_Pull.py
                                                          ↓
                                          Spatial clip + WSE calculation
                                                          ↓
@@ -299,7 +299,7 @@ NASA Earthdata → earthaccess API → NetCDF download → Lugia.py
                                                          ↓
                                     Parquet: master_all_data_part_*.parquet
                                                          ↓
-                                    dashboard_lugia.py (DuckDB + Plotly)
+                                    dashboard_swot.py (DuckDB + Plotly)
 ```
 
 ### Output Data Schema
@@ -395,9 +395,9 @@ duckdb >= 0.9.0           # In-memory SQL database
 
 ```
 SWOT/
-├── Lugia.py                    # Data ingestion & processing
+├── SWOT_Pull.py                    # Data ingestion & processing
 ├── optimize.py                 # CSV → Parquet conversion
-├── dashboard_lugia.py          # Interactive visualization
+├── dashboard_swot.py          # Interactive visualization
 ├── river_poly.zip              # Polygon boundaries (GeoPackage)
 ├── .swot_cli_config.json       # SWOT CLI configuration
 ├── batch_outputs/
@@ -410,10 +410,10 @@ SWOT/
 ```
 
 **Key Configuration Locations:**
-- Anchor coordinates: `Lugia.py` lines 21-24
-- Classification filter: `Lugia.py` line 18
-- Polygon path: `Lugia.py` line 16
-- Color mapping: `dashboard_lugia.py` lines 16-19
+- Anchor coordinates: `SWOT_Pull.py` lines 21-24
+- Classification filter: `SWOT_Pull.py` line 18
+- Polygon path: `SWOT_Pull.py` line 16
+- Color mapping: `dashboard_swot.py` lines 16-19
 
 ---
 

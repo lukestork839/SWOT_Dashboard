@@ -70,7 +70,7 @@ Before deploying, test the optimized dashboard:
 pip install -r requirements.txt
 
 # Run dashboard locally
-streamlit run dashboard_lugia.py
+streamlit run dashboard_swot.py
 
 # Open browser to http://localhost:8501
 # Test all tabs and verify no crashes
@@ -99,7 +99,7 @@ git lfs ls-files
 # Should list all partition files
 
 # Add other changes (optimizations, configs, docs)
-git add dashboard_lugia.py
+git add dashboard_swot.py
 git add .streamlit/config.toml
 git add .gitignore
 git add .gitattributes
@@ -126,7 +126,7 @@ Git LFS Setup:
 Deployment Readiness:
 - Add comprehensive deployment documentation
 - Create optimization report with crash analysis
-- Backup original dashboard as dashboard_lugia.py.backup
+- Backup original dashboard as dashboard_swot.py.backup
 
 Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 EOF
@@ -156,7 +156,7 @@ Uploading LFS objects: 100% (68/68), 162 MB | 5 MB/s, done.
 4. **Configure**:
    - **Repository**: `lukestork839/SWOT_Dashboard`
    - **Branch**: `main`
-   - **Main file path**: `dashboard_lugia.py`
+   - **Main file path**: `dashboard_swot.py`
 5. **Advanced settings** (optional):
    - Python version: `3.11` (recommended)
 6. **Click**: "Deploy!"
@@ -219,19 +219,19 @@ git push origin main
 **Solution**: Verify optimizations are in place
 ```bash
 # Check if gc import exists
-grep "import gc" dashboard_lugia.py
+grep "import gc" dashboard_swot.py
 
 # Check if MAX_BASELINE_POINTS is set
-grep "MAX_BASELINE_POINTS" dashboard_lugia.py
+grep "MAX_BASELINE_POINTS" dashboard_swot.py
 
 # Check if caching decorator exists
-grep "@st.cache_data" dashboard_lugia.py
+grep "@st.cache_data" dashboard_swot.py
 ```
 
 If missing, dashboard wasn't updated correctly. Re-apply from backup:
 ```bash
 # Compare with backup
-diff dashboard_lugia.py dashboard_lugia.py.backup
+diff dashboard_swot.py dashboard_swot.py.backup
 ```
 
 ### Issue: "Repository too large" error
@@ -295,7 +295,7 @@ git ls-files batch_outputs/
 
 ⚠️ **Not Recommended**:
 - Uploading new data through UI (use Git push instead)
-- Running Lugia.py on Streamlit Cloud (too expensive)
+- Running SWOT_Pull.py on Streamlit Cloud (too expensive)
 - Serving 10+ concurrent users (consider paid tier)
 
 ---
@@ -351,7 +351,7 @@ If you want to restrict access:
 After deployment, you can update the dashboard by:
 
 1. **Make changes locally**
-2. **Test with** `streamlit run dashboard_lugia.py`
+2. **Test with** `streamlit run dashboard_swot.py`
 3. **Commit and push to GitHub**:
    ```bash
    git add <changed-files>
@@ -398,7 +398,7 @@ After successful deployment:
 - [ ] Monitor usage and performance for first 24 hours
 - [ ] Consider setting up uptime monitoring (optional)
 - [ ] Update documentation with any issues encountered
-- [ ] Plan regular data updates (re-run Lugia.py, push new parquets)
+- [ ] Plan regular data updates (re-run SWOT_Pull.py, push new parquets)
 
 ---
 

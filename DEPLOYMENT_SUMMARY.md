@@ -8,7 +8,7 @@
 ## ✅ **What Was Done**
 
 ### 1. Dashboard Performance Optimizations
-**File**: `dashboard_lugia.py`
+**File**: `dashboard_swot.py`
 
 #### Changes Applied:
 - ✅ **Added `gc` import** for memory management
@@ -89,7 +89,7 @@ Created comprehensive configuration with:
 - ✅ **DEPLOYMENT_SUMMARY.md**: This file (executive summary)
 
 ### 5. Backup
-**File**: `dashboard_lugia.py.backup`
+**File**: `dashboard_swot.py.backup`
 
 - ✅ Created backup of original dashboard before modifications
 - ✅ Allows easy rollback if needed
@@ -111,7 +111,7 @@ Created comprehensive configuration with:
 ## 📦 **Files Modified/Created**
 
 ### Modified:
-- `dashboard_lugia.py` - Performance optimizations
+- `dashboard_swot.py` - Performance optimizations
 - `.gitignore` - Allow parquet partition files
 
 ### Created:
@@ -120,7 +120,7 @@ Created comprehensive configuration with:
 - `DEPLOYMENT.md` - Deployment guide
 - `dashboard_optimizations.md` - Technical analysis
 - `DEPLOYMENT_SUMMARY.md` - This summary
-- `dashboard_lugia.py.backup` - Original backup
+- `dashboard_swot.py.backup` - Original backup
 
 ### Data Files to Deploy:
 - `batch_outputs/master_all_data_part_*.parquet` (68 files, 162.5 MB)
@@ -145,7 +145,7 @@ Created comprehensive configuration with:
 
 3. **Test Dashboard Locally** (recommended):
    ```bash
-   streamlit run dashboard_lugia.py
+   streamlit run dashboard_swot.py
    # Open http://localhost:8501
    # Test all tabs, verify no crashes
    ```
@@ -156,7 +156,7 @@ Created comprehensive configuration with:
    git add .streamlit/config.toml
    git add .gitignore
    git add .gitattributes
-   git add dashboard_lugia.py
+   git add dashboard_swot.py
    git add dashboard_optimizations.md
    git add DEPLOYMENT.md
    git add DEPLOYMENT_SUMMARY.md
@@ -185,7 +185,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
    - Go to: https://streamlit.io/cloud
    - Sign in with GitHub
    - Click "New app"
-   - Select: `lukestork839/SWOT_Dashboard`, branch `main`, file `dashboard_lugia.py`
+   - Select: `lukestork839/SWOT_Dashboard`, branch `main`, file `dashboard_swot.py`
    - Click "Deploy!"
 
 ---
@@ -215,7 +215,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
 | Issue | Solution |
 |-------|----------|
 | Git LFS not installed | Run: `sudo apt-get install git-lfs` |
-| Dashboard crashes locally | Check `dashboard_lugia.py` has optimizations |
+| Dashboard crashes locally | Check `dashboard_swot.py` has optimizations |
 | Parquet files not uploading | Run: `git lfs push --all origin main` |
 | "No data found" on Streamlit Cloud | Verify LFS files uploaded: `git lfs ls-files` |
 | Memory error on Cloud | Reduce `MAX_BASELINE_POINTS` to 30000 |

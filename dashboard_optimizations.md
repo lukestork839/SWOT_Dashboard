@@ -145,7 +145,7 @@ base = "light"
 ## Deployment Strategy:
 
 1. Apply optimizations locally
-2. Test thoroughly with `streamlit run dashboard_lugia.py`
+2. Test thoroughly with `streamlit run dashboard_swot.py`
 3. Monitor memory: `ps aux | grep streamlit`
 4. Push to GitHub with Git LFS
 5. Deploy to Streamlit Cloud

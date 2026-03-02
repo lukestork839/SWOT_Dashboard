@@ -28,7 +28,7 @@ git lfs track    # Should show: batch_outputs/master_all_data_part_*.parquet
 
 ### 2. Test Dashboard Locally (Recommended - 5 minutes)
 ```bash
-streamlit run dashboard_lugia.py
+streamlit run dashboard_swot.py
 ```
 
 **Open**: http://localhost:8501
@@ -57,7 +57,7 @@ git status  # Review all changes
 git add .streamlit/config.toml
 git add .gitignore
 git add .gitattributes
-git add dashboard_lugia.py
+git add dashboard_swot.py
 git add dashboard_optimizations.md
 git add DEPLOYMENT.md
 git add DEPLOYMENT_SUMMARY.md
@@ -84,7 +84,7 @@ Deployment Documentation:
 - Add comprehensive DEPLOYMENT.md guide (300+ lines)
 - Create dashboard_optimizations.md with crash analysis
 - Add DEPLOYMENT_SUMMARY.md and NEXT_STEPS.md
-- Backup original dashboard as dashboard_lugia.py.backup
+- Backup original dashboard as dashboard_swot.py.backup
 
 Expected Impact:
 - Memory usage: 1.2GB → 600-700MB (50% reduction)
@@ -125,7 +125,7 @@ git push origin main
 1. Click "New app" button
 2. **Repository**: Select `lukestork839/SWOT_Dashboard`
 3. **Branch**: `main`
-4. **Main file path**: `dashboard_lugia.py`
+4. **Main file path**: `dashboard_swot.py`
 5. **App URL** (optional): Choose a custom subdomain (e.g., `swot-rivers.streamlit.app`)
 
 #### C. Advanced Settings (Optional but Recommended)
@@ -222,7 +222,7 @@ git push --force-with-lease origin main
 **Symptoms:** "App is taking too long" or "Out of memory"
 
 **Solution 1 - Reduce baseline limit:**
-Edit `dashboard_lugia.py`:
+Edit `dashboard_swot.py`:
 ```python
 MAX_BASELINE_POINTS = 30000  # Reduced from 50000
 ```
@@ -234,7 +234,7 @@ MAX_BASELINE_POINTS = 30000  # Reduced from 50000
 
 Then:
 ```bash
-git add dashboard_lugia.py
+git add dashboard_swot.py
 git commit -m "Reduce memory usage for Streamlit Cloud"
 git push origin main
 # Wait 2-3 minutes for auto-redeploy
@@ -320,7 +320,7 @@ Once live, consider:
 
 ### Issues?
 - **Check logs**: Streamlit Cloud dashboard → Your app → "Manage app" → "Logs"
-- **Local testing**: `streamlit run dashboard_lugia.py` (compare behavior)
+- **Local testing**: `streamlit run dashboard_swot.py` (compare behavior)
 - **GitHub Issues**: Open an issue on your repository
 
 ---

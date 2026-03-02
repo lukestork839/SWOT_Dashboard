@@ -32,7 +32,7 @@ DEFAULT_CLASSES = [3, 4]  # Water near land + Open water
 
 ### 2. Water Surface Elevation (WSE) Calculation
 
-**Your Formula (Line 157, Lugia.py):**
+**Your Formula (Line 157, SWOT_Pull.py):**
 ```python
 wse = height_raw - geoid - solid_tide - pole_tide - load_tide
 ```
@@ -154,7 +154,7 @@ DEFAULT_CLASSES = [3, 4]  # Water near land + Open water
 
 ## 📁 Deliverables
 
-1. **`Lugia.py`** - Data ingestion script (updated with Classes 3 & 4)
+1. **`SWOT_Pull.py`** - Data ingestion script (updated with Classes 3 & 4)
 2. **`SWOT_Processing_Documentation.md`** - Complete technical documentation with handbook citations
 3. **`Claude_notes.md`** - Detailed workflow and session history
 4. **This file** - Verification summary for presentation
