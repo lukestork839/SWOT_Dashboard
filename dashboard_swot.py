@@ -135,7 +135,7 @@ def download_data_if_needed():
             **Troubleshooting:**
             1. Check that the GitHub Release exists at: https://github.com/lukestork839/SWOT_Dashboard/releases
             2. Ensure the release has the file: `dashboard_data_optimized.parquet`
-            3. If running locally, run `python Lugia.py` to generate data files
+            3. If running locally, run `python SWOT_Pull.py` to generate data files
             """)
             return None
 
@@ -185,7 +185,7 @@ def main():
         with st.spinner("Loading data metadata..."):
             date_range = con.execute("SELECT MIN(Pass_Date), MAX(Pass_Date) FROM river_data").fetchone()
             if date_range is None or date_range[0] is None:
-                st.error("❌ No data found in parquet files. Please run Lugia.py first to generate data.")
+                st.error("❌ No data found in parquet files. Please run SWOT_Pull.py first to generate data.")
                 st.stop()
 
             min_date = pd.to_datetime(date_range[0])
@@ -193,7 +193,7 @@ def main():
             available_reaches = con.execute("SELECT DISTINCT Reach_Name FROM river_data").fetchdf()['Reach_Name'].tolist()
     except Exception as e:
         st.error(f"❌ Could not read metadata: {e}")
-        st.info("💡 This usually means the parquet files are missing or corrupted. Try running `python Lugia.py` to regenerate the data.")
+        st.info("💡 This usually means the parquet files are missing or corrupted. Try running `python SWOT_Pull.py` to regenerate the data.")
         st.stop()
         
     # --- FORM CONTROLS ---

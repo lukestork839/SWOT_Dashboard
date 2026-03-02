@@ -51,3 +51,9 @@ Thumbs.db
 # Logs
 *.log
 old_stuff/
+
+# Field calibration data (binary GPS/RINEX files)
+# Note: Calibration methodology documented in SCIENTIFIC_METHODOLOGY.md
+# Raw data available upon request
+Quinhagak*
+*Calibration*Readings*/
