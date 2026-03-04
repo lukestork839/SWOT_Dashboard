@@ -1102,10 +1102,11 @@ Watch Streamlit Cloud logs for:
 ## 12. Important File Locations
 
 ### Configuration
-- **Anchor Point**: `SWOT_Pull.py` lines 31-34
-- **Name Mapping**: `SWOT_Pull.py` lines 37-40
+- **Anchor Point**: `SWOT_Pull.py` lines 39-40
+- **Name Mapping**: `SWOT_Pull.py` lines 43-46
 - **Classification Filter**: `SWOT_Pull.py` line 21 (`DEFAULT_CLASSES = [3,4]`)
-- **Optimization Settings**: `SWOT_Pull.py` lines 24-27 (`KEEP_COLUMNS`, `ROWS_PER_CHUNK`)
+- **MAD Outlier Filter Config**: `SWOT_Pull.py` lines 23-26 (`MAD_THRESHOLD`, `MIN_POINTS_FOR_MAD`, `MIN_POINTS_AFTER_FILTER`)
+- **Optimization Settings**: `SWOT_Pull.py` lines 29-34 (`KEEP_COLUMNS`, `ROWS_PER_CHUNK`)
 - **River Color Mapping**: `dashboard_swot.py` lines 16-19
 - **Map Color-by Options**: `dashboard_swot.py` (sidebar form, "Map Display Options")
 - **Point Opacity Default**: `dashboard_swot.py` line 164 (`value=0.7` - adjustable 0.1 to 1.0)
@@ -1122,13 +1123,17 @@ Watch Streamlit Cloud logs for:
 - **Utility Scripts**: `rebuild_master.py` (quick master file regeneration)
 
 ### Critical Code Sections
-- **Distance Calculation**: `SWOT_Pull.py` (`haversine_vectorized` function)
-- **WSE Calculation**: `SWOT_Pull.py` (in `process_granule`)
-- **Slope Calculation**: `SWOT_Pull.py` (in `process_granule`)
-- **Checkpoint Detection**: `SWOT_Pull.py` (`is_date_already_processed` function)
-- **Master Rebuild**: `SWOT_Pull.py` (`rebuild_master_from_daily_csvs` function)
-- **CSV Export Columns**: `SWOT_Pull.py` line 213 (`cols_export` includes classification)
+- **Distance Calculation**: `SWOT_Pull.py` lines 57-77 (`haversine_vectorized` function)
+- **MAD Outlier Detection**: `SWOT_Pull.py` lines 79-105 (`calculate_mad_outliers` function)
+- **WSE Calculation**: `SWOT_Pull.py` line 215 (in `process_granule`)
+- **Classification Filter**: `SWOT_Pull.py` line 229 (in `process_granule`)
+- **MAD Outlier Filter Application**: `SWOT_Pull.py` lines 231-251 (per-reach filtering in `process_granule`)
+- **Slope Calculation**: `SWOT_Pull.py` lines 238-242 (in `process_granule`)
+- **Checkpoint Detection**: `SWOT_Pull.py` lines 110-113 (`is_date_already_processed` function)
+- **Master Rebuild**: `SWOT_Pull.py` lines 260-344 (`rebuild_master_from_daily_csvs` function)
+- **CSV Export Columns**: `SWOT_Pull.py` line 244 (`cols_export` includes classification and diagnostic columns)
 - **Dashboard Sampling**: `dashboard_swot.py` (systematic sampling logic)
+- **Data Quality Info Display**: `dashboard_swot.py` lines 409-419 (info box showing filtering methods)
 - **Detrending Data Prep**: `dashboard_swot.py` lines 251-276 (FIXED: uses linregress/Polynomial.fit, NOT np.polyfit)
 - **Detrended Profile Tab**: `dashboard_swot.py` tab3 lines 504-750 (FIXED: uses linregress/Polynomial.fit, NOT np.polyfit)
 - **Interval Slopes Quality Filters**: `dashboard_swot.py` lines 718-754 (SQL with HAVING, gap filter, outlier removal)
