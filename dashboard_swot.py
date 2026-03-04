@@ -254,104 +254,130 @@ def main():
             try a more flexible method.
             """)
 
-
-        st.write("### 3. Map Display Options")
-        map_color_by = st.selectbox(
-            "Color Points By:",
-            options=[
-                "River Name",
-                "WSE (Water Surface Elevation)",
-                "Classification",
-                "Detrended Residual (m)",
-                "Interval Slope (cm/km)"
-            ],
-            index=0,
-            help="Choose what metric to visualize on the map"
-        )
-
-        basemap_style = st.selectbox(
-            "Basemap Style:",
-            options=[
-                "OpenStreetMap",
-                "Terrain (Stamen)",
-                "Satellite (ESRI)",
-                "Watercolor (Stamen)",
-                "CartoDB Positron (Light)",
-                "CartoDB Dark Matter"
-            ],
-            index=0
-        )
-
-        point_opacity = st.slider(
-            "Point Opacity:",
-            min_value=0.1,
-            max_value=1.0,
-            value=0.7,
-            step=0.1,
-            help="Adjust transparency of map points (lower = more transparent, easier to see basemap)"
-        )
-
         submitted = st.form_submit_button("🔄 Update Analysis")
 
-    if not submitted and "data_loaded" not in st.session_state:
-        st.session_state.data_loaded = True
+    # --- MAP DISPLAY OPTIONS (OUTSIDE FORM FOR INSTANT UPDATES) ---
+    st.sidebar.write("---")
+    st.sidebar.write("### 3. Map Display Options")
+    st.sidebar.caption("💡 These update instantly without re-analyzing data")
 
-    if not selected_reaches:
-        st.warning("Please select at least one river.")
-        st.stop()
+    map_color_by = st.sidebar.selectbox(
+        "Color Points By:",
+        options=[
+            "River Name",
+            "WSE (Water Surface Elevation)",
+            "Classification",
+            "Detrended Residual (m)",
+            "Interval Slope (cm/km)"
+        ],
+        index=0,
+        help="Choose what metric to visualize on the map",
+        key="map_color_by"
+    )
 
-    # 3. FILTER DATA
-    rivers_sql = "'" + "','".join(selected_reaches) + "'"
+    basemap_style = st.sidebar.selectbox(
+        "Basemap Style:",
+        options=[
+            "OpenStreetMap",
+            "Terrain (Stamen)",
+            "Satellite (ESRI)",
+            "Watercolor (Stamen)",
+            "CartoDB Positron (Light)",
+            "CartoDB Dark Matter"
+        ],
+        index=0,
+        key="basemap_style"
+    )
 
-    # Base conditions
-    where_clause = f"""
-        WHERE Reach_Name IN ({rivers_sql})
-        AND Pass_Date >= '{start_date}'
-        AND Pass_Date <= '{end_date}'
-    """
+    point_opacity = st.sidebar.slider(
+        "Point Opacity:",
+        min_value=0.1,
+        max_value=1.0,
+        value=0.7,
+        step=0.1,
+        help="Adjust transparency of map points (lower = more transparent, easier to see basemap)",
+        key="point_opacity"
+    )
 
-    # Check total count first (with timeout protection)
-    try:
-        with st.spinner("Querying database..."):
-            count = con.execute(f"SELECT COUNT(*) FROM river_data {where_clause}").fetchone()[0]
-    except Exception as e:
-        st.error(f"Query failed: {e}")
-        st.stop()
-    
-    if count == 0:
-        st.warning("⚠️ No data matches your selection.")
-        st.stop()
+    # --- DATA LOADING WITH CACHING ---
+    # Only reload data when form is submitted OR when data is not yet loaded
+    if submitted or "viz_df" not in st.session_state:
+        if not selected_reaches:
+            st.warning("Please select at least one river.")
+            st.stop()
 
-    # --- SCIENTIFIC DOWNSAMPLING ---
-    if count > MAX_PLOT_POINTS:
-        step_size = int(count / MAX_PLOT_POINTS)
-        
-        # SCIENTIFIC QUERY: Sort by Location/Time, then take every Nth row
-        query_viz = f"""
-            SELECT * FROM (
-                SELECT *, row_number() OVER (ORDER BY Reach_Name, dist_km, Pass_Date) as rn 
-                FROM river_data {where_clause}
-            ) sub
-            WHERE rn % {step_size} = 0
+        # 3. FILTER DATA
+        rivers_sql = "'" + "','".join(selected_reaches) + "'"
+
+        # Base conditions
+        where_clause = f"""
+            WHERE Reach_Name IN ({rivers_sql})
+            AND Pass_Date >= '{start_date}'
+            AND Pass_Date <= '{end_date}'
         """
-        
-        viz_df = con.execute(query_viz).fetchdf()
-        
-        if submitted:
-            st.toast(f"ℹ️ Systematic Sampling: Showing 1 out of every {step_size} points.", icon="📉")
-    else:
-        query_viz = f"SELECT * FROM river_data {where_clause} ORDER BY Reach_Name, dist_km"
-        viz_df = con.execute(query_viz).fetchdf()
 
-    # --- STATISTICS (ALWAYS USE FULL DATA) ---
-    stats_query = f"""
-        SELECT Reach_Name, 
-               AVG(wse) as avg_wse, 
-               AVG(slope_calc) as avg_slope 
-        FROM river_data {where_clause}
-        GROUP BY Reach_Name
-    """
-    stats_df = con.execute(stats_query).fetchdf()
+        # Check total count first (with timeout protection)
+        try:
+            with st.spinner("Querying database..."):
+                count = con.execute(f"SELECT COUNT(*) FROM river_data {where_clause}").fetchone()[0]
+        except Exception as e:
+            st.error(f"Query failed: {e}")
+            st.stop()
+
+        if count == 0:
+            st.warning("⚠️ No data matches your selection.")
+            st.stop()
+
+        # --- SCIENTIFIC DOWNSAMPLING ---
+        if count > MAX_PLOT_POINTS:
+            step_size = int(count / MAX_PLOT_POINTS)
+
+            # SCIENTIFIC QUERY: Sort by Location/Time, then take every Nth row
+            query_viz = f"""
+                SELECT * FROM (
+                    SELECT *, row_number() OVER (ORDER BY Reach_Name, dist_km, Pass_Date) as rn
+                    FROM river_data {where_clause}
+                ) sub
+                WHERE rn % {step_size} = 0
+            """
+
+            viz_df = con.execute(query_viz).fetchdf()
+
+            if submitted:
+                st.toast(f"ℹ️ Systematic Sampling: Showing 1 out of every {step_size} points.", icon="📉")
+        else:
+            query_viz = f"SELECT * FROM river_data {where_clause} ORDER BY Reach_Name, dist_km"
+            viz_df = con.execute(query_viz).fetchdf()
+
+        # --- STATISTICS (ALWAYS USE FULL DATA) ---
+        stats_query = f"""
+            SELECT Reach_Name,
+                   AVG(wse) as avg_wse,
+                   AVG(slope_calc) as avg_slope
+            FROM river_data {where_clause}
+            GROUP BY Reach_Name
+        """
+        stats_df = con.execute(stats_query).fetchdf()
+
+        # Store in session state for reuse when map settings change
+        st.session_state.viz_df = viz_df
+        st.session_state.stats_df = stats_df
+        st.session_state.count = count
+        st.session_state.selected_reaches = selected_reaches
+        st.session_state.start_date = start_date
+        st.session_state.end_date = end_date
+        st.session_state.detrend_method = detrend_method
+        st.session_state.where_clause = where_clause
+    else:
+        # Use cached data (instant - no database query!)
+        viz_df = st.session_state.viz_df
+        stats_df = st.session_state.stats_df
+        count = st.session_state.count
+        selected_reaches = st.session_state.selected_reaches
+        start_date = st.session_state.start_date
+        end_date = st.session_state.end_date
+        detrend_method = st.session_state.detrend_method
+        where_clause = st.session_state.where_clause
 
     # --- MAIN PAGE ---
     st.title(PAGE_TITLE)
@@ -381,38 +407,42 @@ def main():
     )
 
     # --- CALCULATE ADVANCED METRICS FOR MAP VISUALIZATION ---
-    # These are used for map coloring options
+    # Only calculate when data is reloaded (not when just changing map display settings)
+    if submitted or "metrics_calculated" not in st.session_state or st.session_state.metrics_calculated != detrend_method:
+        # 1. Calculate Detrended Residuals (using cached function for performance)
+        baseline_pred, _, _ = calculate_detrending(
+            viz_df['dist_km'].tolist(),
+            viz_df['wse'].tolist(),
+            detrend_method
+        )
+        viz_df['detrended_residual'] = viz_df['wse'].values - baseline_pred
 
-    # 1. Calculate Detrended Residuals (using cached function for performance)
-    baseline_pred, _, _ = calculate_detrending(
-        viz_df['dist_km'].tolist(),
-        viz_df['wse'].tolist(),
-        detrend_method
-    )
-    viz_df['detrended_residual'] = viz_df['wse'].values - baseline_pred
+        # 2. Calculate Interval Slopes (100m bins)
+        viz_df['dist_bin'] = (viz_df['dist_km'] / 0.1).round() * 0.1
 
-    # 2. Calculate Interval Slopes (100m bins)
-    viz_df['dist_bin'] = (viz_df['dist_km'] / 0.1).round() * 0.1
+        # Calculate mean WSE per bin per river
+        bin_means = viz_df.groupby(['Reach_Name', 'dist_bin'])['wse'].mean().reset_index()
+        bin_means = bin_means.sort_values(['Reach_Name', 'dist_bin'])
 
-    # Calculate mean WSE per bin per river
-    bin_means = viz_df.groupby(['Reach_Name', 'dist_bin'])['wse'].mean().reset_index()
-    bin_means = bin_means.sort_values(['Reach_Name', 'dist_bin'])
+        # Calculate slope between consecutive bins
+        bin_means['prev_wse'] = bin_means.groupby('Reach_Name')['wse'].shift(1)
+        bin_means['prev_dist'] = bin_means.groupby('Reach_Name')['dist_bin'].shift(1)
+        bin_means['interval_slope'] = ((bin_means['wse'] - bin_means['prev_wse']) /
+                                         (bin_means['dist_bin'] - bin_means['prev_dist'])) * 100
 
-    # Calculate slope between consecutive bins
-    bin_means['prev_wse'] = bin_means.groupby('Reach_Name')['wse'].shift(1)
-    bin_means['prev_dist'] = bin_means.groupby('Reach_Name')['dist_bin'].shift(1)
-    bin_means['interval_slope'] = ((bin_means['wse'] - bin_means['prev_wse']) /
-                                     (bin_means['dist_bin'] - bin_means['prev_dist'])) * 100
+        # Merge back to viz_df
+        viz_df = viz_df.merge(
+            bin_means[['Reach_Name', 'dist_bin', 'interval_slope']],
+            on=['Reach_Name', 'dist_bin'],
+            how='left'
+        )
 
-    # Merge back to viz_df
-    viz_df = viz_df.merge(
-        bin_means[['Reach_Name', 'dist_bin', 'interval_slope']],
-        on=['Reach_Name', 'dist_bin'],
-        how='left'
-    )
+        # Fill NaN slopes with 0 for visualization
+        viz_df['interval_slope'] = viz_df['interval_slope'].fillna(0)
 
-    # Fill NaN slopes with 0 for visualization
-    viz_df['interval_slope'] = viz_df['interval_slope'].fillna(0)
+        # Update session state
+        st.session_state.viz_df = viz_df
+        st.session_state.metrics_calculated = detrend_method
 
     # --- TABS ---
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📈 Gradient Profile", "🔀 Elevation Difference", "🎯 Detrended Profile", "📐 Interval Slopes", "🗺️ Map View", "📄 Raw Data"])
@@ -1089,6 +1119,7 @@ def main():
                         fill=True,
                         fillColor=color,
                         fillOpacity=point_opacity,
+                        weight=0,  # No border for cleaner look
                         popup=folium.Popup(
                             f"<b>{reach_name}</b><br>"
                             f"WSE: {row['wse']:.2f} m<br>"
@@ -1123,6 +1154,7 @@ def main():
                     fill=True,
                     fillColor=hex_color,
                     fillOpacity=point_opacity,
+                    weight=0,  # No border for cleaner look
                     popup=folium.Popup(
                         f"<b>{row['Reach_Name']}</b><br>"
                         f"WSE: {wse_val:.2f} m<br>"
@@ -1169,6 +1201,7 @@ def main():
                         fill=True,
                         fillColor=color,
                         fillOpacity=point_opacity,
+                        weight=0,  # No border for cleaner look
                         popup=folium.Popup(
                             f"<b>{row['Reach_Name']}</b><br>"
                             f"WSE: {row['wse']:.2f} m<br>"
@@ -1250,6 +1283,7 @@ def main():
                     fill=True,
                     fillColor=hex_color,
                     fillOpacity=point_opacity,
+                    weight=0,  # No border for cleaner look
                     popup=folium.Popup(
                         f"<b>{row['Reach_Name']}</b><br>"
                         f"Interval Slope: {slope_val:.2f} cm/km<br>"
