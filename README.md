@@ -204,9 +204,16 @@ WSE = height - geoid - solid_earth_tide - pole_tide - load_tide
 
 ### Quality Filtering
 
-- **Classification:** Classes 3 & 4 only (water near land + open water)
-- **Justification:** Excludes low-coherence pixels (Classes 5-7) for higher confidence
+**Classification Filter:**
+- **Classes 3 & 4 only** (water near land + open water)
+- **Justification:** Excludes low-coherence pixels (Classes 5-7)
 - **Reference:** SWOT Handbook Table 6.1 (Page 76)
+
+**Outlier Filter:**
+- **Method:** MAD-based Modified Z-Score (threshold 3.5)
+- **Purpose:** Removes anomalous WSE measurements (plateau artifacts, bad data)
+- **Application:** Per-reach filtering during data ingestion
+- **Reference:** Iglewicz & Hoaglin (1993) standard outlier detection
 
 ### Gradient Analysis
 

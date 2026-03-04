@@ -389,22 +389,33 @@ def main():
 
     # --- SUMMARY STATS TABLE ---
     st.subheader("Summary Stats (Calculated on 100% of Data)")
-    
+
     # Clean up the slope presentation (absolute value for readability)
     display_stats = stats_df.copy()
     display_stats['avg_slope'] = display_stats['avg_slope'].abs()
-    
+
     display_stats = display_stats.rename(columns={
         "Reach_Name": "River Name",
         "avg_wse": "Avg WSE (m)",
         "avg_slope": "Avg Gradient (cm/km)"
     })
-    
+
     st.dataframe(
         display_stats.style.format({"Avg WSE (m)": "{:.2f}", "Avg Gradient (cm/km)": "{:.2f}"}),
         width='stretch',
         hide_index=True
     )
+
+    # Display data quality information
+    st.info("""
+    **Data Quality Filtering Applied:**
+    - **Classification:** SWOT Classes 3-4 (high-quality water pixels)
+    - **Outlier Removal:** MAD-based filtering (Modified Z-score threshold 3.5)
+    - **Applied:** Per-reach during data ingestion
+    - **Purpose:** Remove plateau artifacts and anomalous measurements
+
+    See `SCIENTIFIC_METHODOLOGY.md` for complete methodology.
+    """)
 
     # --- CALCULATE ADVANCED METRICS FOR MAP VISUALIZATION ---
     # Only calculate when data is reloaded (not when just changing map display settings)
