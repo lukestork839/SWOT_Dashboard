@@ -20,6 +20,11 @@ POLYGON_PATH = "/home/luke/University/SWOT/river_poly.zip"
 
 DEFAULT_CLASSES = [3,4]
 
+# MAD-based outlier filtering configuration
+MAD_THRESHOLD = 3.5  # Conservative threshold (Iglewicz & Hoaglin, 1993)
+MIN_POINTS_FOR_MAD = 10  # Minimum sample size for reliable MAD
+MIN_POINTS_AFTER_FILTER = 5  # Ensure statistical validity for slope calc
+
 # Optimization settings
 KEEP_COLUMNS = [
     'Reach_Name', 'Pass_Date', 'dist_km', 'wse',
@@ -66,10 +71,36 @@ def haversine_vectorized(lat1, lon1, lat2, lon2):
 
     a = np.sin(dphi / 2)**2 + \
         np.cos(phi1) * np.cos(phi2) * np.sin(dlambda / 2)**2
-    
+
     c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
-    
+
     return R * c
+
+def calculate_mad_outliers(wse_values, threshold=MAD_THRESHOLD):
+    """
+    Identify outliers using Modified Z-Score (MAD-based).
+
+    Reference: Iglewicz & Hoaglin (1993) "How to Detect and Handle Outliers"
+
+    Args:
+        wse_values: Array of WSE measurements (per-reach)
+        threshold: Modified Z-score threshold (default 3.5)
+
+    Returns:
+        Boolean mask (True = keep, False = outlier)
+    """
+    median = np.median(wse_values)
+    mad = np.median(np.abs(wse_values - median))
+
+    # Edge case: MAD = 0 (all values identical)
+    if mad == 0:
+        return np.ones(len(wse_values), dtype=bool)  # Keep all
+
+    # Modified Z-score (0.6745 makes MAD consistent with std dev)
+    modified_z_scores = 0.6745 * (wse_values - median) / mad
+
+    # Keep points within threshold
+    return np.abs(modified_z_scores) <= threshold
 
 def load_polygons():
     print(f"\n📂 Loading polygons from: {POLYGON_PATH}")
@@ -194,9 +225,35 @@ def process_granule(granule_result, gdf_polygons):
                     ANCHOR_LON
                 )
 
-                # Class 4 Only
+                # Classification filtering (SWOT quality classes)
                 df_final = df_exact[df_exact['classification'].isin(DEFAULT_CLASSES)]
-                
+
+                # MAD-based outlier filtering (per-reach)
+                # Purpose: Remove anomalous WSE values (plateau artifacts, bad measurements)
+                # Applied per-reach to account for different elevation ranges
+                if len(df_final) >= MIN_POINTS_FOR_MAD:
+                    for reach_name in df_final['Reach_Name'].unique():
+                        reach_mask = df_final['Reach_Name'] == reach_name
+                        reach_wse = df_final.loc[reach_mask, 'wse'].values
+
+                        if len(reach_wse) >= MIN_POINTS_FOR_MAD:
+                            # Calculate outlier mask
+                            keep_mask = calculate_mad_outliers(reach_wse, threshold=MAD_THRESHOLD)
+                            outliers_removed = (~keep_mask).sum()
+
+                            # Safety check: preserve minimum points
+                            if keep_mask.sum() >= MIN_POINTS_AFTER_FILTER:
+                                # Apply filter
+                                reach_indices = df_final[reach_mask].index
+                                indices_to_remove = reach_indices[~keep_mask]
+                                df_final = df_final.drop(indices_to_remove)
+
+                                # Log statistics
+                                pct_removed = (outliers_removed / len(reach_wse)) * 100
+                                tqdm.write(f"   MAD Filter ({reach_name}): {outliers_removed}/{len(reach_wse)} outliers removed ({pct_removed:.1f}%)")
+                            else:
+                                tqdm.write(f"   MAD Filter ({reach_name}): Skipped (would remove too many points)")
+
                 if len(df_final) > 5:
                     all_data.append(df_final)
 
