@@ -46,31 +46,28 @@ ANCHOR_LON = -161.372337  # West
   - Right Side: 0 km (Confluence/Anchor)
 - **Why?**: Ensures both rivers are measured from a common "Zero" point where they physically meet, enabling direct comparison of hydraulic gradients
 
-### Data Version Hierarchy
-SWOT provides multiple data versions with different quality levels:
-
-```
-Version D (Provisional) + Version 2.0 (Validated)
-```
-
-**Rule**: Version 2.0 takes precedence. If both exist for the same date, V2.0 overwrites V_D to correct geolocation errors.
+### Data Version
+We use **Version D** (`SWOT_L2_HR_PIXC_D`) exclusively — the latest science algorithm version with updated processing algorithms, calibration parameters, and geophysical models. Version D supersedes Version C (previously distributed as `SWOT_L2_HR_PIXC_2.0`). NASA reprocessed the full mission archive into Version D in early 2026.
 
 ### Quality Filtering
-**Classification Filter:**
-- We strictly use **Class 4** (Good water detection) points only
-- Defined in `DEFAULT_CLASSES = [4]` in SWOT_Pull.py
+**Full Filter Chain** (applied in order, updated 2026-03-07):
 
-**Cross-Track Filter:**
-- Generally filtered between 10km–60km to avoid:
-  - Nadir gap (center swath)
-  - Edge noise (far swath edges)
-- Currently handled within query logic
+1. **Rough bounding box** — ±0.02° buffer around polygon bounds (fast spatial pre-filter)
+2. **Exact polygon clipping** — `.within()` against river polygons from `river_poly.zip`
+3. **Cross-track distance** — 10–60 km from nadir (`CROSS_TRACK_MIN/MAX` in SWOT_Pull.py)
+   - Avoids nadir gap (poor interferometric baseline) and far-swath noise
+4. **Geolocation quality** — `geolocation_qual == 0` (no bit flags set)
+   - Removes pixels with phase unwrapping errors, layover contamination, poor geolocation
+5. **Classification quality** — `classification_qual == 0` (no bit flags set)
+   - Ensures classification assignment is reliable before filtering on class value
+6. **Classification** — Classes 3–4 only (`DEFAULT_CLASSES = [3,4]`)
+7. **MAD outlier filter** — Modified Z-score threshold 3.5, per-reach
 
-**Spatial Clipping:**
-- Data clipped using polygon boundaries from `river_poly.zip`
-- Two-stage filtering:
-  1. Rough bounding box filter (±0.02° buffer)
-  2. Exact geometry matching with `.within()` operation
+**Scientific Rationale** (SWOT Handbook Section 3.1.26, PO.DAAC best practices):
+- Quality flag variables are per-pixel bit-flags in L2_HR_PIXC
+- Value 0 means all quality checks passed (no flags raised)
+- Cross-track filtering removes geometrically unreliable pixels
+- Since we only need a few good points per pass, we apply maximally strict filtering
 
 ### Water Surface Elevation (WSE) Calculation
 ```python
@@ -153,9 +150,7 @@ SWOT/
 **Process:**
 1. Authenticate with NASA Earthdata (`earthaccess.login()`)
 2. Prompt user for date range (start/end dates)
-3. Search for SWOT data:
-   - `SWOT_L2_HR_PIXC_D` (Provisional)
-   - `SWOT_L2_HR_PIXC_2.0` (Validated)
+3. Search for SWOT data: `SWOT_L2_HR_PIXC_D` (Version D — current recommended)
 4. **Check for existing daily CSVs** (Resume capability)
    - Extract date from granule metadata without downloading
    - Skip granules with existing `YYYY-MM-DD_data.csv` files
@@ -169,7 +164,9 @@ SWOT/
    - Convert to GeoDataFrame and apply exact polygon clipping
    - Calculate WSE with geoid + tide corrections
    - Calculate distance from confluence anchor (Haversine)
-   - Filter for Classes 3-7
+   - Apply PIXC quality filters: cross-track (10–60km), geolocation_qual (==0), classification_qual (==0)
+   - Filter for Classes 3–4
+   - Apply MAD outlier filter (per-reach, threshold 3.5)
    - Calculate slope per reach
    - Export daily CSV to `batch_outputs/data/`
    - Clean up temp NetCDF file
@@ -1081,11 +1078,45 @@ Watch Streamlit Cloud logs for:
 - ✅ **Map styling improvements** (2026-02-18): Removed borders, shortened legends, better color visibility
 - ✅ **Streamlit Cloud deployment** (2026-02-25): Fixed Git LFS limitation with GitHub Releases data hosting, automatic download on missing data, fixed deprecation warnings
 - ✅ **MAD-based outlier filtering** (2026-03-04): Implemented Modified Z-Score with MAD (Iglewicz & Hoaglin, 1993) for removing anomalous WSE measurements
+- ✅ **PIXC quality flag filtering** (2026-03-07): Added cross-track distance (10-60km), geolocation_qual (==0), classification_qual (==0) filters with per-step logging
+
+### 2026-03-07: PIXC Quality Flag Filtering
+**Problem Addressed:**
+- Only filtering on `classification` (classes 3-4) and MAD outliers
+- SWOT PIXC data contains additional per-pixel quality flags not being used
+- Potentially including pixels with phase unwrapping errors, layover contamination, poor geolocation
+
+**Actions Taken:**
+1. Added `CROSS_TRACK_MIN` (10km) and `CROSS_TRACK_MAX` (60km) constants
+2. Extracted `geolocation_qual`, `classification_qual`, `cross_track` from NetCDF with safe fallbacks
+3. Added three new filter steps before classification filter (with per-step logging)
+4. Updated documentation (quality filtering section, file locations, pipeline description)
+
+**Filter Chain (in order):**
+1. Rough bounding box (existing)
+2. Exact polygon clipping (existing)
+3. Cross-track distance: 10–60km (NEW)
+4. Geolocation quality: == 0 (NEW)
+5. Classification quality: == 0 (NEW)
+6. Classification: classes 3–4 (existing)
+7. MAD outlier filter (existing)
+
+**Technical Details:**
+- Quality flags are bit-flag variables; value 0 means all checks passed
+- Cross-track uses `np.abs()` (can be negative for left swath)
+- All new extractions use `if var in ds else np.nan` for backward compatibility
+- Quality columns not exported to CSV (excluded by `cols_export` list)
+- Each filter step logs pass/total counts via `tqdm.write()`
+
+**Impact:**
+- Will significantly reduce point count per pass
+- Remaining points are higher quality (better WSE accuracy)
+- Requires data reprocessing (delete existing daily CSVs and re-run)
 
 ### Potential Improvements (Not Confirmed)
 - Automate Version 2.0 priority checking
 - Add height_uncertainty filtering thresholds
-- Implement cross-track filtering in SWOT_Pull.py (currently in dashboard)
+- ~~Implement cross-track filtering in SWOT_Pull.py~~ ✅ Done (2026-03-07)
 - Create automated re-processing script for Part 1 data
 - Add data quality metrics dashboard
 - Export high-resolution plots for publications
@@ -1105,7 +1136,8 @@ Watch Streamlit Cloud logs for:
 - **Anchor Point**: `SWOT_Pull.py` lines 39-40
 - **Name Mapping**: `SWOT_Pull.py` lines 43-46
 - **Classification Filter**: `SWOT_Pull.py` line 21 (`DEFAULT_CLASSES = [3,4]`)
-- **MAD Outlier Filter Config**: `SWOT_Pull.py` lines 23-26 (`MAD_THRESHOLD`, `MIN_POINTS_FOR_MAD`, `MIN_POINTS_AFTER_FILTER`)
+- **PIXC Quality Filter Config**: `SWOT_Pull.py` lines 23-25 (`CROSS_TRACK_MIN`, `CROSS_TRACK_MAX`)
+- **MAD Outlier Filter Config**: `SWOT_Pull.py` lines 27-29 (`MAD_THRESHOLD`, `MIN_POINTS_FOR_MAD`, `MIN_POINTS_AFTER_FILTER`)
 - **Optimization Settings**: `SWOT_Pull.py` lines 29-34 (`KEEP_COLUMNS`, `ROWS_PER_CHUNK`)
 - **River Color Mapping**: `dashboard_swot.py` lines 16-19
 - **Map Color-by Options**: `dashboard_swot.py` (sidebar form, "Map Display Options")
@@ -1126,8 +1158,9 @@ Watch Streamlit Cloud logs for:
 - **Distance Calculation**: `SWOT_Pull.py` lines 57-77 (`haversine_vectorized` function)
 - **MAD Outlier Detection**: `SWOT_Pull.py` lines 79-105 (`calculate_mad_outliers` function)
 - **WSE Calculation**: `SWOT_Pull.py` line 215 (in `process_granule`)
-- **Classification Filter**: `SWOT_Pull.py` line 229 (in `process_granule`)
-- **MAD Outlier Filter Application**: `SWOT_Pull.py` lines 231-251 (per-reach filtering in `process_granule`)
+- **PIXC Quality Filters**: `SWOT_Pull.py` lines 236-262 (cross-track, geolocation_qual, classification_qual in `process_granule`)
+- **Classification Filter**: `SWOT_Pull.py` line 265 (in `process_granule`)
+- **MAD Outlier Filter Application**: `SWOT_Pull.py` lines 267-287 (per-reach filtering in `process_granule`)
 - **Slope Calculation**: `SWOT_Pull.py` lines 238-242 (in `process_granule`)
 - **Checkpoint Detection**: `SWOT_Pull.py` lines 110-113 (`is_date_already_processed` function)
 - **Master Rebuild**: `SWOT_Pull.py` lines 260-344 (`rebuild_master_from_daily_csvs` function)

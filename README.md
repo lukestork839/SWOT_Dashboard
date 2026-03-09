@@ -22,7 +22,7 @@ This document provides complete verification of our data processing:
 - ✅ All processing steps verified against SWOT Handbook (JPL D-109532)
 - ✅ Field calibration with RTK GPS (±1 cm precision)
 - ✅ Code implementation references for every critical step
-- ✅ Classification filter justification (Classes 3-4)
+- ✅ Full 7-stage quality filter chain with scientific rationale
 - ✅ WSE formula component-by-component verification
 - ✅ Independent validation results
 
@@ -65,8 +65,8 @@ python SWOT_Pull.py
 **What it does:**
 1. Prompts you for date range (YYYY-MM-DD format)
 2. Authenticates with NASA Earthdata (first time only)
-3. Downloads SWOT NetCDF files for your date range
-4. Applies quality filters (Classification Classes 3-4)
+3. Downloads SWOT Version D NetCDF files for your date range
+4. Applies strict quality filter chain (PIXC quality flags, classification, MAD outlier detection)
 5. Calculates Water Surface Elevation with geoid + tide corrections
 6. Calculates distance from confluence using Haversine formula
 7. Exports daily CSV files (one per satellite pass)
@@ -204,16 +204,19 @@ WSE = height - geoid - solid_earth_tide - pole_tide - load_tide
 
 ### Quality Filtering
 
-**Classification Filter:**
-- **Classes 3 & 4 only** (water near land + open water)
-- **Justification:** Excludes low-coherence pixels (Classes 5-7)
-- **Reference:** SWOT Handbook Table 6.1 (Page 76)
+Seven sequential filters applied during data ingestion, reducing raw data by ~88%:
 
-**Outlier Filter:**
-- **Method:** MAD-based Modified Z-Score (threshold 3.5)
-- **Purpose:** Removes anomalous WSE measurements (plateau artifacts, bad data)
-- **Application:** Per-reach filtering during data ingestion
-- **Reference:** Iglewicz & Hoaglin (1993) standard outlier detection
+| Filter | Criterion | Purpose |
+|--------|-----------|---------|
+| Cross-track distance | 10–60 km from nadir | Avoid nadir gap + far-swath noise |
+| Geolocation quality | `geolocation_qual == 0` | Remove phase unwrapping errors, layover |
+| Classification quality | `classification_qual == 0` | Ensure reliable water classification |
+| Classification | Classes 3 & 4 only | Keep high-quality water pixels (Handbook Table 6.1) |
+| MAD outlier filter | Modified Z-score ≤ 3.5 | Remove anomalous WSE values (per-reach) |
+
+**Result:** 785,932 high-confidence points from 133 satellite passes (July 2023 – December 2025)
+
+**See:** `SCIENTIFIC_METHODOLOGY.md` for detailed rationale, references, and observed data reduction at each stage
 
 ### Gradient Analysis
 
@@ -278,8 +281,11 @@ SWOT_Dashboard/
 ANCHOR_LAT = 59.826973
 ANCHOR_LON = -161.372337
 
-# Quality filter
-DEFAULT_CLASSES = [3, 4]  # Water near land + Open water
+# Quality filters
+DEFAULT_CLASSES = [3, 4]       # Water near land + Open water
+CROSS_TRACK_MIN = 10000       # 10 km from nadir (meters)
+CROSS_TRACK_MAX = 60000       # 60 km from nadir (meters)
+MAD_THRESHOLD = 3.5           # Modified Z-score outlier threshold
 ```
 
 ### River Polygons
@@ -287,15 +293,6 @@ DEFAULT_CLASSES = [3, 4]  # Water near land + Open water
 `river_poly.zip` contains GeoPackage boundaries for:
 - Polygon 1: Uyak Creek
 - Polygon 2: Kanektok River
-
----
-
-## 🐛 Known Issues
-
-### Data Reprocessing Needed
-- **Issue:** Jan-May 2024 data contains mixed versions (Provisional + Validated)
-- **Impact:** Potential geolocation errors in early 2024 data
-- **Resolution:** Re-run `SWOT_Pull.py` for Jan-May 2024 (resumable feature makes this safe)
 
 ---
 
@@ -326,6 +323,6 @@ MIT License - SWOT data is publicly available through NASA Earthdata
 
 ---
 
-**Last Updated:** March 2, 2026
+**Last Updated:** March 7, 2026
 **Status:** ✅ Production • Live Dashboard • Field-Validated
 **Live URL:** https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/

@@ -16,16 +16,14 @@
 - **Measurement Type:** Ka-band Radar Interferometry (KaRIn)
 
 ### Version Strategy
-We retrieve both available versions with the following priority hierarchy:
+We use **Version D** exclusively — the latest science algorithm version:
 
-| Version | Status | Priority | Notes |
-|---------|--------|----------|-------|
-| **Version 2.0** (`SWOT_L2_HR_PIXC_2.0`) | Validated | **HIGH** | Corrected geolocation errors from Version D |
-| **Version D** (`SWOT_L2_HR_PIXC_D`) | Provisional | LOW | Used only when V2.0 unavailable for a given date |
+| Version | Collection Name | Status | Notes |
+|---------|-----------------|--------|-------|
+| **Version D** | `SWOT_L2_HR_PIXC_D` | **Current recommended** | Updated algorithms, calibration, and geophysical models |
+| Version C (2.0) | `SWOT_L2_HR_PIXC_2.0` | **Superseded** | Full mission archive reprocessed into Version D (early 2026) |
 
-**Implementation:** Both versions are searched via `earthaccess` API. When duplicate dates exist, Version 2.0 data overwrites Version D in the processing pipeline (implicit priority through concatenation order).
-
-**Known Issue:** Data from January-May 2024 contains mixed versions due to a processing interruption. These dates require reprocessing to ensure Version 2.0 consistency.
+**Implementation:** Version D data is searched via `earthaccess` API using `short_name="SWOT_L2_HR_PIXC_D"`. Version D includes reprocessed historical data (PGD0) covering the full mission timeline from March 2023 onward, plus forward-processed data (PID0) from May 2025 onward.
 
 ---
 
@@ -83,7 +81,7 @@ WSE = height - geoid - solid_earth_tide - pole_tide - load_tide
 | `pole_tide` | Pole tide displacement | IERS conventions | meters |
 | `load_tide_fes` | Ocean/atmospheric loading tide | FES2014 model | meters |
 
-**Note on Load Tide Variable:** Code checks for `load_tide_fes` first (Version 2.0), with fallback to `load_tide_height` (Version D) if unavailable.
+**Note on Load Tide Variable:** Code checks for `load_tide_fes` first, with fallback to `load_tide_height` if unavailable, for backward compatibility across data versions.
 
 ### Corrections Already Applied to `height`
 According to SWOT documentation, the `height` field has undergone:
@@ -105,55 +103,89 @@ According to SWOT documentation, the `height` field has undergone:
 
 ## 4. Quality Filtering
 
-### Current Implementation: Classification-Based Filter
+We apply seven sequential filters to extract only the highest-quality pixels. Since we need only a few hundred reliable points per pass for gradient calculation, we maximize strictness.
 
-**Filter Applied:**
+### Complete Filter Chain
+
+| # | Filter | Criterion | Rationale |
+|---|--------|-----------|-----------|
+| 1 | Rough bounding box | ±0.02° buffer | Fast spatial pre-filter |
+| 2 | Exact polygon clipping | `.within()` river polygon | Isolate river channel pixels |
+| 3 | Cross-track distance | 10–60 km from nadir | Avoid nadir gap and far-swath noise |
+| 4 | Geolocation quality | `geolocation_qual == 0` | Remove phase unwrapping errors, layover, poor geolocation |
+| 5 | Classification quality | `classification_qual == 0` | Ensure classification assignment is reliable |
+| 6 | Classification | Classes 3 & 4 only | Keep reliable water pixels (Table 6.1, Page 76) |
+| 7 | MAD outlier filter | Modified Z-score ≤ 3.5 | Remove anomalous WSE values (per-reach) |
+
+### PIXC Quality Flag Filters (Filters 3–5)
+
+**Reference:** SWOT Handbook Section 3.1.26 (Good, Suspect, Degraded, and Bad Quality); PO.DAAC best practices
+
+The L2_HR_PIXC product contains per-pixel bit-flag quality variables. A value of 0 means all quality checks passed (no flags raised). Any non-zero value indicates at least one quality concern.
+
 ```python
-DEFAULT_CLASSES = [3, 4]  # Class 3: Water near land, Class 4: Open water
-df_filtered = df[df['classification'].isin(DEFAULT_CLASSES)]
+# Cross-track: avoid nadir gap and far-swath noise
+CROSS_TRACK_MIN = 10000   # 10 km from nadir (meters)
+CROSS_TRACK_MAX = 60000   # 60 km from nadir (meters)
+ct_mask = (np.abs(df['cross_track']) >= CROSS_TRACK_MIN) & \
+          (np.abs(df['cross_track']) <= CROSS_TRACK_MAX)
+
+# Geolocation quality: no phase unwrapping/layover/positioning issues
+geo_mask = df['geolocation_qual'] == 0
+
+# Classification quality: classification assignment is trustworthy
+cls_qual_mask = df['classification_qual'] == 0
 ```
 
-### Classification Field - VERIFIED FROM SWOT USER HANDBOOK
+**`geolocation_qual` bit flags include:** `phase_unwrapping_suspect`, `layover_significant`, `phase_noise_suspect`
+
+**`classification_qual` bit flags include:** `no_coherent_gain`, `detected_water_but_no_prior_water`, `water_false_detection_rate_suspect`
+
+### Classification Filter (Filter 6)
 
 **Official Definitions (Table 6.1, Page 76, JPL D-109532):**
 
-| Class | Definition | Relevant for Rivers? |
-|-------|------------|---------------------|
-| 1 | Land | ❌ No |
-| 2 | Land near water | ❌ No |
-| **3** | **Water near land** | **✅ YES** |
-| **4** | **Open water** | **✅ YES** |
-| 5 | Dark water | ⚠️ Lower quality |
-| 6 | Low-coherence water near land | ⚠️ Lower quality |
-| 7 | Open low-coherence water | ⚠️ Lower quality |
+| Class | Definition | Our Usage |
+|-------|------------|-----------|
+| 1 | Land | ❌ Excluded |
+| 2 | Land near water | ❌ Excluded |
+| **3** | **Water near land** | **✅ Included** |
+| **4** | **Open water** | **✅ Included** |
+| 5 | Dark water | ❌ Excluded |
+| 6 | Low-coherence water near land | ❌ Excluded |
+| 7 | Open low-coherence water | ❌ Excluded |
 
-**Empirical Verification:**
-- June 2025 data download (9 passes, 384,027 total pixels)
-- QGIS inspection revealed Class 3 pixels with good spatial coverage in river channels
-- Both Class 3 and 4 represent high-quality water detection
+```python
+DEFAULT_CLASSES = [3, 4]
+df_final = df_exact[df_exact['classification'].isin(DEFAULT_CLASSES)]
+```
 
-**NASA Standard (from tutorials):**
-- `classification > 2` to select all water pixels (includes classes 3-7)
+**Rationale:** Classes 3 & 4 represent high-quality water detection. Class 3 is critical for narrow rivers (captures near-bank measurements). Classes 5–7 are low-coherence and introduce noise. Empirically validated via QGIS inspection of June 2025 data.
 
-**Our Rationale for Classes 3 & 4:**
-1. **Class 4 (Open water)**: Center channel, highest confidence
-2. **Class 3 (Water near land)**: River edges near banks, verified as good quality in QGIS
-3. **Excludes Class 5+**: Dark water and low-coherence classes may introduce noise
-4. **River-appropriate**: Narrow channels naturally contain water-land boundaries
-5. **Balanced approach**: Maximizes coverage while maintaining quality
+### MAD Outlier Filter (Filter 7)
 
-**Classification Algorithm (Handbook Page 75):**
-> "The classification algorithm includes automated water detection based on the surface reflectivity observed by KaRIn—water is assumed to be more reflective of radar signals than land at the wavelength and incidence angles of the KaRIn measurement."
+**Method:** Modified Z-Score using Median Absolute Deviation (Iglewicz & Hoaglin, 1993)
 
-### Additional Quality Variables Available (Not Currently Used)
+```python
+Modified Z = 0.6745 × (WSE - median) / MAD
+Outlier if |Modified Z| > 3.5
+```
 
-| Variable | Description | Potential Use |
-|----------|-------------|---------------|
-| `height_uncert` | Height measurement uncertainty | Could filter pixels with uncertainty > threshold |
-| `geolocation_qual` | Geolocation quality metric (0-3=good, 4+=poor) | NASA tutorials suggest `< 4` for good quality |
-| `cross_track` | Cross-track distance from nadir | Could filter to 10-60 km range to avoid nadir gap and edge noise |
+- Applied per-reach (independent filtering for each river)
+- Minimum 10 points required; preserves minimum 5 points
+- Threshold 3.5 is conservative (~3.5 sigma equivalent)
 
-**Future Consideration:** May implement `geolocation_qual < 4` in addition to classification filter if data quality issues emerge.
+### Observed Data Reduction
+
+Full run (July 2023 – December 2025, 295 granules):
+
+| Metric | Value |
+|--------|-------|
+| **Total points (after all filters)** | 785,932 |
+| **Compared to classification-only filtering** | ~88% reduction |
+| **Most aggressive filter** | `geolocation_qual == 0` (retains ~4–15%) |
+| **Kanektok River** | 748,767 points across 133 dates (avg 5,630/pass) |
+| **Uyak Creek** | 37,165 points across 122 dates (avg 305/pass) |
 
 ---
 
@@ -281,25 +313,27 @@ Trendlines: Linear regression (dashed lines) with slope displayed in legend
 ### Complete Processing Chain
 
 ```
-NASA Earthdata → earthaccess API → NetCDF download → SWOT_Pull.py
-                                                         ↓
-                                         Spatial clip + WSE calculation
-                                                         ↓
-                                         Classification filter (Class 4)
-                                                         ↓
-                                         Distance calculation (Haversine)
-                                                         ↓
-                                         Gradient calculation (linregress)
-                                                         ↓
-                                    Daily CSV: YYYY-MM-DD_data.csv
-                                                         ↓
-                                    Master CSV: master_all_data.csv
-                                                         ↓
-                                    optimize.py (CSV → Parquet)
-                                                         ↓
-                                    Parquet: master_all_data_part_*.parquet
-                                                         ↓
-                                    dashboard_swot.py (DuckDB + Plotly)
+NASA Earthdata → earthaccess API → SWOT_L2_HR_PIXC_D (Version D)
+         ↓
+SWOT_Pull.py: Download NetCDF → Extract pixel_cloud variables
+         ↓
+Spatial filtering (bounding box → exact polygon clipping)
+         ↓
+WSE calculation + distance from confluence (Haversine)
+         ↓
+PIXC quality filters (cross-track → geolocation_qual → classification_qual)
+         ↓
+Classification filter (Classes 3-4)
+         ↓
+MAD outlier filter (per-reach, threshold 3.5)
+         ↓
+Gradient calculation (scipy.stats.linregress)
+         ↓
+Daily CSV: batch_outputs/data/YYYY-MM-DD_data.csv
+         ↓
+Rebuild master: master_all_data.csv + optimized Parquet partitions
+         ↓
+dashboard_swot.py (DuckDB + Plotly + Folium)
 ```
 
 ### Output Data Schema
@@ -325,10 +359,13 @@ NASA Earthdata → earthaccess API → NetCDF download → SWOT_Pull.py
 
 | Decision | Rationale | Alternative Considered |
 |----------|-----------|------------------------|
-| Classification = 4 only | Empirically dominates river data; highest quality | Class > 2 (NASA standard) - may include lower quality pixels |
-| Haversine distance | Appropriate for <100km distances; computationally fast | Geodesic (Vincenty) - unnecessary precision for this scale |
-| Linear regression for gradient | Standard method; simple interpretation | Moving window / local gradient - adds complexity |
-| Reversed x-axis | Standard convention for longitudinal profiles | Forward axis - less intuitive for river profiles |
+| Version D only | Latest science algorithms; full mission reprocessed | Version C (2.0) — superseded, no longer recommended |
+| PIXC quality flags == 0 | Strictest filtering; we need few points not many | `geolocation_qual < 4` (less strict) — retains more uncertain pixels |
+| Classification = 3 & 4 | High-quality water classes; validated in QGIS | Class > 2 (NASA standard) — may include lower quality pixels |
+| MAD threshold 3.5 | Conservative; standard in hydrology literature | IQR — less robust for non-symmetric distributions |
+| Haversine distance | Appropriate for <100km distances; computationally fast | Geodesic (Vincenty) — unnecessary precision for this scale |
+| Linear regression for gradient | Standard method; simple interpretation | Moving window / local gradient — adds complexity |
+| Reversed x-axis | Standard convention for longitudinal profiles | Forward axis — less intuitive for river profiles |
 
 ### Assumptions
 
@@ -351,8 +388,9 @@ NASA Earthdata → earthaccess API → NetCDF download → SWOT_Pull.py
 - [x] **Classes 3 & 4 selection**: Verified via QGIS inspection of June 2025 data
 
 ### Remaining Validation Steps
-- [ ] Investigate: Should we add `geolocation_qual < 4` filter for additional quality control?
-- [ ] Consider: Cross-track distance filtering (10-60 km range to avoid nadir gap)
+- [x] ~~Investigate: Should we add `geolocation_qual` filter~~ → Implemented: `geolocation_qual == 0` (strictest)
+- [x] ~~Consider: Cross-track distance filtering~~ → Implemented: 10-60 km range
+- [x] ~~Classification quality filter~~ → Implemented: `classification_qual == 0`
 
 ### Cross-Validation
 - [ ] Compare SWOT gradients to:
@@ -395,25 +433,25 @@ duckdb >= 0.9.0           # In-memory SQL database
 
 ```
 SWOT/
-├── SWOT_Pull.py                    # Data ingestion & processing
-├── optimize.py                 # CSV → Parquet conversion
-├── dashboard_swot.py          # Interactive visualization
-├── river_poly.zip              # Polygon boundaries (GeoPackage)
-├── .swot_cli_config.json       # SWOT CLI configuration
+├── SWOT_Pull.py               # Data ingestion, processing & optimization
+├── dashboard_swot.py          # Interactive Streamlit visualization
+├── river_poly.zip             # Polygon boundaries (GeoPackage)
+├── .swot_cli_config.json      # SWOT CLI configuration
 ├── batch_outputs/
-│   ├── data/                   # Daily CSV files
-│   ├── master_all_data.csv     # Combined CSV
-│   └── master_all_data_part_*.parquet  # Partitioned Parquet
+│   ├── data/                  # Daily CSV files (checkpoints)
+│   ├── master_all_data.csv    # Combined CSV
+│   └── master_all_data_part_*.parquet  # Optimized partitions for dashboard
 └── Claude/
-    ├── Claude_notes.md         # Technical notes
-    └── SWOT_Processing_Documentation.md  # This file
+    ├── Claude_notes.md        # Development history & technical notes
+    └── SWOT_Handbook.pdf      # NASA reference document
 ```
 
 **Key Configuration Locations:**
-- Anchor coordinates: `SWOT_Pull.py` lines 21-24
-- Classification filter: `SWOT_Pull.py` line 18
-- Polygon path: `SWOT_Pull.py` line 16
-- Color mapping: `dashboard_swot.py` lines 16-19
+- Anchor coordinates: `SWOT_Pull.py` lines 40-41
+- Classification filter: `SWOT_Pull.py` line 21
+- PIXC quality filter config: `SWOT_Pull.py` lines 23-25
+- MAD outlier config: `SWOT_Pull.py` lines 27-29
+- Polygon path: `SWOT_Pull.py` line 19
 
 ---
 
@@ -463,8 +501,8 @@ SWOT/
 
 ---
 
-**Document Version:** 2.0
-**Last Updated:** 2026-02-04
+**Document Version:** 3.0
+**Last Updated:** 2026-03-07
 **Author:** Luke (University SWOT Project)
 **Verification Status:** ✅ All core processing steps verified against official SWOT User Handbook (JPL D-109532)
 **Reviewer:** [Pending - SWOT Expert Review]

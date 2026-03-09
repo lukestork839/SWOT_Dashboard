@@ -20,6 +20,10 @@ POLYGON_PATH = "/home/luke/University/SWOT/river_poly.zip"
 
 DEFAULT_CLASSES = [3,4]
 
+# PIXC quality flag filtering (cross-track distance in meters)
+CROSS_TRACK_MIN = 10000   # 10 km from nadir (avoid nadir gap)
+CROSS_TRACK_MAX = 60000   # 60 km from nadir (avoid far-swath noise)
+
 # MAD-based outlier filtering configuration
 MAD_THRESHOLD = 3.5  # Conservative threshold (Iglewicz & Hoaglin, 1993)
 MIN_POINTS_FOR_MAD = 10  # Minimum sample size for reliable MAD
@@ -201,9 +205,13 @@ def process_granule(granule_result, gdf_polygons):
                     'geoid': ds['geoid'].values[mask_rough],
                     'solid_tide': ds['solid_earth_tide'].values[mask_rough],
                     'pole_tide': ds['pole_tide'].values[mask_rough],
-                    'load_tide': ds['load_tide_fes'].values[mask_rough] if 'load_tide_fes' in ds else 
+                    'load_tide': ds['load_tide_fes'].values[mask_rough] if 'load_tide_fes' in ds else
                                  (ds['load_tide_height'].values[mask_rough] if 'load_tide_height' in ds else 0),
                     'height_uncertainty': ds['height_uncert'].values[mask_rough] if 'height_uncert' in ds else np.nan,
+                    # PIXC quality flags (for filtering, not exported)
+                    'geolocation_qual': ds['geolocation_qual'].values[mask_rough] if 'geolocation_qual' in ds else np.nan,
+                    'classification_qual': ds['classification_qual'].values[mask_rough] if 'classification_qual' in ds else np.nan,
+                    'cross_track': ds['cross_track'].values[mask_rough] if 'cross_track' in ds else np.nan,
                 })
 
                 gdf_temp = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
@@ -224,6 +232,34 @@ def process_granule(granule_result, gdf_polygons):
                     ANCHOR_LAT, 
                     ANCHOR_LON
                 )
+
+                # --- PIXC Quality Flag Filtering ---
+                # Filter order: cross-track → geolocation_qual → classification_qual → classification → MAD
+                # Rationale: Remove pixels with poor geometry/geolocation before science filters
+                n_before = len(df_exact)
+
+                # Cross-track distance filter (avoid nadir gap and far-swath noise)
+                if 'cross_track' in df_exact.columns and df_exact['cross_track'].notna().any():
+                    ct_mask = (np.abs(df_exact['cross_track']) >= CROSS_TRACK_MIN) & (np.abs(df_exact['cross_track']) <= CROSS_TRACK_MAX)
+                    n_pass = ct_mask.sum()
+                    tqdm.write(f"   Quality Filter: {n_pass:,}/{len(df_exact):,} points passed cross_track ({CROSS_TRACK_MIN/1000:.0f}-{CROSS_TRACK_MAX/1000:.0f}km)")
+                    df_exact = df_exact[ct_mask]
+
+                # Geolocation quality filter (0 = good, bit flags)
+                if 'geolocation_qual' in df_exact.columns and df_exact['geolocation_qual'].notna().any():
+                    geo_mask = df_exact['geolocation_qual'] == 0
+                    n_pass = geo_mask.sum()
+                    tqdm.write(f"   Quality Filter: {n_pass:,}/{len(df_exact):,} points passed geolocation_qual (== 0)")
+                    df_exact = df_exact[geo_mask]
+
+                # Classification quality filter (0 = good, bit flags)
+                if 'classification_qual' in df_exact.columns and df_exact['classification_qual'].notna().any():
+                    cls_qual_mask = df_exact['classification_qual'] == 0
+                    n_pass = cls_qual_mask.sum()
+                    tqdm.write(f"   Quality Filter: {n_pass:,}/{len(df_exact):,} points passed classification_qual (== 0)")
+                    df_exact = df_exact[cls_qual_mask]
+
+                if len(df_exact) == 0: continue
 
                 # Classification filtering (SWOT quality classes)
                 df_final = df_exact[df_exact['classification'].isin(DEFAULT_CLASSES)]
@@ -381,11 +417,8 @@ def main():
     print("\n🔍 Searching NASA Earthdata...")
     auth = earthaccess.login()
 
-    results_d = earthaccess.search_data(short_name="SWOT_L2_HR_PIXC_D", bounding_box=tuple(gdf_poly.total_bounds), temporal=(start_date, end_date))
-    results_2 = earthaccess.search_data(short_name="SWOT_L2_HR_PIXC_2.0", bounding_box=tuple(gdf_poly.total_bounds), temporal=(start_date, end_date))
-
-    all_results = results_d + results_2
-    print(f"   Found {len(all_results)} potential passes.")
+    all_results = earthaccess.search_data(short_name="SWOT_L2_HR_PIXC_D", bounding_box=tuple(gdf_poly.total_bounds), temporal=(start_date, end_date))
+    print(f"   Found {len(all_results)} potential passes (Version D).")
 
     if not all_results: return
 
