@@ -2,7 +2,7 @@
 
 **Document Purpose:** This document provides a complete scientific verification of our SWOT data processing pipeline, with references to the official NASA SWOT handbook and specific code implementations.
 
-**Last Updated:** March 2, 2026
+**Last Updated:** March 7, 2026
 **Reference Document:** SWOT Science Data Products User Handbook (JPL D-109532, May 2024)
 **Study Area:** Kanektok River and Uyak Creek, Alaska
 
@@ -12,8 +12,10 @@
 
 | Component | Status | Verification Method |
 |-----------|--------|---------------------|
-| **Data Product** | ✅ Verified | Using correct L2_HR_PIXC product, Version 2.0 priority |
+| **Data Product** | ✅ Verified | Using correct L2_HR_PIXC product, Version D (current recommended) |
+| **PIXC Quality Filters** | ✅ Verified | Cross-track, geolocation_qual, classification_qual filters applied |
 | **Classification Filter** | ✅ Verified | Classes 3-4 match Table 6.1, empirically validated in QGIS |
+| **MAD Outlier Filter** | ✅ Verified | Modified Z-score (Iglewicz & Hoaglin, 1993), per-reach |
 | **WSE Formula** | ✅ Verified | Formula matches JPL D-109532 Sections 11.3.1-11.3.5 exactly |
 | **Geoid Correction (EGM2008)** | ✅ Verified | ~13.3 m at study site, matches model predictions |
 | **Solid Earth Tide** | ✅ Verified | ~0.024 m magnitude, physically reasonable |
@@ -34,7 +36,7 @@
 
 1. [Overview](#overview)
 2. [Data Product Selection](#data-product-selection)
-3. [Quality Filtering - Classification System](#quality-filtering---classification-system)
+3. [Data Quality Filtering](#data-quality-filtering)
 4. [Water Surface Elevation Calculation](#water-surface-elevation-calculation)
 5. [Spatial Filtering](#spatial-filtering)
 6. [Distance Calculation](#distance-calculation)
@@ -57,7 +59,7 @@ Which river has a steeper gradient (hydraulic advantage) that could lead to chan
 - **Satellite:** NASA SWOT (Surface Water and Ocean Topography)
 - **Product:** L2_HR_PIXC (High-Resolution Pixel Cloud)
 - **Instrument:** Ka-band Radar Interferometry (KaRIn)
-- **Temporal Coverage:** January 2024 - Present
+- **Temporal Coverage:** July 2023 - December 2025 (133 satellite passes)
 - **Spatial Resolution:** ~10-100m pixel spacing
 
 ---
@@ -68,131 +70,219 @@ Which river has a steeper gradient (hydraulic advantage) that could lead to chan
 
 **SWOT Handbook Reference:** Section 5.3 (Product Fidelity)
 
-We use a two-tier version strategy:
+We use **Version D** exclusively — the latest and best science algorithm version:
 
-| Version | Collection Name | Priority | Justification |
-|---------|-----------------|----------|---------------|
-| **Version 2.0** | `SWOT_L2_HR_PIXC_2.0` | **HIGH** | Validated product with corrected geolocation errors |
-| **Version D** | `SWOT_L2_HR_PIXC_D` | LOW (fallback) | Provisional product, used only when V2.0 unavailable |
+| Version | Collection Name | Status | Notes |
+|---------|-----------------|--------|-------|
+| **Version D** | `SWOT_L2_HR_PIXC_D` | **Current recommended** | Updated algorithms, calibration, and geophysical models |
+| Version C (2.0) | `SWOT_L2_HR_PIXC_2.0` | **Superseded** | Full mission archive reprocessed into Version D (early 2026) |
 
-**Implementation:** `SWOT_Pull.py`, lines 70-75 (data search)
+**Implementation:** `SWOT_Pull.py` (data search)
 
 ```python
-# Search for both versions
-results_d = earthaccess.search_data(
+all_results = earthaccess.search_data(
     short_name='SWOT_L2_HR_PIXC_D',
-    temporal=(start_date, end_date)
-)
-results_v2 = earthaccess.search_data(
-    short_name='SWOT_L2_HR_PIXC_2.0',
     temporal=(start_date, end_date)
 )
 ```
 
-**Verification:** Version 2.0 data, when available, overwrites Version D data for the same date through concatenation order in the processing pipeline.
+**Version D improvements over Version C:** Updated processing algorithms, improved calibration parameters, updated geophysical models, better phase unwrapping, improved water classification at land-water boundaries, enhanced quality flagging.
 
 ---
 
-## Quality Filtering - Classification System
+## Data Quality Filtering
 
-### Classification Scheme
+Our pipeline applies seven sequential filters to extract only the highest-quality pixels from each SWOT pass. Since we only need a few hundred to a few thousand reliable points per pass for gradient calculation, we apply maximally strict filtering — preferring fewer, better points over larger volumes of uncertain data.
+
+### Filter Chain Overview
+
+Filters are applied in this order during data ingestion (`SWOT_Pull.py`, `process_granule()` function):
+
+| # | Filter | Criterion | Purpose | Typical Pass Rate |
+|---|--------|-----------|---------|-------------------|
+| 1 | Rough bounding box | ±0.02° around polygon | Fast spatial pre-filter | Varies by swath |
+| 2 | Exact polygon clipping | `.within()` river polygon | Isolate river channel pixels | Varies by swath |
+| 3 | **Cross-track distance** | 10–60 km from nadir | Remove nadir gap + far-swath noise | ~100% (study area geometry) |
+| 4 | **Geolocation quality** | `geolocation_qual == 0` | Remove pixels with geolocation errors | ~4–15% |
+| 5 | **Classification quality** | `classification_qual == 0` | Remove uncertain classifications | ~7–50% of remaining |
+| 6 | **Classification** | Classes 3 & 4 only | Keep only reliable water pixels | ~95–100% of remaining |
+| 7 | **MAD outlier filter** | Modified Z-score ≤ 3.5 | Remove anomalous WSE values | ~85–100% of remaining |
+
+### Observed Data Reduction
+
+From a full processing run (July 2023 – December 2025, 295 granules):
+
+| Metric | Before (old filters) | After (full filter chain) |
+|--------|---------------------|--------------------------|
+| **Total points** | ~6,700,000 | 785,932 |
+| **Reduction** | — | **88% fewer points** |
+| **Kanektok River** | — | 748,767 points (133 dates, avg 5,630/pass) |
+| **Uyak Creek** | — | 37,165 points (122 dates, avg 305/pass) |
+| **Filters applied** | Classification (3-4) only | All 7 filters |
+
+The old pipeline used only a classification filter. Adding PIXC quality flags removed ~88% of previously accepted pixels — overwhelmingly those with geolocation quality issues (phase unwrapping errors, layover, poor positioning). The remaining points have passed all quality checks and produce significantly more accurate WSE measurements.
+
+---
+
+### Filter 1–2: Spatial Filtering (Bounding Box + Polygon Clipping)
+
+See [Spatial Filtering](#spatial-filtering) section for full details.
+
+---
+
+### Filter 3: Cross-Track Distance
+
+**SWOT Handbook Reference:** Section 3.1.11 (Cross Track)
+
+**Variable:** `cross_track` (meters, signed — negative for left swath, positive for right)
+
+**Implementation:** `SWOT_Pull.py`, lines 23-25 and 241-246
+
+```python
+CROSS_TRACK_MIN = 10000   # 10 km from nadir
+CROSS_TRACK_MAX = 60000   # 60 km from nadir
+
+# Filter using absolute value (handles both left and right swath)
+ct_mask = (np.abs(df['cross_track']) >= CROSS_TRACK_MIN) & \
+          (np.abs(df['cross_track']) <= CROSS_TRACK_MAX)
+```
+
+**Why this filter matters:**
+- **Near nadir (< 10 km):** The interferometric baseline is too short, producing poor height accuracy. The KaRIn instrument has a physical nadir gap in its measurement swath.
+- **Far swath (> 60 km):** Increasing incidence angle degrades height accuracy and increases noise. Pixels at swath edges have the poorest geometric conditions.
+- **Sweet spot (10–60 km):** Best trade-off between baseline geometry and signal strength.
+
+**Observed impact:** ~100% pass rate at our study area. This is expected — the Kanektok/Uyak polygons are small enough that all pixels within them tend to fall in the valid cross-track range. This filter provides a safety net against occasional swath geometry issues.
+
+---
+
+### Filter 4: Geolocation Quality
+
+**SWOT Handbook Reference:** Section 3.1.26 (Good, Suspect, Degraded, and Bad Quality)
+
+**Variable:** `geolocation_qual` (per-pixel bit-flag integer)
+
+**Implementation:** `SWOT_Pull.py`, lines 248-253
+
+```python
+# Value 0 = all quality checks passed (no flags raised)
+geo_mask = df['geolocation_qual'] == 0
+```
+
+**What the bit flags indicate (when non-zero):**
+- `phase_unwrapping_suspect` — Phase unwrapping may have failed, producing incorrect heights
+- `layover_significant` — Radar layover from nearby terrain contaminates the pixel
+- `phase_noise_suspect` — Excessive phase noise degrades height accuracy
+- Other geolocation-related quality concerns
+
+**Why we require == 0 (strictest possible):**
+Phase unwrapping errors are the single largest source of incorrect WSE values in PIXC data. A single bit flag can indicate a height error of meters to tens of meters. Since we only need a few hundred good points per pass for slope calculation, we exclude any pixel with any geolocation concern.
+
+**Observed impact:** This is the most aggressive filter in the chain, typically retaining only 4–15% of spatially-clipped pixels. Most PIXC pixels in narrow river environments have at least one geolocation flag raised due to nearby terrain, vegetation, and land-water boundaries.
+
+**Reference:** PO.DAAC best practices recommend checking `geolocation_qual` for applications requiring accurate water surface elevation.
+
+---
+
+### Filter 5: Classification Quality
+
+**SWOT Handbook Reference:** Section 3.1.26 (Good, Suspect, Degraded, and Bad Quality)
+
+**Variable:** `classification_qual` (per-pixel bit-flag integer)
+
+**Implementation:** `SWOT_Pull.py`, lines 255-260
+
+```python
+# Value 0 = classification assignment is reliable
+cls_qual_mask = df['classification_qual'] == 0
+```
+
+**What the bit flags indicate (when non-zero):**
+- `no_coherent_gain` — Insufficient coherent radar signal for reliable classification
+- `detected_water_but_no_prior_water` — Water detected where prior water maps show none (possible false positive)
+- `water_false_detection_rate_suspect` — Elevated false detection probability
+
+**Why we require == 0:**
+If the classification itself is uncertain, filtering on classification value (Classes 3-4 in Filter 6) has reduced meaning. By first ensuring the classification assignment is trustworthy, we guarantee that the subsequent class filter is scientifically valid.
+
+**Observed impact:** Typically retains 7–50% of pixels that passed geolocation filtering. Combined with Filter 4, these two PIXC quality filters reduce the dataset to only the most geometrically and radiometrically reliable pixels.
+
+---
+
+### Filter 6: Classification (Water Type)
 
 **SWOT Handbook Reference:** Chapter 6, Table 6.1 (Page 76)
 
-The L2_HR_PIXC product classifies each pixel according to surface type and data quality:
+The L2_HR_PIXC product classifies each pixel by surface type and measurement quality:
 
 | Class | Definition | Our Usage |
 |-------|------------|-----------|
 | 1 | Land | ❌ Excluded |
 | 2 | Land near water | ❌ Excluded |
-| **3** | **Water near land** | ✅ **INCLUDED** |
-| **4** | **Open water** | ✅ **INCLUDED** |
+| **3** | **Water near land** | ✅ **Included** |
+| **4** | **Open water** | ✅ **Included** |
 | 5 | Dark water | ❌ Excluded |
 | 6 | Low-coherence water near land | ❌ Excluded |
 | 7 | Open low-coherence water | ❌ Excluded |
 
-### Our Quality Filter
-
-**Implementation:** `SWOT_Pull.py`, line 21
+**Implementation:** `SWOT_Pull.py`, line 21 and line 265
 
 ```python
 DEFAULT_CLASSES = [3, 4]  # Water near land + Open water
+df_final = df_exact[df_exact['classification'].isin(DEFAULT_CLASSES)]
 ```
 
-**Applied at:** `SWOT_Pull.py`, line 156
-
-```python
-# Filter for specified classification classes
-mask_class = np.isin(classification, DEFAULT_CLASSES)
-df_filtered = df_rough[mask_class].copy()
-```
-
-### Justification for Classes 3 & 4
-
-**From SWOT Handbook (Page 76):**
-> "Water pixels are generally expected to have high coherence."
-
-**Our Rationale:**
-1. **Class 3 (Water near land):** Critical for narrow rivers like our study sites. Captures river edges and near-bank measurements.
+**Justification for Classes 3 & 4:**
+1. **Class 3 (Water near land):** Critical for narrow rivers. Captures river edges and near-bank measurements where many valid water pixels exist.
 2. **Class 4 (Open water):** Center channel measurements with highest confidence.
-3. **Classes 5-7 excluded:** Low-coherence or dark water pixels have higher uncertainty and are typically associated with poor measurement quality.
+3. **Classes 5–7 excluded:** Low-coherence or dark water pixels have higher uncertainty and are typically associated with poor measurement quality.
 
-**Empirical Validation:**
-- Visual inspection in QGIS (June 2025 data) confirms Classes 3 & 4 provide excellent spatial coverage of river channels
-- Balanced approach between NASA's inclusive recommendations and conservative quality control
+**Empirical validation:** Visual inspection in QGIS (June 2025 data) confirms Classes 3 & 4 provide excellent spatial coverage of river channels.
 
-**Trade-off:** More restrictive than using all water classes (3-7), but ensures higher confidence in measurements for scientific gradient comparison.
+**Observed impact:** Nearly all pixels that pass Filters 3–5 are already classified as water (Classes 3 or 4), so this filter removes very few additional points. Its primary role is as a safety net against any non-water pixels that passed earlier filters.
 
 ---
 
-### Outlier Filtering - MAD-Based WSE Quality Control
+### Filter 7: MAD Outlier Filter (WSE Anomaly Removal)
 
-**Purpose:** Remove anomalous water surface elevation measurements that deviate significantly from the baseline trend.
+**Purpose:** Remove anomalous water surface elevation measurements that deviate significantly from the per-reach median.
 
-**Scientific Motivation:**
-SWOT measurements can include erroneous values from:
-- Plateau artifacts (incorrect geolocation placing river points on nearby terrain)
-- Poor measurement geometry (steep terrain, vegetation interference)
-- Atmospheric interference (ionospheric delays, tropospheric scattering)
-- Terrain-induced errors (layover, shadow effects in radar)
+**Scientific motivation:** Even after PIXC quality filtering, some measurements may include erroneous values from:
+- Plateau artifacts (pixels geolocated onto nearby terrain rather than river surface)
+- Residual atmospheric interference
+- Terrain-induced radar effects (shadow, multipath)
 
 **Method: Modified Z-Score (Median Absolute Deviation)**
 
-Formula:
 ```
 Modified Z = 0.6745 × (WSE - median) / MAD
 where MAD = median(|WSE - median|)
+Outlier if |Modified Z| > 3.5
 ```
 
 **Parameters:**
 - **Threshold:** 3.5 (conservative, standard in hydrology)
 - **Reference:** Iglewicz & Hoaglin (1993), "How to Detect and Handle Outliers"
-- **Application:** Per-reach (independent filtering for each river)
+- **Application:** Independent per-reach filtering (Kanektok and Uyak filtered separately)
 
-**Implementation Details:**
-- **Location:** `SWOT_Pull.py` line 201 (after classification filter)
-- **Timing:** Permanent filtering during data ingestion
-- **Minimum sample:** N ≥ 10 points required for MAD calculation
-- **Safety check:** Preserves minimum 5 points after filtering
+**Implementation:** `SWOT_Pull.py`, lines 267-287
 
-**Rationale for Per-Reach Filtering:**
+**Why per-reach filtering:**
 1. Rivers have different elevation ranges (Kanektok median ~28m, Uyak median ~14m)
 2. Independent hydrologic systems require independent outlier detection
-3. Prevents larger river's range from dominating smaller river's filtering
-4. Allows different natural variability patterns between rivers
+3. Prevents larger river's variability from affecting smaller river's filtering
 
-**Edge Case Handling:**
-- **N < 10:** Skip MAD filter (rely on classification filter only)
-- **MAD = 0:** Keep all points (no variability = no outliers)
-- **Over-filtering:** If <5 points remain, skip filtering for that reach
+**Edge case handling:**
+- **N < 10:** Skip MAD filter (insufficient data for reliable median)
+- **MAD = 0:** Keep all points (uniform values = no outliers detectable)
+- **Would remove too many:** If <5 points would remain, skip filtering for that reach
 
-**Validation:**
-Threshold of 3.5 is conservative (equivalent to 3.5 sigma in normal distribution), preserving ~99.7% of valid measurements while removing extreme anomalies. Test analysis shows typical removal rates: 10-15% for reaches with plateau artifacts, 0-5% for clean reaches.
+**Observed impact:** Kanektok River typically sees 0–1% removal (clean data). Uyak Creek sees 2–49% removal depending on the pass — the narrower channel is more susceptible to terrain-contaminated pixels that survive earlier filters.
 
-**Literature Support:**
+**Literature support:**
 - SWOT validation studies use IQR and modified Z-score filtering
-- Hydrology time series analysis standard practice (Iglewicz & Hoaglin, 1993)
-- Remote sensing outlier detection (MAE improved to 35cm after filtering)
+- Standard practice in hydrology time series analysis (Iglewicz & Hoaglin, 1993)
+- Threshold 3.5 is equivalent to ~3.5 sigma, preserving ~99.7% of normally distributed valid measurements
 
 ---
 
@@ -621,37 +711,43 @@ To ensure our SWOT processing was correct, we performed three independent checks
 
 | Processing Step | File | Lines | Function/Section |
 |----------------|------|-------|------------------|
-| **Data Product Search** | `SWOT_Pull.py` | 70-83 | Main execution loop |
-| **Classification Filter** | `SWOT_Pull.py` | 21, 156 | `DEFAULT_CLASSES` constant, applied in main loop |
-| **NetCDF Data Loading** | `SWOT_Pull.py` | 120-165 | Inside granule processing loop |
-| **Longitude Normalization** | `SWOT_Pull.py` | 57-59 | `normalize_longitude()` function |
-| **Geoid Correction** | `SWOT_Pull.py` | 165 | Variable: `geoid` |
-| **Solid Earth Tide** | `SWOT_Pull.py` | 165 | Variable: `solid_tide` |
-| **Pole Tide** | `SWOT_Pull.py` | 165 | Variable: `pole_tide` |
-| **Load Tide** | `SWOT_Pull.py` | 161-164 | Variable: `load_tide` (version-dependent) |
-| **WSE Calculation** | `SWOT_Pull.py` | 165-166 | Formula application |
-| **Spatial Bounding Box** | `SWOT_Pull.py` | 147-150 | Rough filter with buffer |
-| **Exact Polygon Clipping** | `SWOT_Pull.py` | 153-155 | GeoPandas `.within()` |
-| **Distance Calculation** | `SWOT_Pull.py` | 42-51, 168 | `haversine_vectorized()` function |
-| **Gradient Calculation** | `SWOT_Pull.py` | 183-184 | `scipy.stats.linregress()` |
-| **Daily CSV Export** | `SWOT_Pull.py` | 213-215 | Output with all variables |
+| **Data Product Search** | `SWOT_Pull.py` | 420 | `earthaccess.search_data()` — Version D only |
+| **NetCDF Data Loading** | `SWOT_Pull.py` | 197-215 | DataFrame creation in `process_granule()` |
+| **Longitude Normalization** | `SWOT_Pull.py` | 57-60 | `normalize_longitude()` function |
+| **Spatial Bounding Box** | `SWOT_Pull.py` | 199-203 | Rough filter with ±0.02° buffer |
+| **Exact Polygon Clipping** | `SWOT_Pull.py` | 217-218 | GeoPandas `.within()` |
+| **WSE Calculation** | `SWOT_Pull.py` | 223 | Formula application |
+| **Distance Calculation** | `SWOT_Pull.py` | 62-77, 229-234 | `haversine_vectorized()` function |
+| **Cross-Track Filter** | `SWOT_Pull.py` | 23-25, 241-246 | `CROSS_TRACK_MIN/MAX` constants |
+| **Geolocation Quality Filter** | `SWOT_Pull.py` | 248-253 | `geolocation_qual == 0` |
+| **Classification Quality Filter** | `SWOT_Pull.py` | 255-260 | `classification_qual == 0` |
+| **Classification Filter** | `SWOT_Pull.py` | 21, 265 | `DEFAULT_CLASSES = [3, 4]` |
+| **MAD Outlier Filter** | `SWOT_Pull.py` | 79-103, 267-287 | `calculate_mad_outliers()` function |
+| **Gradient Calculation** | `SWOT_Pull.py` | 299-304 | `scipy.stats.linregress()` |
+| **Daily CSV Export** | `SWOT_Pull.py` | 306-309 | Output with selected columns |
 
 ### Data Flow Diagram
 
 ```
-Raw SWOT NetCDF Files
+Raw SWOT NetCDF Files (Version D: SWOT_L2_HR_PIXC_D)
          ↓
-[Version Priority: V2.0 > V_D]
+Extract Variables (lat, lon, height, geoid, tides, classification,
+                   geolocation_qual, classification_qual, cross_track)
          ↓
-Extract Variables (lat, lon, height, geoid, tides, classification)
+[Filter 1: Rough Bounding Box (±0.02°)]
          ↓
-[Classification Filter: Classes 3-4]
-         ↓
-[Spatial Filter: Bounding Box → Exact Polygon]
+[Filter 2: Exact Polygon Clipping (.within())]
          ↓
 Calculate WSE = height - geoid - solid_tide - pole_tide - load_tide
-         ↓
 Calculate Distance from Confluence (Haversine)
+         ↓
+[Filter 3: Cross-Track Distance (10-60 km)]
+[Filter 4: Geolocation Quality (== 0)]
+[Filter 5: Classification Quality (== 0)]
+         ↓
+[Filter 6: Classification (Classes 3-4)]
+         ↓
+[Filter 7: MAD Outlier Filter (per-reach, threshold 3.5)]
          ↓
 Calculate Slope per River Reach (Linear Regression)
          ↓
@@ -672,14 +768,18 @@ Use this checklist to verify our processing against the SWOT handbook:
 
 ### Data Product
 - [x] Using correct product: `SWOT_L2_HR_PIXC` (L2 High-Resolution Pixel Cloud)
-- [x] Prioritizing validated data (Version 2.0) over provisional (Version D)
-- [x] Documented known issue: Jan-May 2024 mixed versions
+- [x] Using Version D exclusively (latest science algorithms, full mission reprocessed)
 
-### Classification Filtering
-- [x] Using Classes 3 & 4 (water near land + open water)
+### Data Quality Filtering
+- [x] Cross-track distance filter: 10-60 km (avoids nadir gap and far-swath noise)
+- [x] Geolocation quality filter: `geolocation_qual == 0` (removes phase unwrapping/layover errors)
+- [x] Classification quality filter: `classification_qual == 0` (ensures reliable classification)
+- [x] Classification filter: Classes 3 & 4 (water near land + open water)
 - [x] Classification definitions match Table 6.1 (Handbook Page 76)
 - [x] Justified exclusion of Classes 5-7 (low-coherence, dark water)
 - [x] Empirically validated with QGIS visual inspection
+- [x] MAD outlier filter: Modified Z-score threshold 3.5, per-reach
+- [x] Full filter chain reduces dataset by ~88% (retaining highest-quality points only)
 
 ### Water Surface Elevation Formula
 - [x] Correct formula: `WSE = height - geoid - solid_earth_tide - pole_tide - load_tide`
@@ -733,8 +833,11 @@ If you have questions about our methodology, here are resources:
 **Q: Why only Classes 3 & 4?**
 A: Balance between data coverage and quality. Classes 5-7 have low coherence (higher uncertainty). Our choice is more conservative than NASA's inclusive recommendations, appropriate for quantitative gradient comparison.
 
-**Q: How do you handle Version D vs. 2.0 data?**
-A: Version 2.0 always takes priority (concatenation order). Known issue: Jan-May 2024 has mixed versions and should be reprocessed.
+**Q: Which data version do you use?**
+A: Version D exclusively (`SWOT_L2_HR_PIXC_D`). Version D is the latest science algorithm version with updated processing, calibration, and geophysical models. NASA reprocessed the full mission archive from Version C into Version D in early 2026.
+
+**Q: Why are your quality filters so strict?**
+A: We only need a few hundred to a few thousand reliable points per pass for gradient calculation. By requiring `geolocation_qual == 0` and `classification_qual == 0`, we discard ~88% of pixels but retain only those with no quality flags raised. For slope-based analysis, accuracy of individual WSE measurements matters more than volume.
 
 **Q: Is the Haversine formula accurate enough?**
 A: Yes. For distances < 100 km, Haversine error is < 0.5%. Our maximum distance is ~70 km. For higher precision, we could use Vincenty formula, but it's unnecessary at this scale.
@@ -762,4 +865,4 @@ If you use or evaluate this methodology, please cite:
 
 **Document Status:** COMPLETE
 **Verification Status:** ✅ VERIFIED AGAINST JPL D-109532
-**Last Reviewed:** March 2, 2026
+**Last Reviewed:** March 7, 2026
