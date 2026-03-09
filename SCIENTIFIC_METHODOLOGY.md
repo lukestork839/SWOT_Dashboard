@@ -13,7 +13,8 @@
 | Component | Status | Verification Method |
 |-----------|--------|---------------------|
 | **Data Product** | ✅ Verified | Using correct L2_HR_PIXC product, Version D (current recommended) |
-| **PIXC Quality Filters** | ✅ Verified | Cross-track, geolocation_qual, classification_qual filters applied |
+| **Cross-Track Filter** | ✅ Applied | 10–60 km from nadir (avoids nadir gap + far-swath noise) |
+| **PIXC Quality Flags** | ⏳ Pending Expert Review | `geolocation_qual` and `classification_qual` — see [PIXC Quality Flag Reference](#pixc-quality-flag-reference) |
 | **Classification Filter** | ✅ Verified | Classes 3-4 match Table 6.1, empirically validated in QGIS |
 | **MAD Outlier Filter** | ✅ Verified | Modified Z-score (Iglewicz & Hoaglin, 1993), per-reach |
 | **WSE Formula** | ✅ Verified | Formula matches JPL D-109532 Sections 11.3.1-11.3.5 exactly |
@@ -26,7 +27,7 @@
 | **Field Calibration** | ✅ **SUCCESSFULLY VERIFIED** | RTK GPS (±1 cm precision), agreement within 1 m after datum correction |
 | **Code Implementation** | ✅ Verified | All critical steps documented with file:line references |
 
-**Overall Assessment:** 🎯 **ALL PROCESSING STEPS VERIFIED AND SCIENTIFICALLY SOUND**
+**Overall Assessment:** 🎯 **CORE PROCESSING VERIFIED AND SCIENTIFICALLY SOUND** — PIXC quality flag filtering pending expert review
 
 **Independent Validation:** Field measurements collected November 2025 with survey-grade RTK GPS confirm SWOT processing accuracy within measurement uncertainties.
 
@@ -92,35 +93,36 @@ all_results = earthaccess.search_data(
 
 ## Data Quality Filtering
 
-Our pipeline applies seven sequential filters to extract only the highest-quality pixels from each SWOT pass. Since we only need a few hundred to a few thousand reliable points per pass for gradient calculation, we apply maximally strict filtering — preferring fewer, better points over larger volumes of uncertain data.
+Our pipeline applies sequential filters to extract reliable pixels from each SWOT pass. The current active filter chain uses spatial filtering, cross-track distance, classification, and MAD outlier detection. Additional PIXC quality flag filters (`geolocation_qual`, `classification_qual`) are documented below as candidates but are **not yet applied** — they are pending expert review to determine which specific bit flags are appropriate for narrow river analysis.
 
 ### Filter Chain Overview
 
 Filters are applied in this order during data ingestion (`SWOT_Pull.py`, `process_granule()` function):
 
-| # | Filter | Criterion | Purpose | Typical Pass Rate |
-|---|--------|-----------|---------|-------------------|
-| 1 | Rough bounding box | ±0.02° around polygon | Fast spatial pre-filter | Varies by swath |
-| 2 | Exact polygon clipping | `.within()` river polygon | Isolate river channel pixels | Varies by swath |
-| 3 | **Cross-track distance** | 10–60 km from nadir | Remove nadir gap + far-swath noise | ~100% (study area geometry) |
-| 4 | **Geolocation quality** | `geolocation_qual == 0` | Remove pixels with geolocation errors | ~4–15% |
-| 5 | **Classification quality** | `classification_qual == 0` | Remove uncertain classifications | ~7–50% of remaining |
-| 6 | **Classification** | Classes 3 & 4 only | Keep only reliable water pixels | ~95–100% of remaining |
-| 7 | **MAD outlier filter** | Modified Z-score ≤ 3.5 | Remove anomalous WSE values | ~85–100% of remaining |
+| # | Filter | Criterion | Purpose | Status |
+|---|--------|-----------|---------|--------|
+| 1 | Rough bounding box | ±0.02° around polygon | Fast spatial pre-filter | ✅ Active |
+| 2 | Exact polygon clipping | `.within()` river polygon | Isolate river channel pixels | ✅ Active |
+| 3 | **Cross-track distance** | 10–60 km from nadir | Remove nadir gap + far-swath noise | ✅ Active |
+| 4 | **Geolocation quality** | `geolocation_qual` bit mask | Remove pixels with geolocation errors | ⏳ Not yet applied |
+| 5 | **Classification quality** | `classification_qual` bit mask | Remove uncertain classifications | ⏳ Not yet applied |
+| 6 | **Classification** | Classes 3 & 4 only | Keep only reliable water pixels | ✅ Active |
+| 7 | **MAD outlier filter** | Modified Z-score ≤ 3.5 | Remove anomalous WSE values | ✅ Active |
 
-### Observed Data Reduction
+### Why Quality Flag Filters Are Not Yet Applied
 
-From a full processing run (July 2023 – December 2025, 295 granules):
+Initial testing with `geolocation_qual == 0` (strictest) and `< 4` thresholds revealed that these filters remove nearly all data for narrow rivers like Uyak Creek (~50-100m wide). The quality flags are **bit-mask integers**, not simple 0-3 scales — a value of `< 4` only allows the first 2 bits, which is still extremely strict.
 
-| Metric | Before (old filters) | After (full filter chain) |
-|--------|---------------------|--------------------------|
-| **Total points** | ~6,700,000 | 785,932 |
-| **Reduction** | — | **88% fewer points** |
-| **Kanektok River** | — | 748,767 points (133 dates, avg 5,630/pass) |
-| **Uyak Creek** | — | 37,165 points (122 dates, avg 305/pass) |
-| **Filters applied** | Classification (3-4) only | All 7 filters |
+**Observed impact of strict quality flag filtering:**
+- Uyak Creek middle section (5-25 km): **0% data retention** — complete data loss
+- `classification_qual < 4`: only **2.8%** of Uyak pixels pass
+- Many flags fire simply because the river is narrow (land/water mixing, coherence loss), not because data is bad
 
-The old pipeline used only a classification filter. Adding PIXC quality flags removed ~88% of previously accepted pixels — overwhelmingly those with geolocation quality issues (phase unwrapping errors, layover, poor positioning). The remaining points have passed all quality checks and produce significantly more accurate WSE measurements.
+The flags are documented in detail in the [PIXC Quality Flag Reference](#pixc-quality-flag-reference) section. An expert consultation will determine which specific bit flags to exclude vs. allow for narrow river applications. Until then, the MAD outlier filter provides the primary quality control for WSE values.
+
+### Current Active Filters — Data Summary
+
+With the currently active filters (cross-track, classification 3-4, MAD outlier):
 
 ---
 
@@ -156,56 +158,45 @@ ct_mask = (np.abs(df['cross_track']) >= CROSS_TRACK_MIN) & \
 
 ---
 
-### Filter 4: Geolocation Quality
+### Filter 4: Geolocation Quality (NOT YET APPLIED)
+
+**Status:** ⏳ **Pending expert review** — see [PIXC Quality Flag Reference](#pixc-quality-flag-reference)
 
 **SWOT Handbook Reference:** Section 3.1.26 (Good, Suspect, Degraded, and Bad Quality)
 
-**Variable:** `geolocation_qual` (per-pixel bit-flag integer)
-
-**Implementation:** `SWOT_Pull.py`, lines 248-253
-
-```python
-# Value 0 = all quality checks passed (no flags raised)
-geo_mask = df['geolocation_qual'] == 0
-```
+**Variable:** `geolocation_qual` (per-pixel bit-flag integer, 23 individual flags)
 
 **What the bit flags indicate (when non-zero):**
 - `phase_unwrapping_suspect` — Phase unwrapping may have failed, producing incorrect heights
 - `layover_significant` — Radar layover from nearby terrain contaminates the pixel
 - `phase_noise_suspect` — Excessive phase noise degrades height accuracy
-- Other geolocation-related quality concerns
+- Various instrument and correction quality concerns (see full table in PIXC Quality Flag Reference)
 
-**Why we require == 0 (strictest possible):**
-Phase unwrapping errors are the single largest source of incorrect WSE values in PIXC data. A single bit flag can indicate a height error of meters to tens of meters. Since we only need a few hundred good points per pass for slope calculation, we exclude any pixel with any geolocation concern.
+**Why this filter is not yet applied:**
+Testing revealed that any threshold (`== 0`, `< 4`) removes nearly all data for narrow Uyak Creek. The flags are bit-masks where most bits fire on narrow rivers due to land/water boundary effects, not genuinely bad data. Expert consultation needed to determine which specific bits indicate bad WSE vs. just higher uncertainty.
 
-**Observed impact:** This is the most aggressive filter in the chain, typically retaining only 4–15% of spatially-clipped pixels. Most PIXC pixels in narrow river environments have at least one geolocation flag raised due to nearby terrain, vegetation, and land-water boundaries.
-
-**Reference:** PO.DAAC best practices recommend checking `geolocation_qual` for applications requiring accurate water surface elevation.
+**Planned approach:** After expert review, implement a custom bit mask that excludes only genuinely dangerous flags (instrument failures, bad geolocation) while allowing narrow-river-expected flags to pass.
 
 ---
 
-### Filter 5: Classification Quality
+### Filter 5: Classification Quality (NOT YET APPLIED)
+
+**Status:** ⏳ **Pending expert review** — see [PIXC Quality Flag Reference](#pixc-quality-flag-reference)
 
 **SWOT Handbook Reference:** Section 3.1.26 (Good, Suspect, Degraded, and Bad Quality)
 
-**Variable:** `classification_qual` (per-pixel bit-flag integer)
-
-**Implementation:** `SWOT_Pull.py`, lines 255-260
-
-```python
-# Value 0 = classification assignment is reliable
-cls_qual_mask = df['classification_qual'] == 0
-```
+**Variable:** `classification_qual` (per-pixel bit-flag integer, 16 individual flags)
 
 **What the bit flags indicate (when non-zero):**
 - `no_coherent_gain` — Insufficient coherent radar signal for reliable classification
-- `detected_water_but_no_prior_water` — Water detected where prior water maps show none (possible false positive)
+- `detected_water_but_no_prior_water` — Water detected where prior water maps show none
 - `water_false_detection_rate_suspect` — Elevated false detection probability
+- Various instrument and correction quality concerns (see full table in PIXC Quality Flag Reference)
 
-**Why we require == 0:**
-If the classification itself is uncertain, filtering on classification value (Classes 3-4 in Filter 6) has reduced meaning. By first ensuring the classification assignment is trustworthy, we guarantee that the subsequent class filter is scientifically valid.
+**Why this filter is not yet applied:**
+With `classification_qual < 4`, only **2.8%** of Uyak Creek pixels pass. Flags like `no_coherent_gain` and `coherent_power_suspect` fire on nearly all narrow river pixels because the channel width (~50-100m) is insufficient for coherent radar processing — this is expected behavior, not bad data.
 
-**Observed impact:** Typically retains 7–50% of pixels that passed geolocation filtering. Combined with Filter 4, these two PIXC quality filters reduce the dataset to only the most geometrically and radiometrically reliable pixels.
+**Planned approach:** Same as Filter 4 — expert consultation will determine which bits to exclude.
 
 ---
 
@@ -707,11 +698,11 @@ To ensure our SWOT processing was correct, we performed three independent checks
 
 ## PIXC Quality Flag Reference
 
-**Purpose:** This section documents all per-pixel quality flags available in the SWOT L2_HR_PIXC product and their relevance to narrow river analysis. Use this to determine which flags to include or exclude from filtering.
+**Purpose:** This section documents all per-pixel quality flags available in the SWOT L2_HR_PIXC product as **candidate filters** for narrow river analysis. These flags are **not yet applied** in our processing pipeline. The tables below are intended to guide expert consultation on which flags should be included in or excluded from filtering.
 
 **Source:** SWOT Product Description Document (D-56411, Rev C, Table 15); flag attributes extracted from Version D NetCDF files (PGE 5.4.2).
 
-**Status:** PENDING EXPERT REVIEW — Flags marked with a recommendation below need validation with SWOT domain expertise.
+**Status:** ⏳ PENDING EXPERT REVIEW — Flags marked "DISCUSS" need expert input to determine if they indicate bad data or just higher uncertainty on narrow rivers.
 
 ### Quality Flag Severity Convention
 
@@ -810,8 +801,8 @@ If a flag merely indicates higher uncertainty (but the WSE is still usable), we 
 | **WSE Calculation** | `SWOT_Pull.py` | 223 | Formula application |
 | **Distance Calculation** | `SWOT_Pull.py` | 62-77, 229-234 | `haversine_vectorized()` function |
 | **Cross-Track Filter** | `SWOT_Pull.py` | 23-25, 241-246 | `CROSS_TRACK_MIN/MAX` constants |
-| **Geolocation Quality Filter** | `SWOT_Pull.py` | 248-253 | `geolocation_qual == 0` |
-| **Classification Quality Filter** | `SWOT_Pull.py` | 255-260 | `classification_qual == 0` |
+| **Geolocation Quality Filter** | `SWOT_Pull.py` | — | Not yet applied (pending expert review) |
+| **Classification Quality Filter** | `SWOT_Pull.py` | — | Not yet applied (pending expert review) |
 | **Classification Filter** | `SWOT_Pull.py` | 21, 265 | `DEFAULT_CLASSES = [3, 4]` |
 | **MAD Outlier Filter** | `SWOT_Pull.py` | 79-103, 267-287 | `calculate_mad_outliers()` function |
 | **Gradient Calculation** | `SWOT_Pull.py` | 299-304 | `scipy.stats.linregress()` |
@@ -833,8 +824,8 @@ Calculate WSE = height - geoid - solid_tide - pole_tide - load_tide
 Calculate Distance from Confluence (Haversine)
          ↓
 [Filter 3: Cross-Track Distance (10-60 km)]
-[Filter 4: Geolocation Quality (== 0)]
-[Filter 5: Classification Quality (== 0)]
+[Filter 4: Geolocation Quality — NOT YET APPLIED (pending expert review)]
+[Filter 5: Classification Quality — NOT YET APPLIED (pending expert review)]
          ↓
 [Filter 6: Classification (Classes 3-4)]
          ↓
@@ -863,14 +854,13 @@ Use this checklist to verify our processing against the SWOT handbook:
 
 ### Data Quality Filtering
 - [x] Cross-track distance filter: 10-60 km (avoids nadir gap and far-swath noise)
-- [x] Geolocation quality filter: `geolocation_qual == 0` (removes phase unwrapping/layover errors)
-- [x] Classification quality filter: `classification_qual == 0` (ensures reliable classification)
+- [ ] Geolocation quality filter: `geolocation_qual` — pending expert review of which bit flags to apply
+- [ ] Classification quality filter: `classification_qual` — pending expert review of which bit flags to apply
 - [x] Classification filter: Classes 3 & 4 (water near land + open water)
 - [x] Classification definitions match Table 6.1 (Handbook Page 76)
 - [x] Justified exclusion of Classes 5-7 (low-coherence, dark water)
 - [x] Empirically validated with QGIS visual inspection
 - [x] MAD outlier filter: Modified Z-score threshold 3.5, per-reach
-- [x] Full filter chain reduces dataset by ~88% (retaining highest-quality points only)
 
 ### Water Surface Elevation Formula
 - [x] Correct formula: `WSE = height - geoid - solid_earth_tide - pole_tide - load_tide`
@@ -927,8 +917,8 @@ A: Balance between data coverage and quality. Classes 5-7 have low coherence (hi
 **Q: Which data version do you use?**
 A: Version D exclusively (`SWOT_L2_HR_PIXC_D`). Version D is the latest science algorithm version with updated processing, calibration, and geophysical models. NASA reprocessed the full mission archive from Version C into Version D in early 2026.
 
-**Q: Why are your quality filters so strict?**
-A: We only need a few hundred to a few thousand reliable points per pass for gradient calculation. By requiring `geolocation_qual == 0` and `classification_qual == 0`, we discard ~88% of pixels but retain only those with no quality flags raised. For slope-based analysis, accuracy of individual WSE measurements matters more than volume.
+**Q: Do you use PIXC quality flags (`geolocation_qual`, `classification_qual`)?**
+A: Not yet. Testing showed these bit-flag filters are too aggressive for narrow rivers — they remove nearly all Uyak Creek data (only 2.8% passes `classification_qual < 4`). The flags fire on most narrow river pixels due to land/water boundary effects, not genuinely bad data. We are consulting with SWOT domain experts to determine which specific bit flags to exclude. Currently, we rely on cross-track distance, classification (Classes 3-4), and MAD outlier filtering for quality control. See the [PIXC Quality Flag Reference](#pixc-quality-flag-reference) section for the full flag analysis.
 
 **Q: Is the Haversine formula accurate enough?**
 A: Yes. For distances < 100 km, Haversine error is < 0.5%. Our maximum distance is ~70 km. For higher precision, we could use Vincenty formula, but it's unnecessary at this scale.
@@ -954,6 +944,6 @@ If you use or evaluate this methodology, please cite:
 
 ---
 
-**Document Status:** COMPLETE
-**Verification Status:** ✅ VERIFIED AGAINST JPL D-109532
-**Last Reviewed:** March 7, 2026
+**Document Status:** IN PROGRESS — PIXC quality flag filtering pending expert review
+**Verification Status:** ✅ Core processing VERIFIED AGAINST JPL D-109532
+**Last Reviewed:** March 9, 2026

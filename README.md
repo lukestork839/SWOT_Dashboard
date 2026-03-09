@@ -204,19 +204,19 @@ WSE = height - geoid - solid_earth_tide - pole_tide - load_tide
 
 ### Quality Filtering
 
-Seven sequential filters applied during data ingestion, reducing raw data by ~88%:
+Filters currently applied during data ingestion:
 
-| Filter | Criterion | Purpose |
-|--------|-----------|---------|
-| Cross-track distance | 10–60 km from nadir | Avoid nadir gap + far-swath noise |
-| Geolocation quality | `geolocation_qual == 0` | Remove phase unwrapping errors, layover |
-| Classification quality | `classification_qual == 0` | Ensure reliable water classification |
-| Classification | Classes 3 & 4 only | Keep high-quality water pixels (Handbook Table 6.1) |
-| MAD outlier filter | Modified Z-score ≤ 3.5 | Remove anomalous WSE values (per-reach) |
+| Filter | Criterion | Purpose | Status |
+|--------|-----------|---------|--------|
+| Cross-track distance | 10–60 km from nadir | Avoid nadir gap + far-swath noise | ✅ Active |
+| Geolocation quality | `geolocation_qual` bit mask | Remove phase unwrapping errors, layover | ⏳ Pending expert review |
+| Classification quality | `classification_qual` bit mask | Ensure reliable water classification | ⏳ Pending expert review |
+| Classification | Classes 3 & 4 only | Keep high-quality water pixels (Handbook Table 6.1) | ✅ Active |
+| MAD outlier filter | Modified Z-score ≤ 3.5 | Remove anomalous WSE values (per-reach) | ✅ Active |
 
-**Result:** 785,932 high-confidence points from 133 satellite passes (July 2023 – December 2025)
+**Note:** PIXC quality flag filters (`geolocation_qual`, `classification_qual`) are not yet applied. Testing showed they remove nearly all data for narrow rivers like Uyak Creek. Expert consultation is underway to determine which specific bit flags to use. See `SCIENTIFIC_METHODOLOGY.md` for the full flag reference.
 
-**See:** `SCIENTIFIC_METHODOLOGY.md` for detailed rationale, references, and observed data reduction at each stage
+**See:** `SCIENTIFIC_METHODOLOGY.md` for detailed rationale, references, and quality flag analysis
 
 ### Gradient Analysis
 
