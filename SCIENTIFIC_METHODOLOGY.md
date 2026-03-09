@@ -705,6 +705,97 @@ To ensure our SWOT processing was correct, we performed three independent checks
 
 ---
 
+## PIXC Quality Flag Reference
+
+**Purpose:** This section documents all per-pixel quality flags available in the SWOT L2_HR_PIXC product and their relevance to narrow river analysis. Use this to determine which flags to include or exclude from filtering.
+
+**Source:** SWOT Product Description Document (D-56411, Rev C, Table 15); flag attributes extracted from Version D NetCDF files (PGE 5.4.2).
+
+**Status:** PENDING EXPERT REVIEW — Flags marked with a recommendation below need validation with SWOT domain expertise.
+
+### Quality Flag Severity Convention
+
+SWOT quality flags are bit-masks. Each bit represents a specific quality concern. A value of **0** means all checks passed.
+
+| Severity | Bit Range | Suffix | Meaning |
+|----------|-----------|--------|---------|
+| **Suspect** | Low bits (0–15) | `_suspect` | May have reduced quality; often usable with caution |
+| **Degraded** | Mid bits (18–24) | `_degraded`, `_missing` | Significantly reduced quality |
+| **Bad** | High bits (25–31) | `_bad` | Unreliable; should be excluded |
+
+---
+
+### `geolocation_qual` — Height/Position Quality
+
+This is the most important flag for WSE analysis. Controls whether the pixel's latitude, longitude, and height are trustworthy.
+
+| Bit | Mask | Flag Name | Severity | Description | Narrow River Impact | Recommendation |
+|-----|------|-----------|----------|-------------|--------------------|----|
+| 0 | 1 | `layover_significant` | Suspect | Radar layover from nearby terrain | Depends on terrain, not width | **DISCUSS** — Terrain-dependent; Alaska rivers are relatively flat |
+| 1 | 2 | `phase_noise_suspect` | Suspect | Phase noise exceeds threshold, reducing height precision | Slightly more common near edges | **DISCUSS** |
+| 2 | 4 | `phase_unwrapping_suspect` | Suspect | Phase unwrapping may have errors (~4.5m height jumps) | **HIGH on narrow rivers** — land/water boundaries cause phase discontinuities | **DISCUSS** — Major concern; can cause large WSE errors, but fires frequently on narrow channels |
+| 3 | 8 | `model_dry_tropo_cor_suspect` | Suspect | Dry tropospheric correction may be inaccurate | Width-independent | Exclude (instrument issue) |
+| 4 | 16 | `model_wet_tropo_cor_suspect` | Suspect | Wet tropospheric correction may be inaccurate | Width-independent | Exclude (instrument issue) |
+| 5 | 32 | `iono_cor_gim_ka_suspect` | Suspect | Ionospheric correction may be inaccurate | Width-independent | Exclude (instrument issue) |
+| 6 | 64 | `xovercal_suspect` | Suspect | Crossover calibration correction is suspect | Width-independent | Exclude (instrument issue) |
+| 10 | 1024 | `suspect_karin_telem` | Suspect | KaRIn telemetry outside expected ranges | Width-independent | Exclude (instrument issue) |
+| 12 | 4096 | `medium_phase_suspect` | Suspect | Medium-scale phase correction is suspect | Width-independent | Exclude (instrument issue) |
+| 13 | 8192 | `tvp_suspect` | Suspect | Orbit/attitude parameters suspect | Width-independent | Exclude (instrument issue) |
+| 14 | 16384 | `sc_event_suspect` | Suspect | Spacecraft event (maneuver, anomaly) | Width-independent | Exclude (instrument issue) |
+| 15 | 32768 | `small_karin_gap` | Suspect | Small data gap near pixel | Width-independent | Exclude (instrument issue) |
+| 19 | 524288 | `specular_ringing_degraded` | Degraded | Sidelobe artifacts from specular reflections | Moderate on narrow rivers | Exclude (measurement degraded) |
+| 20 | 1048576 | `model_dry_tropo_cor_missing` | Degraded | Dry tropo correction missing entirely | Width-independent | Exclude (no correction applied) |
+| 21 | 2097152 | `model_wet_tropo_cor_missing` | Degraded | Wet tropo correction missing | Width-independent | Exclude (no correction applied) |
+| 22 | 4194304 | `iono_cor_gim_ka_missing` | Degraded | Ionospheric correction missing | Width-independent | Exclude (no correction applied) |
+| 23 | 8388608 | `xovercal_missing` | Degraded | Crossover calibration missing | Width-independent | Exclude (no correction applied) |
+| 24 | 16777216 | `geolocation_is_from_refloc` | Degraded | Position from reference database, not measurement | Width-independent | Exclude (not a real measurement) |
+| 27 | 134217728 | `no_geolocation_bad` | Bad | No valid geolocation computed | Width-independent | **ALWAYS EXCLUDE** |
+| 28 | 268435456 | `medium_phase_bad` | Bad | Medium-scale phase correction failed | Width-independent | **ALWAYS EXCLUDE** |
+| 29 | 536870912 | `tvp_bad` | Bad | Orbit/attitude parameters bad | Width-independent | **ALWAYS EXCLUDE** |
+| 30 | 1073741824 | `sc_event_bad` | Bad | Severe spacecraft event | Width-independent | **ALWAYS EXCLUDE** |
+| 31 | 2147483648 | `large_karin_gap` | Bad | Large data gap | Width-independent | **ALWAYS EXCLUDE** |
+
+---
+
+### `classification_qual` — Water/Land Classification Confidence
+
+Indicates confidence in whether a pixel is correctly identified as water vs. land.
+
+| Bit | Mask | Flag Name | Severity | Description | Narrow River Impact | Recommendation |
+|-----|------|-----------|----------|-------------|--------------------|----|
+| 0 | 1 | `no_coherent_gain` | Suspect | No coherent processing gain achieved | **HIGH on narrow rivers** — land/water mixing destroys coherence | **DISCUSS** — Expected for edge pixels on narrow channels |
+| 1 | 2 | `power_close_to_noise_floor` | Suspect | Radar return near noise floor | **MODERATE** — fewer water scatterers in narrow channels | **DISCUSS** — May still be valid water detection |
+| 2 | 4 | `detected_water_but_no_prior_water` | Suspect | Water detected but not in prior database | **MODERATE** — prior databases may miss dynamic/braided channels | **DISCUSS** — Informational; if we know water exists, can ignore |
+| 3 | 8 | `detected_water_but_bright_land` | Suspect | Backscatter looks like bright land | Moderate — mixed pixels at edges | **DISCUSS** — Could be land contamination or genuine water |
+| 4 | 16 | `water_false_detection_rate_suspect` | Suspect | Local false detection rate elevated | Low–Moderate | **DISCUSS** |
+| 10 | 1024 | `suspect_karin_telem` | Suspect | KaRIn telemetry anomaly | Width-independent | Exclude (instrument issue) |
+| 11 | 2048 | `coherent_power_suspect` | Suspect | Coherent power measurement suspect | **HIGH on narrow rivers** — same cause as `no_coherent_gain` | **DISCUSS** — Expected for narrow channels |
+| 13 | 8192 | `tvp_suspect` | Suspect | Orbit/attitude suspect | Width-independent | Exclude (instrument issue) |
+| 14 | 16384 | `sc_event_suspect` | Suspect | Spacecraft event | Width-independent | Exclude (instrument issue) |
+| 15 | 32768 | `small_karin_gap` | Suspect | Small data gap | Width-independent | Exclude (instrument issue) |
+| 18 | 262144 | `in_air_pixel_degraded` | Degraded | Pixel height is above surface (land/water mix) | **HIGH on narrow rivers** — edge pixels common | Exclude (height is physically wrong) |
+| 19 | 524288 | `specular_ringing_degraded` | Degraded | Specular sidelobe contamination | Moderate | Exclude (measurement degraded) |
+| 27 | 134217728 | `coherent_power_bad` | Bad | Classification unreliable | Width-independent | **ALWAYS EXCLUDE** |
+| 29 | 536870912 | `tvp_bad` | Bad | Orbit/attitude bad | Width-independent | **ALWAYS EXCLUDE** |
+| 30 | 1073741824 | `sc_event_bad` | Bad | Severe spacecraft event | Width-independent | **ALWAYS EXCLUDE** |
+| 31 | 2147483648 | `large_karin_gap` | Bad | Large data gap | Width-independent | **ALWAYS EXCLUDE** |
+
+---
+
+### Key Question for Expert Review
+
+The flags marked **DISCUSS** above are the critical ones. For narrow rivers like Uyak Creek (~50-100m wide), these flags fire on the majority of pixels simply because the channel is narrow — not because the data is genuinely bad. The core question is:
+
+> **For each "DISCUSS" flag: does the flag indicate the WSE measurement is likely wrong, or just that the measurement has higher uncertainty?**
+
+If a flag merely indicates higher uncertainty (but the WSE is still usable), we can keep those pixels and rely on the MAD outlier filter (threshold 3.5) to catch any genuinely bad measurements that slip through.
+
+**Current filtering issue:** With `geolocation_qual == 0` (no flags allowed), we retain only 4–15% of pixels and lose virtually all Uyak Creek data in the 5–25 km middle section. With `geolocation_qual < 4`, we keep pixels with `layover_significant` (bit 0) and `phase_noise_suspect` (bit 1) but still exclude `phase_unwrapping_suspect` (bit 2). The `classification_qual` filter at any strict threshold removes most narrow-river pixels due to `no_coherent_gain` and `detected_water_but_no_prior_water`.
+
+**Possible approach after expert review:** Build a custom bit mask that excludes only the genuinely dangerous flags (instrument issues, bad flags, degraded flags) while allowing the narrow-river-expected flags to pass.
+
+---
+
 ## Code Implementation Reference
 
 ### Quick Reference: Where to Find Critical Processing Steps

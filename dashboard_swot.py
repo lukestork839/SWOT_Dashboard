@@ -85,6 +85,45 @@ def calculate_detrending(dist_km, wse, method):
 
     return baseline_pred, coeffs, method_name
 
+@st.cache_data(ttl=3600)
+def detect_anomalies_mad(data, threshold=3.5):
+    """
+    Detect anomalies using Modified Z-score (Median Absolute Deviation).
+    Cached to avoid recomputing on every interaction.
+
+    Args:
+        data: pandas Series with metric values
+        threshold: Modified Z-score threshold (default 3.5, matches pipeline)
+
+    Returns:
+        Boolean array where True = anomaly
+    """
+    median = data.median()
+    mad = np.median(np.abs(data - median))
+
+    if mad == 0:
+        # Fallback to IQR if MAD is 0 (all values identical)
+        q1, q3 = data.quantile(0.25), data.quantile(0.75)
+        iqr = q3 - q1
+        return (data < q1 - 1.5 * iqr) | (data > q3 + 1.5 * iqr)
+
+    modified_z_score = 0.6745 * (data - median) / mad
+    return np.abs(modified_z_score) > threshold
+
+def compute_moving_average(series, window, min_periods=2):
+    """
+    Compute rolling moving average with edge handling.
+
+    Args:
+        series: pandas Series (time-indexed)
+        window: Number of periods for rolling window
+        min_periods: Minimum observations required (default 2)
+
+    Returns:
+        pandas Series with moving average values
+    """
+    return series.rolling(window=window, min_periods=min_periods, center=False).mean()
+
 def download_data_if_needed():
     """
     Download parquet data from GitHub Releases if not available locally.
@@ -146,28 +185,33 @@ def get_database_connection():
     """
     Initialize DuckDB connection with parquet data.
     Cached as a resource to prevent reconnecting on every interaction.
+    Prefers partition files (from SWOT_Pull.py) over the single optimized file.
     """
     try:
-        # Download data if needed (handles Git LFS on Streamlit Cloud)
-        parquet_file = download_data_if_needed()
-
-        if parquet_file is None:
-            return None
-
-        # Initialize DuckDB connection
         con = duckdb.connect(database=':memory:')
 
-        # Create view from parquet file
-        con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{parquet_file}')")
+        # Prefer partition files from SWOT_Pull.py (local development)
+        partition_pattern = os.path.join(DATA_DIR, "master_all_data_part_*.parquet")
+        import glob
+        partition_files = glob.glob(partition_pattern)
+
+        if partition_files:
+            con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{partition_pattern}')")
+        else:
+            # Fallback: download optimized file (Streamlit Cloud)
+            parquet_file = download_data_if_needed()
+            if parquet_file is None:
+                return None
+            con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{parquet_file}')")
 
         # Memory optimization: Set DuckDB memory limit (recommended for Streamlit Cloud)
-        con.execute("SET memory_limit='600MB'")  # Reduced for smaller dataset
+        con.execute("SET memory_limit='600MB'")
 
         return con
 
     except Exception as e:
         st.error(f"❌ Could not connect to data: {e}")
-        st.info("💡 This usually means the parquet files are missing or corrupted.")
+        st.info("💡 This usually means the parquet files are missing or corrupted. Try running `python SWOT_Pull.py` to regenerate the data.")
         import traceback
         st.code(traceback.format_exc())
         return None
@@ -456,7 +500,7 @@ def main():
         st.session_state.metrics_calculated = detrend_method
 
     # --- TABS ---
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📈 Gradient Profile", "🔀 Elevation Difference", "🎯 Detrended Profile", "📐 Interval Slopes", "🗺️ Map View", "📄 Raw Data"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📈 Gradient Profile", "🔀 Elevation Difference", "🎯 Detrended Profile", "📐 Interval Slopes", "🗺️ Map View", "📄 Raw Data", "⏳ Temporal Evolution"])
 
     with tab1:
         st.subheader(f"River Profile ({start_date} to {end_date})")
@@ -1365,7 +1409,7 @@ def main():
         st.subheader("Data Inspector")
         st.dataframe(viz_df.head(1000), width="stretch")
         st.caption(f"Showing first 1000 rows of visualization sample.")
-        
+
         csv = viz_df.to_csv(index=False).encode('utf-8')
         st.download_button(
             "⬇️ Download Sample Data as CSV",
@@ -1374,6 +1418,548 @@ def main():
             "text/csv",
             key='download-csv'
         )
+
+    with tab7:
+        st.subheader(f"⏳ Temporal Evolution Analysis ({start_date} to {end_date})")
+
+        st.info("""
+        **Purpose:** Track how river metrics evolve over time to identify trends, seasonal patterns, and anomalies.
+
+        **Data:** Monthly averages from ~157 satellite passes spanning ~2.4 years (average ~10 day frequency)
+        """)
+
+        # User controls
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # Future: Add aggregation level selector (per-pass, monthly, seasonal)
+            st.markdown("**Temporal Aggregation:** Monthly averages")
+
+        with col2:
+            ma_window = st.selectbox(
+                "Moving Average Window:",
+                options=[3, 6, 12],
+                index=1,  # Default 6
+                help="Number of consecutive months to average for trendline smoothing"
+            )
+
+        show_moving_avg = st.checkbox(
+            "Show Moving Average Trendlines",
+            value=True,
+            help="Overlay smoothed trends on time series plots"
+        )
+
+        # Check session state cache
+        if submitted or "temporal_df" not in st.session_state or st.session_state.get("temporal_where") != where_clause:
+            with st.spinner("Computing temporal metrics..."):
+                # Query for monthly aggregated metrics
+                monthly_query = f"""
+                WITH monthly_passes AS (
+                    SELECT
+                        DATE_TRUNC('month', CAST(Pass_Date AS DATE)) AS month,
+                        Pass_Date,
+                        Reach_Name,
+                        AVG(wse) AS avg_wse_per_pass,
+                        STDDEV(wse) AS std_wse_per_pass,
+                        AVG(ABS(slope_calc)) AS avg_gradient_per_pass,
+                        STDDEV(slope_calc) AS std_gradient_per_pass,
+                        COUNT(*) AS point_count
+                    FROM river_data
+                    {where_clause}
+                    GROUP BY month, Pass_Date, Reach_Name
+                )
+                SELECT
+                    month,
+                    Pass_Date,
+                    Reach_Name,
+                    AVG(avg_wse_per_pass) AS monthly_avg_wse,
+                    AVG(std_wse_per_pass) AS monthly_wse_std,
+                    AVG(avg_gradient_per_pass) AS monthly_avg_gradient,
+                    AVG(std_gradient_per_pass) AS monthly_gradient_std,
+                    COUNT(DISTINCT Pass_Date) AS passes_in_month,
+                    SUM(point_count) AS total_points
+                FROM monthly_passes
+                GROUP BY month, Pass_Date, Reach_Name
+                ORDER BY Pass_Date, Reach_Name
+                """
+
+                temporal_df = con.execute(monthly_query).fetchdf()
+                st.session_state.temporal_df = temporal_df
+                st.session_state.temporal_where = where_clause
+
+                # Query for WSE evolution at specific distances
+                dist_evolution_query = f"""
+                WITH distance_targets AS (
+                    SELECT * FROM (VALUES (10.0), (20.0), (30.0), (40.0), (50.0), (60.0)) AS t(target_dist)
+                ),
+                nearest_points AS (
+                    SELECT
+                        DATE_TRUNC('month', CAST(Pass_Date AS DATE)) AS month,
+                        Pass_Date,
+                        Reach_Name,
+                        dist_km,
+                        wse,
+                        dt.target_dist,
+                        ABS(dist_km - dt.target_dist) AS dist_diff,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY Pass_Date, Reach_Name, dt.target_dist
+                            ORDER BY ABS(dist_km - dt.target_dist)
+                        ) AS rn
+                    FROM river_data, distance_targets dt
+                    {where_clause}
+                )
+                SELECT
+                    month,
+                    Pass_Date,
+                    Reach_Name,
+                    target_dist,
+                    AVG(wse) AS wse_at_distance,
+                    COUNT(*) AS sample_size
+                FROM nearest_points
+                WHERE rn <= 5
+                  AND dist_diff < 0.5
+                GROUP BY month, Pass_Date, Reach_Name, target_dist
+                ORDER BY Pass_Date, target_dist, Reach_Name
+                """
+
+                dist_evolution_df = con.execute(dist_evolution_query).fetchdf()
+                st.session_state.dist_evolution_df = dist_evolution_df
+
+                # Query for elevation difference over time (only if both rivers selected)
+                if len(selected_reaches) == 2:
+                    elev_diff_query = f"""
+                    WITH binned_wse AS (
+                        SELECT
+                            DATE_TRUNC('month', CAST(Pass_Date AS DATE)) AS month,
+                            Pass_Date,
+                            ROUND(dist_km / 0.5) * 0.5 AS dist_bin,
+                            Reach_Name,
+                            AVG(wse) AS avg_wse
+                        FROM river_data
+                        {where_clause}
+                        GROUP BY month, Pass_Date, dist_bin, Reach_Name
+                        HAVING COUNT(*) >= 3
+                    ),
+                    kanektok AS (
+                        SELECT month, Pass_Date, dist_bin, avg_wse AS k_wse
+                        FROM binned_wse WHERE Reach_Name = 'Kanektok_River'
+                    ),
+                    uyak AS (
+                        SELECT month, Pass_Date, dist_bin, avg_wse AS u_wse
+                        FROM binned_wse WHERE Reach_Name = 'Uyak_Creek'
+                    )
+                    SELECT
+                        k.month,
+                        k.Pass_Date,
+                        AVG(k.k_wse - u.u_wse) AS avg_elev_diff,
+                        STDDEV(k.k_wse - u.u_wse) AS std_elev_diff,
+                        COUNT(*) AS overlap_bins
+                    FROM kanektok k
+                    JOIN uyak u ON k.Pass_Date = u.Pass_Date AND k.dist_bin = u.dist_bin
+                    GROUP BY k.month, k.Pass_Date
+                    ORDER BY k.Pass_Date
+                    """
+
+                    elev_diff_df = con.execute(elev_diff_query).fetchdf()
+                    st.session_state.elev_diff_df = elev_diff_df
+        else:
+            temporal_df = st.session_state.temporal_df
+            dist_evolution_df = st.session_state.dist_evolution_df
+            if len(selected_reaches) == 2 and "elev_diff_df" in st.session_state:
+                elev_diff_df = st.session_state.elev_diff_df
+
+        # === TIME SERIES VISUALIZATIONS ===
+        st.markdown("### 1. Time Series: Key Metrics")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("#### Average WSE per Pass")
+
+            fig_wse = go.Figure()
+
+            for reach in selected_reaches:
+                reach_data = temporal_df[temporal_df['Reach_Name'] == reach].sort_values('Pass_Date')
+
+                # Raw monthly data
+                fig_wse.add_trace(go.Scatter(
+                    x=reach_data['Pass_Date'],
+                    y=reach_data['monthly_avg_wse'],
+                    mode='markers+lines',
+                    name=reach,
+                    marker=dict(size=6, color=COLOR_MAP[reach]),
+                    line=dict(width=1.5, color=COLOR_MAP[reach]),
+                    hovertemplate='<b>%{fullData.name}</b><br>' +
+                                  'Date: %{x|%Y-%m-%d}<br>' +
+                                  'Avg WSE: %{y:.2f} m<br>' +
+                                  '<extra></extra>',
+                    connectgaps=False
+                ))
+
+                # Moving average overlay
+                if show_moving_avg and len(reach_data) >= ma_window:
+                    ma_series = reach_data.set_index('Pass_Date')['monthly_avg_wse']
+                    ma_values = compute_moving_average(ma_series, window=ma_window)
+
+                    fig_wse.add_trace(go.Scatter(
+                        x=ma_values.index,
+                        y=ma_values.values,
+                        mode='lines',
+                        name=f"{reach} ({ma_window}-month MA)",
+                        line=dict(width=3, color=COLOR_MAP[reach], dash='dash'),
+                        opacity=0.8,
+                        hovertemplate=f'<b>Moving Avg ({ma_window})</b><br>' +
+                                      'WSE: %{y:.2f} m<br>' +
+                                      '<extra></extra>'
+                    ))
+
+            fig_wse.update_layout(
+                xaxis_title="Date",
+                yaxis_title="Water Surface Elevation (m)",
+                height=400,
+                template="plotly_white",
+                hovermode='x unified',
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+
+            st.plotly_chart(fig_wse, use_container_width=True)
+
+        with col2:
+            st.markdown("#### Average Gradient per Pass")
+
+            fig_grad = go.Figure()
+
+            for reach in selected_reaches:
+                reach_data = temporal_df[temporal_df['Reach_Name'] == reach].sort_values('Pass_Date')
+
+                fig_grad.add_trace(go.Scatter(
+                    x=reach_data['Pass_Date'],
+                    y=reach_data['monthly_avg_gradient'],
+                    mode='markers+lines',
+                    name=reach,
+                    marker=dict(size=6, color=COLOR_MAP[reach]),
+                    line=dict(width=1.5, color=COLOR_MAP[reach]),
+                    hovertemplate='<b>%{fullData.name}</b><br>' +
+                                  'Date: %{x|%Y-%m-%d}<br>' +
+                                  'Gradient: %{y:.2f} cm/km<br>' +
+                                  '<extra></extra>',
+                    connectgaps=False
+                ))
+
+                if show_moving_avg and len(reach_data) >= ma_window:
+                    ma_series = reach_data.set_index('Pass_Date')['monthly_avg_gradient']
+                    ma_values = compute_moving_average(ma_series, window=ma_window)
+
+                    fig_grad.add_trace(go.Scatter(
+                        x=ma_values.index,
+                        y=ma_values.values,
+                        mode='lines',
+                        name=f"{reach} ({ma_window}-month MA)",
+                        line=dict(width=3, color=COLOR_MAP[reach], dash='dash'),
+                        opacity=0.8
+                    ))
+
+            fig_grad.update_layout(
+                xaxis_title="Date",
+                yaxis_title="Hydraulic Gradient (cm/km)",
+                height=400,
+                template="plotly_white",
+                hovermode='x unified'
+            )
+
+            st.plotly_chart(fig_grad, use_container_width=True)
+
+        # Second row: WSE at specific distances and elevation difference
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("#### WSE Evolution at Fixed Distances")
+
+            fig_dist = go.Figure()
+
+            for reach in selected_reaches:
+                for target_dist in [10, 20, 30, 40, 50, 60]:
+                    subset = dist_evolution_df[
+                        (dist_evolution_df['Reach_Name'] == reach) &
+                        (dist_evolution_df['target_dist'] == target_dist)
+                    ].sort_values('Pass_Date')
+
+                    if len(subset) == 0:
+                        continue
+
+                    # Opacity varies with distance (closer = more opaque)
+                    opacity = 1.0 - (target_dist / 70) * 0.5
+
+                    fig_dist.add_trace(go.Scatter(
+                        x=subset['Pass_Date'],
+                        y=subset['wse_at_distance'],
+                        mode='lines',
+                        name=f"{reach} @ {int(target_dist)}km",
+                        line=dict(width=2, color=COLOR_MAP[reach]),
+                        opacity=opacity,
+                        hovertemplate=f'<b>{reach} @ {int(target_dist)}km</b><br>' +
+                                      'Date: %{x|%Y-%m-%d}<br>' +
+                                      'WSE: %{y:.2f} m<br>' +
+                                      '<extra></extra>',
+                        connectgaps=False,
+                        legendgroup=reach
+                    ))
+
+            fig_dist.update_layout(
+                xaxis_title="Date",
+                yaxis_title="Water Surface Elevation (m)",
+                height=400,
+                template="plotly_white",
+                hovermode='x unified'
+            )
+
+            st.plotly_chart(fig_dist, use_container_width=True)
+
+        with col2:
+            st.markdown("#### Elevation Difference Over Time")
+
+            if len(selected_reaches) == 2 and "elev_diff_df" in st.session_state:
+                elev_diff_df = st.session_state.elev_diff_df
+                fig_diff = go.Figure()
+
+                elev_diff_sorted = elev_diff_df.sort_values('Pass_Date')
+
+                # Main trend line with error bars
+                fig_diff.add_trace(go.Scatter(
+                    x=elev_diff_sorted['Pass_Date'],
+                    y=elev_diff_sorted['avg_elev_diff'],
+                    mode='markers+lines',
+                    name='Kanektok - Uyak',
+                    marker=dict(size=6, color='darkgreen'),
+                    line=dict(width=2, color='darkgreen'),
+                    error_y=dict(
+                        type='data',
+                        array=elev_diff_sorted['std_elev_diff'],
+                        visible=True,
+                        color='lightgray',
+                        thickness=1
+                    ),
+                    hovertemplate='<b>Elevation Difference</b><br>' +
+                                  'Date: %{x|%Y-%m-%d}<br>' +
+                                  'Diff: %{y:.3f} m<br>' +
+                                  '<extra></extra>'
+                ))
+
+                # Zero reference line
+                fig_diff.add_hline(
+                    y=0,
+                    line_dash="dash",
+                    line_color="gray",
+                    line_width=1,
+                    annotation_text="Equal Elevation",
+                    annotation_position="bottom right"
+                )
+
+                # Moving average
+                if show_moving_avg and len(elev_diff_sorted) >= ma_window:
+                    ma_series = elev_diff_sorted.set_index('Pass_Date')['avg_elev_diff']
+                    ma_values = compute_moving_average(ma_series, window=ma_window)
+
+                    fig_diff.add_trace(go.Scatter(
+                        x=ma_values.index,
+                        y=ma_values.values,
+                        mode='lines',
+                        name=f'{ma_window}-month MA',
+                        line=dict(width=3, color='darkgreen', dash='dot')
+                    ))
+
+                fig_diff.update_layout(
+                    xaxis_title="Date",
+                    yaxis_title="Elevation Difference (m)",
+                    height=400,
+                    template="plotly_white",
+                    hovermode='x unified'
+                )
+
+                st.plotly_chart(fig_diff, use_container_width=True)
+            else:
+                st.warning("⚠️ Elevation difference requires both rivers to be selected.")
+
+        # === ANOMALY DETECTION ===
+        with st.expander("🚨 Anomaly Detection", expanded=False):
+            st.markdown("""
+            **Method:** Modified Z-Score with MAD (Median Absolute Deviation)
+            - **Threshold:** 3.5 (matches data pipeline filtering)
+            - **Detection:** Flags passes where WSE or gradient deviate significantly from typical values
+            - **Purpose:** Identify potential measurement errors or extreme hydrologic events
+            """)
+
+            # Detect anomalies for each river and metric
+            anomalies_list = []
+
+            for reach in selected_reaches:
+                reach_data = temporal_df[temporal_df['Reach_Name'] == reach].copy()
+
+                if len(reach_data) == 0:
+                    continue
+
+                # Detect WSE anomalies
+                reach_data['is_anomaly_wse'] = detect_anomalies_mad(
+                    reach_data['monthly_avg_wse'],
+                    threshold=3.5
+                )
+
+                # Detect gradient anomalies
+                reach_data['is_anomaly_gradient'] = detect_anomalies_mad(
+                    reach_data['monthly_avg_gradient'],
+                    threshold=3.5
+                )
+
+                # Mark as anomalous if either metric is anomalous
+                reach_data['is_anomaly'] = (
+                    reach_data['is_anomaly_wse'] | reach_data['is_anomaly_gradient']
+                )
+
+                anomalies_list.append(reach_data[reach_data['is_anomaly']])
+
+            if anomalies_list:
+                anomaly_df = pd.concat(anomalies_list, ignore_index=True)
+            else:
+                anomaly_df = pd.DataFrame()
+
+            if len(anomaly_df) > 0:
+                st.warning(f"⚠️ Detected {len(anomaly_df)} anomalous passes")
+
+                st.dataframe(
+                    anomaly_df[[
+                        'Pass_Date', 'Reach_Name', 'monthly_avg_wse',
+                        'monthly_avg_gradient', 'is_anomaly_wse', 'is_anomaly_gradient'
+                    ]].style.format({
+                        'monthly_avg_wse': '{:.2f} m',
+                        'monthly_avg_gradient': '{:.2f} cm/km'
+                    }),
+                    use_container_width=True
+                )
+            else:
+                st.success("✅ No anomalies detected in selected data")
+
+        # === HEATMAP SECTION ===
+        with st.expander("📊 Heatmap: Distance × Time Evolution", expanded=False):
+            st.markdown("""
+            **Visualization:** 2D color plot showing WSE across both space (distance) and time (months)
+            - **X-axis:** Month
+            - **Y-axis:** Distance from confluence (km)
+            - **Color:** Average WSE (m)
+            - **Use:** Identify spatial-temporal patterns (e.g., upstream vs downstream changes over time)
+            """)
+
+            # Query for heatmap (only run when section expanded)
+            if "heatmap_df" not in st.session_state or st.session_state.get("heatmap_where") != where_clause:
+                with st.spinner("Computing heatmap data..."):
+                    heatmap_query = f"""
+                    WITH binned_data AS (
+                        SELECT
+                            DATE_TRUNC('month', CAST(Pass_Date AS DATE)) AS month,
+                            ROUND(dist_km / 1.0) * 1.0 AS dist_bin,
+                            Reach_Name,
+                            AVG(wse) AS avg_wse,
+                            COUNT(*) AS point_count
+                        FROM river_data
+                        {where_clause}
+                        GROUP BY month, dist_bin, Reach_Name
+                        HAVING COUNT(*) >= 3
+                    )
+                    SELECT month, dist_bin, Reach_Name, avg_wse, point_count
+                    FROM binned_data
+                    ORDER BY Reach_Name, month, dist_bin
+                    """
+
+                    heatmap_df = con.execute(heatmap_query).fetchdf()
+                    st.session_state.heatmap_df = heatmap_df
+                    st.session_state.heatmap_where = where_clause
+            else:
+                heatmap_df = st.session_state.heatmap_df
+
+            for reach in selected_reaches:
+                reach_heatmap = heatmap_df[heatmap_df['Reach_Name'] == reach]
+
+                if len(reach_heatmap) == 0:
+                    st.warning(f"No heatmap data for {reach}")
+                    continue
+
+                # Pivot to matrix format
+                pivot_data = reach_heatmap.pivot_table(
+                    index='dist_bin',
+                    columns='month',
+                    values='avg_wse',
+                    aggfunc='mean'
+                )
+
+                fig_heat = go.Figure(data=go.Heatmap(
+                    z=pivot_data.values,
+                    x=pivot_data.columns,
+                    y=pivot_data.index,
+                    colorscale='Viridis',
+                    colorbar=dict(title="WSE (m)"),
+                    hovertemplate='Month: %{x|%Y-%m}<br>' +
+                                  'Distance: %{y:.0f} km<br>' +
+                                  'Avg WSE: %{z:.2f} m<br>' +
+                                  '<extra></extra>'
+                ))
+
+                fig_heat.update_layout(
+                    title=f"{reach} - Water Surface Elevation Heatmap",
+                    xaxis_title="Month",
+                    yaxis_title="Distance from Confluence (km)",
+                    height=500,
+                    template="plotly_white"
+                )
+
+                # Reverse Y-axis (coast at top, confluence at bottom)
+                fig_heat.update_yaxes(autorange="reversed")
+
+                st.plotly_chart(fig_heat, use_container_width=True)
+
+        # === SUMMARY STATISTICS ===
+        st.markdown("### Summary Statistics")
+
+        # Calculate temporal trends
+        summary_stats = []
+
+        for reach in selected_reaches:
+            reach_data = temporal_df[temporal_df['Reach_Name'] == reach].sort_values('Pass_Date')
+
+            if len(reach_data) > 0:
+                # Calculate linear trend
+                days_elapsed = (pd.to_datetime(reach_data['Pass_Date']) - pd.to_datetime(reach_data['Pass_Date'].min())).dt.days
+
+                wse_trend, wse_intercept, wse_r, wse_p, _ = stats.linregress(days_elapsed, reach_data['monthly_avg_wse'])
+                grad_trend, grad_intercept, grad_r, grad_p, _ = stats.linregress(days_elapsed, reach_data['monthly_avg_gradient'])
+
+                summary_stats.append({
+                    'River': reach,
+                    'Passes': len(reach_data),
+                    'Avg WSE (m)': reach_data['monthly_avg_wse'].mean(),
+                    'WSE Trend (m/year)': wse_trend * 365,
+                    'WSE R²': wse_r**2,
+                    'Avg Gradient (cm/km)': reach_data['monthly_avg_gradient'].mean(),
+                    'Gradient Trend (cm/km/year)': grad_trend * 365
+                })
+
+        summary_df = pd.DataFrame(summary_stats)
+
+        st.dataframe(
+            summary_df.style.format({
+                'Avg WSE (m)': '{:.2f}',
+                'WSE Trend (m/year)': '{:.4f}',
+                'WSE R²': '{:.3f}',
+                'Avg Gradient (cm/km)': '{:.2f}',
+                'Gradient Trend (cm/km/year)': '{:.4f}'
+            }),
+            use_container_width=True
+        )
+
+        st.info("""
+        **Interpretation Guide:**
+        - **WSE Trend:** Positive = water level increasing, Negative = water level decreasing
+        - **R²:** Closer to 1.0 = stronger linear trend, Closer to 0 = more variability
+        - **Gradient Trend:** Change in river steepness over time
+        """)
 
 if __name__ == "__main__":
     main()

@@ -245,19 +245,12 @@ def process_granule(granule_result, gdf_polygons):
                     tqdm.write(f"   Quality Filter: {n_pass:,}/{len(df_exact):,} points passed cross_track ({CROSS_TRACK_MIN/1000:.0f}-{CROSS_TRACK_MAX/1000:.0f}km)")
                     df_exact = df_exact[ct_mask]
 
-                # Geolocation quality filter (0 = good, bit flags)
-                if 'geolocation_qual' in df_exact.columns and df_exact['geolocation_qual'].notna().any():
-                    geo_mask = df_exact['geolocation_qual'] == 0
-                    n_pass = geo_mask.sum()
-                    tqdm.write(f"   Quality Filter: {n_pass:,}/{len(df_exact):,} points passed geolocation_qual (== 0)")
-                    df_exact = df_exact[geo_mask]
-
-                # Classification quality filter (0 = good, bit flags)
-                if 'classification_qual' in df_exact.columns and df_exact['classification_qual'].notna().any():
-                    cls_qual_mask = df_exact['classification_qual'] == 0
-                    n_pass = cls_qual_mask.sum()
-                    tqdm.write(f"   Quality Filter: {n_pass:,}/{len(df_exact):,} points passed classification_qual (== 0)")
-                    df_exact = df_exact[cls_qual_mask]
+                # NOTE: geolocation_qual and classification_qual filters DISABLED
+                # These bit-flag filters are too aggressive for narrow rivers like Uyak Creek,
+                # removing nearly all pixels in the middle section (5-25km).
+                # Awaiting SWOT expert guidance on which specific bits to exclude.
+                # The cross-track, classification, and MAD filters provide sufficient quality control.
+                # TODO: Re-enable with targeted bit-mask filtering after expert consultation
 
                 if len(df_exact) == 0: continue
 
