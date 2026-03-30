@@ -8,7 +8,7 @@
 
 ## 🌐 Live Dashboard
 
-**Try it now:** [https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/](https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/)
+**Try it now (NOT FUNCTIONING):** [https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/](https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/)
 
 Interactive visualization of NASA SWOT satellite data for two Alaskan rivers (Kanektok River and Uyak Creek), comparing hydraulic gradients to assess avulsion risk.
 
