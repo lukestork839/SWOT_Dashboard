@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from scipy import stats
 from scipy.ndimage import gaussian_filter1d
 import numpy as np
@@ -37,6 +38,66 @@ COLOR_MAP = {
     "Kanektok_River": "firebrick",
     "Uyak_Creek": "dodgerblue"
 }
+
+# --- ANALYSIS PERIOD DEFINITIONS ---
+TYPHOON_DATE = "2025-10-12"  # Typhoon Halong landfall
+
+SEASONAL_PERIODS = [
+    {"label": "2023 High Flow", "start": "2023-05-01", "end": "2023-05-31", "row": 0, "col": 0, "fallback_start": "2023-07-01", "fallback_end": "2023-08-31", "fallback_label": "2023 Earliest Available"},
+    {"label": "2023 Low Flow",  "start": "2023-07-01", "end": "2023-08-31", "row": 1, "col": 0},
+    {"label": "2024 High Flow", "start": "2024-05-01", "end": "2024-05-31", "row": 0, "col": 1},
+    {"label": "2024 Low Flow",  "start": "2024-07-01", "end": "2024-08-31", "row": 1, "col": 1},
+    {"label": "2025 High Flow", "start": "2025-05-01", "end": "2025-05-31", "row": 0, "col": 2},
+    {"label": "2025 Low Flow",  "start": "2025-07-01", "end": "2025-08-31", "row": 1, "col": 2},
+]
+
+TYPHOON_PERIODS = {
+    "pre_immediate":  {"label": "Pre-Storm (Aug-Sep 2025)",  "start": "2025-08-01", "end": "2025-09-30"},
+    "post_immediate": {"label": "Post-Storm (Oct 15-Dec 2025)", "start": "2025-10-15", "end": "2025-12-31"},
+    "pre_season":     {"label": "Pre-Storm Summer 2025",     "start": "2025-05-01", "end": "2025-08-31"},
+    "post_season":    {"label": "Post-Storm Spring 2026",    "start": "2026-03-01", "end": "2026-08-31"},
+}
+
+# --- ICE SEASON DEFINITIONS (Kanektok/Uyak at ~59.8°N) ---
+# SWOT PIXC has no ice classification class. Classes 3-4 exclude most ice
+# (smooth ice → dark water Class 5, rough ice → land Class 1-2), but
+# partially frozen surfaces during transition months may still pass.
+# Ice surface elevation ≠ water surface elevation (off by ice thickness 0.5-2+ m).
+# ice_clsf flag exists only in PIXCVec/RiverSP products, not base PIXC.
+ICE_SEASONS = {
+    "freeze_up": {"months": [10, 11], "label": "Freeze-up (Oct-Nov)", "severity": "caution"},
+    "frozen":    {"months": [12, 1, 2, 3], "label": "Frozen (Dec-Mar)", "severity": "warning"},
+    "break_up":  {"months": [4, 5], "label": "Break-up (Apr-May)", "severity": "caution"},
+}
+ICE_AFFECTED_MONTHS = {10, 11, 12, 1, 2, 3, 4, 5}  # Oct-May
+OPEN_WATER_MONTHS = {6, 7, 8, 9}  # Jun-Sep (reliable for WSE analysis)
+
+def get_ice_warning(start_date_str, end_date_str):
+    """Check if a date range overlaps with ice-affected months.
+    Returns (severity, message) or (None, None) if fully open water."""
+    start = pd.to_datetime(start_date_str)
+    end = pd.to_datetime(end_date_str)
+    # Collect all months spanned
+    months_spanned = set()
+    current = start.replace(day=1)
+    while current <= end:
+        months_spanned.add(current.month)
+        current += pd.DateOffset(months=1)
+
+    ice_months = months_spanned & ICE_AFFECTED_MONTHS
+    if not ice_months:
+        return None, None
+
+    # Determine which ice seasons are hit
+    hit_seasons = []
+    for season_key, season in ICE_SEASONS.items():
+        if ice_months & set(season["months"]):
+            hit_seasons.append(season)
+
+    # Use the most severe level
+    severity = "warning" if any(s["severity"] == "warning" for s in hit_seasons) else "caution"
+    season_labels = ", ".join(s["label"] for s in hit_seasons)
+    return severity, season_labels
 
 st.set_page_config(page_title=PAGE_TITLE, layout="wide", page_icon="🌊")
 
@@ -123,6 +184,35 @@ def compute_moving_average(series, window, min_periods=2):
         pandas Series with moving average values
     """
     return series.rolling(window=window, min_periods=min_periods, center=False).mean()
+
+def query_period_data(con, period_start, period_end, selected_reaches, max_points=5000):
+    """Query river data for a specific date range, with sampling if needed."""
+    rivers_sql = ", ".join([f"'{r}'" for r in selected_reaches])
+    where = f"WHERE Reach_Name IN ({rivers_sql}) AND Pass_Date >= '{period_start}' AND Pass_Date <= '{period_end}'"
+
+    count = con.execute(f"SELECT COUNT(*) FROM river_data {where}").fetchone()[0]
+    if count == 0:
+        return None, None, 0
+
+    if count > max_points:
+        step = int(count / max_points)
+        query = f"""SELECT * FROM (
+            SELECT *, row_number() OVER (ORDER BY Reach_Name, dist_km) as rn
+            FROM river_data {where}) sub WHERE rn % {step} = 0"""
+    else:
+        query = f"SELECT * FROM river_data {where} ORDER BY Reach_Name, dist_km"
+
+    df = con.execute(query).fetchdf()
+
+    # Statistics on full (unsampled) data
+    stats_df = con.execute(f"""
+        SELECT Reach_Name, COUNT(*) as n_points,
+               COUNT(DISTINCT Pass_Date) as n_passes,
+               AVG(wse) as mean_wse, AVG(slope_calc) as avg_slope
+        FROM river_data {where} GROUP BY Reach_Name
+    """).fetchdf()
+
+    return df, stats_df, count
 
 def download_data_if_needed():
     """
@@ -500,7 +590,11 @@ def main():
         st.session_state.metrics_calculated = detrend_method
 
     # --- TABS ---
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📈 Gradient Profile", "🔀 Elevation Difference", "🎯 Detrended Profile", "📐 Interval Slopes", "🗺️ Map View", "📄 Raw Data", "⏳ Temporal Evolution"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+        "📈 Gradient Profile", "🔀 Elevation Difference", "🎯 Detrended Profile",
+        "📐 Interval Slopes", "🗺️ Map View", "📄 Raw Data", "⏳ Temporal Evolution",
+        "📊 Seasonal Comparison", "🌊 Typhoon Impact"
+    ])
 
     with tab1:
         st.subheader(f"River Profile ({start_date} to {end_date})")
@@ -1425,7 +1519,10 @@ def main():
         st.info("""
         **Purpose:** Track how river metrics evolve over time to identify trends, seasonal patterns, and anomalies.
 
-        **Data:** Monthly averages from ~157 satellite passes spanning ~2.4 years (average ~10 day frequency)
+        **Data:** Monthly averages from satellite passes across the full date range.
+
+        **Ice season note:** At this latitude (~59.8°N), Oct-May data may include ice-affected measurements.
+        Open-water season (Jun-Sep) is most reliable for WSE analysis. See Seasonal Comparison tab for details.
         """)
 
         # User controls
@@ -1960,6 +2057,333 @@ def main():
         - **R²:** Closer to 1.0 = stronger linear trend, Closer to 0 = more variability
         - **Gradient Trend:** Change in river steepness over time
         """)
+
+    # === TAB 8: SEASONAL COMPARISON ===
+    with tab8:
+        st.subheader("Seasonal Comparison: High Flow vs Low Flow (2023-2025)")
+        st.caption("Top row: High flow (May). Bottom row: Low flow (July-August). Each panel compares both rivers.")
+
+        fig_seasonal = make_subplots(
+            rows=2, cols=3,
+            subplot_titles=[p["label"] for p in SEASONAL_PERIODS],
+            shared_yaxes=True, horizontal_spacing=0.04, vertical_spacing=0.08
+        )
+
+        summary_rows = []
+
+        for period in SEASONAL_PERIODS:
+            row, col = period["row"] + 1, period["col"] + 1  # Plotly 1-indexed
+            df_period, stats_period, period_count = query_period_data(con, period["start"], period["end"], selected_reaches)
+
+            used_label = period["label"]
+
+            # Handle May 2023 fallback
+            if df_period is None and "fallback_start" in period:
+                df_period, stats_period, period_count = query_period_data(con, period["fallback_start"], period["fallback_end"], selected_reaches)
+                if df_period is not None:
+                    used_label = period.get("fallback_label", period["label"])
+                    # Update subplot title annotation
+                    for ann in fig_seasonal.layout.annotations:
+                        if ann.text == period["label"]:
+                            ann.text = used_label
+
+            if df_period is None:
+                fig_seasonal.add_annotation(
+                    text="No data available",
+                    xref=f"x{'' if (row == 1 and col == 1) else (col + (row - 1) * 3)}",
+                    yref=f"y{'' if (row == 1 and col == 1) else (col + (row - 1) * 3)}",
+                    x=0.5, y=0.5, xanchor="center", yanchor="middle",
+                    showarrow=False, font=dict(size=14, color="gray"),
+                    row=row, col=col
+                )
+                continue
+
+            for reach in selected_reaches:
+                reach_df = df_period[df_period['Reach_Name'] == reach]
+                if len(reach_df) == 0:
+                    continue
+
+                fig_seasonal.add_trace(go.Scatter(
+                    x=reach_df['dist_km'], y=reach_df['wse'],
+                    mode='markers',
+                    marker=dict(color=COLOR_MAP.get(reach, "black"), size=3, opacity=0.3),
+                    name=reach,
+                    showlegend=(row == 1 and col == 1),
+                    legendgroup=reach,
+                ), row=row, col=col)
+
+                # Trendline
+                if len(reach_df) >= 5:
+                    slope, intercept, r_val, _, _ = stats.linregress(reach_df['dist_km'], reach_df['wse'])
+                    x_range = np.linspace(reach_df['dist_km'].min(), reach_df['dist_km'].max(), 50)
+                    fig_seasonal.add_trace(go.Scatter(
+                        x=x_range, y=intercept + slope * x_range,
+                        mode='lines',
+                        line=dict(color=COLOR_MAP.get(reach, "black"), width=3, dash='dash'),
+                        name=f"{reach} {abs(slope * 100):.1f} cm/km",
+                        showlegend=False,
+                    ), row=row, col=col)
+
+                    # Collect for summary table
+                    reach_stats_row = stats_period[stats_period['Reach_Name'] == reach]
+                    n_passes = int(reach_stats_row['n_passes'].iloc[0]) if len(reach_stats_row) > 0 else 0
+                    summary_rows.append({
+                        "Period": used_label, "River": reach,
+                        "Slope (cm/km)": round(abs(slope * 100), 2),
+                        "R²": round(r_val**2, 3),
+                        "Points": period_count, "Passes": n_passes
+                    })
+
+            fig_seasonal.update_xaxes(autorange="reversed", row=row, col=col)
+
+        fig_seasonal.update_layout(
+            height=800, template="plotly_white",
+            title_text="Seasonal WSE Profiles: High Flow (May) vs Low Flow (Jul-Aug)"
+        )
+        st.plotly_chart(fig_seasonal, use_container_width=True)
+
+        # Summary statistics table
+        if summary_rows:
+            st.subheader("Slope Summary")
+            st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+        st.info("""**How to read this:** Each panel shows WSE vs distance for both rivers.
+        Top row = high flow (May), bottom row = low flow (July-August).
+        Dashed lines show linear trendlines with slope values.
+        Steeper slopes indicate faster-flowing reaches. Compare slopes between years to detect changes.""")
+
+        st.warning("""**Ice Season Note:** May panels (top row) fall within the spring break-up period
+        (Apr-May) for rivers at this latitude (~59.8°N). Some SWOT measurements may reflect
+        ice surface elevation rather than open water, which would be 0.5-2+ m higher than true WSE.
+        The PIXC classification filter (Classes 3-4) excludes most ice pixels, but partially frozen
+        surfaces during break-up may still pass. July-August panels (bottom row) are fully within
+        the open-water season and are the most reliable for gradient comparison.""")
+
+    # === TAB 9: TYPHOON IMPACT ===
+    with tab9:
+        st.subheader("Typhoon Halong Impact Analysis (October 12-14, 2025)")
+        st.caption("Compare river profiles before and after Typhoon Halong struck Quinhagak, Alaska, eroding ~60 feet of shoreline.")
+
+        # Ice season warnings for each typhoon analysis period
+        ice_warnings = {}
+        for key, period in TYPHOON_PERIODS.items():
+            severity, seasons = get_ice_warning(period["start"], period["end"])
+            if severity:
+                ice_warnings[key] = seasons
+
+        if ice_warnings:
+            affected = "; ".join(f"**{TYPHOON_PERIODS[k]['label']}** overlaps {v}" for k, v in ice_warnings.items())
+            st.warning(f"""**Ice Season Advisory:** {affected}.
+            Post-storm data (Oct-Dec 2025) spans freeze-up and frozen periods. Some SWOT measurements
+            may reflect ice surface elevation rather than open water (0.5-2+ m higher). The classification
+            filter (Classes 3-4) excludes most ice, but interpret post-storm WSE with caution —
+            apparent elevation increases could be ice rather than storm-deposited sediment.""")
+
+        # Build rivers_sql for this tab scope
+        rivers_sql_tab9 = ", ".join([f"'{r}'" for r in selected_reaches])
+
+        # --- Section A: Immediate Before/After ---
+        st.markdown("### Immediate Impact")
+
+        pre = TYPHOON_PERIODS["pre_immediate"]
+        post = TYPHOON_PERIODS["post_immediate"]
+
+        df_pre, stats_pre, n_pre = query_period_data(con, pre["start"], pre["end"], selected_reaches)
+        df_post, stats_post, n_post = query_period_data(con, post["start"], post["end"], selected_reaches)
+
+        if df_pre is not None and df_post is not None:
+            fig_imm = make_subplots(
+                rows=1, cols=2,
+                subplot_titles=[pre["label"], post["label"]],
+                shared_yaxes=True, horizontal_spacing=0.06
+            )
+
+            slope_changes = {}
+            for panel_idx, (df_panel, label) in enumerate([(df_pre, "pre"), (df_post, "post")], 1):
+                for reach in selected_reaches:
+                    reach_df = df_panel[df_panel['Reach_Name'] == reach]
+                    if len(reach_df) < 5:
+                        continue
+
+                    fig_imm.add_trace(go.Scatter(
+                        x=reach_df['dist_km'], y=reach_df['wse'],
+                        mode='markers',
+                        marker=dict(color=COLOR_MAP.get(reach, "black"), size=3, opacity=0.3),
+                        name=reach,
+                        showlegend=(panel_idx == 1),
+                        legendgroup=reach,
+                    ), row=1, col=panel_idx)
+
+                    slope, intercept, _, _, _ = stats.linregress(reach_df['dist_km'], reach_df['wse'])
+                    slope_changes.setdefault(reach, {})[label] = slope * 100
+                    x_range = np.linspace(reach_df['dist_km'].min(), reach_df['dist_km'].max(), 50)
+                    fig_imm.add_trace(go.Scatter(
+                        x=x_range, y=intercept + slope * x_range,
+                        mode='lines',
+                        line=dict(color=COLOR_MAP.get(reach, "black"), width=3, dash='dash'),
+                        name=f"{abs(slope * 100):.1f} cm/km",
+                        showlegend=False,
+                    ), row=1, col=panel_idx)
+
+                fig_imm.update_xaxes(autorange="reversed", row=1, col=panel_idx)
+
+            fig_imm.update_layout(height=500, template="plotly_white")
+            st.plotly_chart(fig_imm, use_container_width=True)
+
+            # Slope change metrics
+            cols = st.columns(len(slope_changes))
+            for i, (reach, slopes) in enumerate(slope_changes.items()):
+                if "pre" in slopes and "post" in slopes:
+                    change = abs(slopes["post"]) - abs(slopes["pre"])
+                    cols[i].metric(
+                        f"{reach} Slope",
+                        f"{abs(slopes['post']):.2f} cm/km",
+                        delta=f"{change:+.2f} cm/km vs pre-storm"
+                    )
+
+        elif df_pre is not None:
+            st.warning("No post-storm data available (Oct-Dec 2025). Rivers may have been frozen or no SWOT passes occurred.")
+            st.markdown("**Pre-storm baseline (Aug-Sep 2025) is shown below:**")
+
+            fig_pre_only = go.Figure()
+            for reach in selected_reaches:
+                reach_df = df_pre[df_pre['Reach_Name'] == reach]
+                if len(reach_df) == 0:
+                    continue
+                fig_pre_only.add_trace(go.Scatter(
+                    x=reach_df['dist_km'], y=reach_df['wse'],
+                    mode='markers',
+                    marker=dict(color=COLOR_MAP.get(reach, "black"), size=3, opacity=0.3),
+                    name=reach,
+                ))
+                if len(reach_df) >= 5:
+                    slope, intercept, _, _, _ = stats.linregress(reach_df['dist_km'], reach_df['wse'])
+                    x_range = np.linspace(reach_df['dist_km'].min(), reach_df['dist_km'].max(), 50)
+                    fig_pre_only.add_trace(go.Scatter(
+                        x=x_range, y=intercept + slope * x_range,
+                        mode='lines',
+                        line=dict(color=COLOR_MAP.get(reach, "black"), width=3, dash='dash'),
+                        name=f"{reach} {abs(slope * 100):.1f} cm/km",
+                    ))
+            fig_pre_only.update_xaxes(autorange="reversed")
+            fig_pre_only.update_layout(height=500, template="plotly_white",
+                                       title_text=pre["label"])
+            st.plotly_chart(fig_pre_only, use_container_width=True)
+        else:
+            st.warning("Insufficient data for immediate before/after comparison. Ensure data covers Aug-Dec 2025.")
+
+        # --- Section B: Same-Season Comparison ---
+        st.markdown("---")
+        st.markdown("### Same-Season Comparison")
+
+        pre_s = TYPHOON_PERIODS["pre_season"]
+        post_s = TYPHOON_PERIODS["post_season"]
+
+        df_pre_s, stats_pre_s, n_pre_s = query_period_data(con, pre_s["start"], pre_s["end"], selected_reaches)
+        df_post_s, stats_post_s, n_post_s = query_period_data(con, post_s["start"], post_s["end"], selected_reaches)
+
+        if df_pre_s is not None and df_post_s is not None and n_post_s > 0:
+            fig_season = make_subplots(
+                rows=1, cols=2,
+                subplot_titles=[pre_s["label"], post_s["label"]],
+                shared_yaxes=True, horizontal_spacing=0.06
+            )
+
+            season_slope_changes = {}
+            for panel_idx, (df_panel, label) in enumerate([(df_pre_s, "pre"), (df_post_s, "post")], 1):
+                for reach in selected_reaches:
+                    reach_df = df_panel[df_panel['Reach_Name'] == reach]
+                    if len(reach_df) < 5:
+                        continue
+
+                    fig_season.add_trace(go.Scatter(
+                        x=reach_df['dist_km'], y=reach_df['wse'],
+                        mode='markers',
+                        marker=dict(color=COLOR_MAP.get(reach, "black"), size=3, opacity=0.3),
+                        name=reach,
+                        showlegend=(panel_idx == 1),
+                        legendgroup=reach,
+                    ), row=1, col=panel_idx)
+
+                    slope, intercept, _, _, _ = stats.linregress(reach_df['dist_km'], reach_df['wse'])
+                    season_slope_changes.setdefault(reach, {})[label] = slope * 100
+                    x_range = np.linspace(reach_df['dist_km'].min(), reach_df['dist_km'].max(), 50)
+                    fig_season.add_trace(go.Scatter(
+                        x=x_range, y=intercept + slope * x_range,
+                        mode='lines',
+                        line=dict(color=COLOR_MAP.get(reach, "black"), width=3, dash='dash'),
+                        name=f"{abs(slope * 100):.1f} cm/km",
+                        showlegend=False,
+                    ), row=1, col=panel_idx)
+
+                fig_season.update_xaxes(autorange="reversed", row=1, col=panel_idx)
+
+            fig_season.update_layout(height=500, template="plotly_white",
+                                     title_text="Same-Season Comparison: Summer 2025 vs Spring/Summer 2026")
+            st.plotly_chart(fig_season, use_container_width=True)
+
+            # Slope change metrics
+            cols = st.columns(len(season_slope_changes))
+            for i, (reach, slopes) in enumerate(season_slope_changes.items()):
+                if "pre" in slopes and "post" in slopes:
+                    change = abs(slopes["post"]) - abs(slopes["pre"])
+                    cols[i].metric(
+                        f"{reach} Slope",
+                        f"{abs(slopes['post']):.2f} cm/km",
+                        delta=f"{change:+.2f} cm/km vs pre-storm"
+                    )
+        else:
+            st.info("""**Same-season post-storm data not yet available.**
+
+As of April 2026, Alaska rivers are likely still frozen or just beginning breakup.
+This comparison will become available once SWOT captures summer 2026 data (May-August).
+
+Re-run the data download (`SWOT_Pull.py`) after May 2026 and this section will automatically populate.""")
+
+        # --- Section C: Binned Elevation Change ---
+        st.markdown("---")
+        st.markdown("### Elevation Change by Distance")
+
+        if df_pre is not None and df_post is not None:
+            try:
+                change_query = f"""
+                    WITH pre AS (
+                        SELECT ROUND(dist_km / 0.5) * 0.5 AS dist_bin, Reach_Name, AVG(wse) AS pre_wse
+                        FROM river_data WHERE Pass_Date >= '{pre["start"]}' AND Pass_Date <= '{pre["end"]}'
+                        AND Reach_Name IN ({rivers_sql_tab9})
+                        GROUP BY dist_bin, Reach_Name HAVING COUNT(*) >= 3
+                    ),
+                    post AS (
+                        SELECT ROUND(dist_km / 0.5) * 0.5 AS dist_bin, Reach_Name, AVG(wse) AS post_wse
+                        FROM river_data WHERE Pass_Date >= '{post["start"]}' AND Pass_Date <= '{post["end"]}'
+                        AND Reach_Name IN ({rivers_sql_tab9})
+                        GROUP BY dist_bin, Reach_Name HAVING COUNT(*) >= 3
+                    )
+                    SELECT pre.dist_bin, pre.Reach_Name, pre.pre_wse, post.post_wse,
+                           post.post_wse - pre.pre_wse AS wse_change
+                    FROM pre INNER JOIN post ON pre.dist_bin = post.dist_bin AND pre.Reach_Name = post.Reach_Name
+                    ORDER BY pre.Reach_Name, pre.dist_bin
+                """
+                change_df = con.execute(change_query).fetchdf()
+
+                if len(change_df) > 0:
+                    fig_change = px.line(change_df, x="dist_bin", y="wse_change",
+                                        color="Reach_Name", color_discrete_map=COLOR_MAP)
+                    fig_change.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig_change.update_xaxes(autorange="reversed")
+                    fig_change.update_layout(
+                        height=400, template="plotly_white",
+                        yaxis_title="WSE Change (m)", xaxis_title="Distance from Confluence (km)",
+                        title_text="Post-Storm minus Pre-Storm WSE"
+                    )
+                    st.plotly_chart(fig_change, use_container_width=True)
+                    st.caption("Positive = WSE increased post-storm. Negative = WSE decreased. 500m bins, min 3 points per bin.")
+                else:
+                    st.info("Not enough overlapping distance bins between pre- and post-storm periods to compute elevation change.")
+            except Exception as e:
+                st.error(f"Error computing elevation change: {e}")
+        else:
+            st.info("Elevation change analysis requires both pre-storm (Aug-Sep 2025) and post-storm (Oct-Dec 2025) data.")
 
 if __name__ == "__main__":
     main()

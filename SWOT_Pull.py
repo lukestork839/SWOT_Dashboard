@@ -24,6 +24,10 @@ DEFAULT_CLASSES = [3,4]
 CROSS_TRACK_MIN = 10000   # 10 km from nadir (avoid nadir gap)
 CROSS_TRACK_MAX = 60000   # 60 km from nadir (avoid far-swath noise)
 
+# Crossover calibration quality filter (bit masks for geolocation_qual)
+XOVERCAL_SUSPECT_MASK = 64        # Bit 6: crossover calibration suspect
+XOVERCAL_MISSING_MASK = 8388608   # Bit 23: crossover calibration missing entirely
+
 # MAD-based outlier filtering configuration
 MAD_THRESHOLD = 3.5  # Conservative threshold (Iglewicz & Hoaglin, 1993)
 MIN_POINTS_FOR_MAD = 10  # Minimum sample size for reliable MAD
@@ -212,6 +216,7 @@ def process_granule(granule_result, gdf_polygons):
                     'geolocation_qual': ds['geolocation_qual'].values[mask_rough] if 'geolocation_qual' in ds else np.nan,
                     'classification_qual': ds['classification_qual'].values[mask_rough] if 'classification_qual' in ds else np.nan,
                     'cross_track': ds['cross_track'].values[mask_rough] if 'cross_track' in ds else np.nan,
+                    'height_cor_xover_qual': ds['height_cor_xover_qual'].values[mask_rough] if 'height_cor_xover_qual' in ds else np.nan,
                 })
 
                 gdf_temp = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
@@ -234,8 +239,8 @@ def process_granule(granule_result, gdf_polygons):
                 )
 
                 # --- PIXC Quality Flag Filtering ---
-                # Filter order: cross-track → geolocation_qual → classification_qual → classification → MAD
-                # Rationale: Remove pixels with poor geometry/geolocation before science filters
+                # Filter order: cross-track → crossover_cal → classification → MAD
+                # Rationale: Remove pixels with poor geometry/calibration before science filters
                 n_before = len(df_exact)
 
                 # Cross-track distance filter (avoid nadir gap and far-swath noise)
@@ -244,6 +249,17 @@ def process_granule(granule_result, gdf_polygons):
                     n_pass = ct_mask.sum()
                     tqdm.write(f"   Quality Filter: {n_pass:,}/{len(df_exact):,} points passed cross_track ({CROSS_TRACK_MIN/1000:.0f}-{CROSS_TRACK_MAX/1000:.0f}km)")
                     df_exact = df_exact[ct_mask]
+
+                # Crossover calibration quality filter
+                # Exclude pixels where crossover calibration is MISSING (bit 23 of geolocation_qual)
+                # This correction removes meter-scale roll/phase errors — without it, WSE is unreliable
+                # Width-independent: affects both rivers equally, should not reduce data significantly
+                # Reference: SWOT Handbook Section 9.4.2
+                if 'geolocation_qual' in df_exact.columns and df_exact['geolocation_qual'].notna().any():
+                    xover_mask = (df_exact['geolocation_qual'].astype(int) & XOVERCAL_MISSING_MASK) == 0
+                    n_pass = xover_mask.sum()
+                    tqdm.write(f"   Quality Filter: {n_pass:,}/{len(df_exact):,} points passed xovercal (crossover cal not missing)")
+                    df_exact = df_exact[xover_mask]
 
                 # NOTE: geolocation_qual and classification_qual filters DISABLED
                 # These bit-flag filters are too aggressive for narrow rivers like Uyak Creek,
