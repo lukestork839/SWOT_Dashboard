@@ -1,6 +1,6 @@
 # SWOT River Dynamics Project - Technical Notes
 
-**Last Updated**: 2026-02-16
+**Last Updated**: 2026-04-01
 **Status**: Active Development
 **Primary Workflow**: SWOT_Pull.py → dashboard_swot.py (optimization now integrated!)
 **GitHub Repository**: https://github.com/lukestork839/SWOT_Dashboard
@@ -50,24 +50,54 @@ ANCHOR_LON = -161.372337  # West
 We use **Version D** (`SWOT_L2_HR_PIXC_D`) exclusively — the latest science algorithm version with updated processing algorithms, calibration parameters, and geophysical models. Version D supersedes Version C (previously distributed as `SWOT_L2_HR_PIXC_2.0`). NASA reprocessed the full mission archive into Version D in early 2026.
 
 ### Quality Filtering
-**Full Filter Chain** (applied in order, updated 2026-03-07):
+**Active Filter Chain** (updated 2026-04-01):
 
 1. **Rough bounding box** — ±0.02° buffer around polygon bounds (fast spatial pre-filter)
 2. **Exact polygon clipping** — `.within()` against river polygons from `river_poly.zip`
 3. **Cross-track distance** — 10–60 km from nadir (`CROSS_TRACK_MIN/MAX` in SWOT_Pull.py)
    - Avoids nadir gap (poor interferometric baseline) and far-swath noise
-4. **Geolocation quality** — `geolocation_qual == 0` (no bit flags set)
-   - Removes pixels with phase unwrapping errors, layover contamination, poor geolocation
-5. **Classification quality** — `classification_qual == 0` (no bit flags set)
-   - Ensures classification assignment is reliable before filtering on class value
-6. **Classification** — Classes 3–4 only (`DEFAULT_CLASSES = [3,4]`)
-7. **MAD outlier filter** — Modified Z-score threshold 3.5, per-reach
+4. **Crossover calibration** — Exclude pixels where crossover cal is missing (bit 23 of `geolocation_qual`)
+   - Corrects meter-scale roll/phase errors; width-independent (affects both rivers equally)
+5. ~~**Geolocation quality**~~ — ⏳ **NOT YET APPLIED** (pending expert review)
+6. ~~**Classification quality**~~ — ⏳ **NOT YET APPLIED** (pending expert review)
+7. **Classification** — Classes 3–4 only (`DEFAULT_CLASSES = [3,4]`)
+8. **MAD outlier filter** — Modified Z-score threshold 3.5, per-reach
 
-**Scientific Rationale** (SWOT Handbook Section 3.1.26, PO.DAAC best practices):
-- Quality flag variables are per-pixel bit-flags in L2_HR_PIXC
-- Value 0 means all quality checks passed (no flags raised)
-- Cross-track filtering removes geometrically unreliable pixels
-- Since we only need a few good points per pass, we apply maximally strict filtering
+**Why quality flags are disabled:**
+- `geolocation_qual == 0` retained only 4-15% of pixels, removing virtually all Uyak Creek data (5-25km)
+- Relaxing to `< 4` still only passed 2.8% of Uyak pixels for `classification_qual`
+- These are bit-flag integers (not 0-3 scale) — most bits fire on narrow rivers due to land/water mixing
+- Awaiting SWOT expert guidance on which specific bits indicate bad data vs. just higher uncertainty
+- Full flag reference documented in `SCIENTIFIC_METHODOLOGY.md` (PIXC Quality Flag Reference section)
+- MAD outlier filter provides sufficient quality control in the interim
+
+### Ice Handling (Seasonal Awareness)
+**Decision (2026-04-01):** Dashboard-level warnings rather than ingestion-level date filtering.
+
+**Key findings from SWOT documentation research:**
+- PIXC classification has **NO ice class** — the 7 values are all land/water variants
+- Smooth ice → classified as dark water (Class 5) or land (Class 1) → excluded by Classes 3-4 filter
+- Rough/snow-covered ice → classified as land (Class 1-2) → excluded
+- Partially frozen surfaces during transition months → may still pass as Class 3-4
+- `ice_clsf` flag exists in PIXCVec and RiverSP products but **NOT in base PIXC** product we use
+- Ice surface elevation ≠ water surface elevation (off by ice thickness, typically 0.5-2+ m on Alaskan rivers)
+
+**Ice seasons for Kanektok/Uyak (~59.8°N):**
+- **Freeze-up**: Oct-Nov (ice formation begins)
+- **Frozen**: Dec-Mar (solid ice cover)
+- **Break-up**: Apr-May (ice begins to break)
+- **Open water**: Jun-Sep (reliable for WSE analysis)
+
+**Approach chosen:** Keep all data in pipeline, add contextual warnings in dashboard:
+- Seasonal Comparison tab: Warning that May (high flow) panels overlap break-up season
+- Typhoon Impact tab: Dynamic warnings computed via `get_ice_warning()` for each analysis period
+- Temporal Evolution tab: Note about ice-affected months in header
+- Rationale: Preserves data for potential ice studies; lets analyst interpret with context rather than permanently discarding
+
+**References:**
+- SWOT Handbook Table 6.1 (classification values)
+- SMU thesis: SWOT ice surface elevation validation (0.66m RMSE rivers, 0.23m lakes near Fairbanks)
+- Ka-band penetration into snow/ice: 0.1-0.3 m (insufficient to see water beneath ice)
 
 ### Water Surface Elevation (WSE) Calculation
 ```python
@@ -164,7 +194,8 @@ SWOT/
    - Convert to GeoDataFrame and apply exact polygon clipping
    - Calculate WSE with geoid + tide corrections
    - Calculate distance from confluence anchor (Haversine)
-   - Apply PIXC quality filters: cross-track (10–60km), geolocation_qual (==0), classification_qual (==0)
+   - Apply cross-track distance filter (10–60km)
+   - (Quality flag filters disabled pending expert review)
    - Filter for Classes 3–4
    - Apply MAD outlier filter (per-reach, threshold 3.5)
    - Calculate slope per reach
@@ -295,24 +326,29 @@ slope_calc = stats.linregress(dist_km, wse).slope * 100
 
 ## 5. Known Issues & Status
 
-### Data Consistency Issue
-**Problem**: Processing crash occurred halfway through a 2-year batch run.
+### PIXC Quality Flag Filtering — Pending Expert Review
+**Status**: ⏳ Awaiting expert consultation
+**Problem**: Quality flag filters (`geolocation_qual`, `classification_qual`) remove nearly all data for narrow Uyak Creek (~50-100m wide). The flags are bit-mask integers where most bits fire on narrow rivers due to land/water mixing effects, not genuinely bad data.
 
-**Current State:**
-- **Part 1 (Jan 2024 - May 2024)**: Mixed/provisional data (contains Version D)
-- **Part 2 (May 2024 - Present)**: Successfully processed with V2.0 priority
+**What was tried:**
+- `== 0` (strictest): Only 4-15% pixels retained, Uyak 5-25km completely empty
+- `< 4` (allows first 2 bits): Still only 2.8% Uyak pixels pass `classification_qual`
 
-**Impact**: Part 1 may have geolocation errors from Version D data
+**Current state:** Filters disabled in code. Cross-track, classification, and MAD filters active.
 
-**Resolution Plan**: Re-run Part 1 processing to force-upgrade to Version 2.0
+**Next step:** Expert consultation to determine which specific bit flags to exclude. Full flag reference in `SCIENTIFIC_METHODOLOGY.md`.
 
-**Update (2026-02-10)**: Now easier to reprocess with resumable download feature! Can safely re-run Jan-May 2024 without risk of interruption causing data loss.
+**Backup data:** Strict-filter data (==0) saved in `batch_outputs/backup_strict_filters/`
 
 ### Distance Logic
 **Status**: ✅ Complete and verified
 - Confluence Anchor method fully implemented
 - All data now uses consistent Haversine distance from anchor
-- No more mixed distance calculation methods
+
+### Data Version
+**Status**: ✅ Resolved
+- Now using Version D exclusively (`SWOT_L2_HR_PIXC_D`)
+- Previous mixed Version C/D issue resolved by switching to D only
 
 ---
 
@@ -627,13 +663,16 @@ NAME_MAPPING = {
 - X-axis remains reversed across all plots for consistency
 - Map sampling: 10,000 points max for browser performance
 
-**Dashboard Tab Order (Updated 2026-02-16):**
+**Dashboard Tab Order (Updated 2026-04-01):**
 1. Gradient Profile (original)
 2. Elevation Difference (added 2026-02-13)
 3. Detrended Profile (added 2026-02-16)
 4. Interval Slopes (added 2026-02-13)
 5. Map View (enhanced with Folium 2026-02-13)
 6. Raw Data (original)
+7. Temporal Evolution (added 2026-02-23)
+8. Seasonal Comparison (added 2026-04-01)
+9. Typhoon Impact (added 2026-04-01)
 
 ### 2026-02-16: Detrended Profile Analysis (Relative Elevation Model)
 **Problem Addressed:**
@@ -1078,55 +1117,171 @@ Watch Streamlit Cloud logs for:
 - ✅ **Map styling improvements** (2026-02-18): Removed borders, shortened legends, better color visibility
 - ✅ **Streamlit Cloud deployment** (2026-02-25): Fixed Git LFS limitation with GitHub Releases data hosting, automatic download on missing data, fixed deprecation warnings
 - ✅ **MAD-based outlier filtering** (2026-03-04): Implemented Modified Z-Score with MAD (Iglewicz & Hoaglin, 1993) for removing anomalous WSE measurements
-- ✅ **PIXC quality flag filtering** (2026-03-07): Added cross-track distance (10-60km), geolocation_qual (==0), classification_qual (==0) filters with per-step logging
+- ✅ **PIXC quality flag filtering** (2026-03-07): Added cross-track distance (10-60km), geolocation_qual, classification_qual extraction and filter infrastructure
+- ✅ **Version D switch** (2026-03-07): Switched exclusively to `SWOT_L2_HR_PIXC_D`, removed Version C search
+- ✅ **Dashboard partition fix** (2026-03-09): Fixed loading stale optimized parquet instead of fresh partition files
+- ✅ **PIXC Quality Flag Reference** (2026-03-09): Comprehensive bit flag documentation for expert review (39 flags across 2 variables)
 
-### 2026-03-07: PIXC Quality Flag Filtering
-**Problem Addressed:**
-- Only filtering on `classification` (classes 3-4) and MAD outliers
-- SWOT PIXC data contains additional per-pixel quality flags not being used
-- Potentially including pixels with phase unwrapping errors, layover contamination, poor geolocation
+### 2026-03-07 to 2026-03-09: PIXC Quality Flags, Version D Switch, and Expert Prep
 
+**Overview:** Major session covering quality flag implementation, data version switch, full reprocessing, documentation overhaul, dashboard fix, and ultimately disabling quality flags pending expert review.
+
+#### Part 1: PIXC Quality Flag Implementation (2026-03-07)
 **Actions Taken:**
 1. Added `CROSS_TRACK_MIN` (10km) and `CROSS_TRACK_MAX` (60km) constants
 2. Extracted `geolocation_qual`, `classification_qual`, `cross_track` from NetCDF with safe fallbacks
 3. Added three new filter steps before classification filter (with per-step logging)
-4. Updated documentation (quality filtering section, file locations, pipeline description)
 
-**Filter Chain (in order):**
-1. Rough bounding box (existing)
-2. Exact polygon clipping (existing)
-3. Cross-track distance: 10–60km (NEW)
-4. Geolocation quality: == 0 (NEW)
-5. Classification quality: == 0 (NEW)
-6. Classification: classes 3–4 (existing)
-7. MAD outlier filter (existing)
+#### Part 2: Version D Switch (2026-03-07)
+**Discovery:** Expert suggested Version D is better than Version C (2.0). Research confirmed:
+- Version D = latest science algorithms, calibration, geophysical models
+- Version C (SWOT_L2_HR_PIXC_2.0) = superseded, reprocessed into D
+- We had it backwards — treating 2.0 as priority over D
+
+**Actions Taken:**
+1. Removed Version C search from `SWOT_Pull.py` — now searches `SWOT_L2_HR_PIXC_D` only
+2. Updated all documentation (Claude_notes, SCIENTIFIC_METHODOLOGY, SWOT_Processing_Documentation)
+
+#### Part 3: Full Data Reprocessing (2026-03-07)
+- Reprocessed July 2023 – December 2025 (295 granules, 133 new, 103 skipped)
+- **Result with strict filters:** 785,932 total points (down from ~6.7M = 88% reduction)
+  - Kanektok: 748,767 points (133 dates, avg 5,630/pass)
+  - Uyak: 37,165 points (122 dates, avg 305/pass)
+
+#### Part 4: Documentation Overhaul (2026-03-07)
+- `SCIENTIFIC_METHODOLOGY.md`: New "Data Quality Filtering" section with all 7 filters, observed reduction stats
+- `SWOT_Processing_Documentation.md`: Rewrote Section 4, updated flow diagram
+- `README.md`: Updated filter summary, removed obsolete known issues
+
+#### Part 5: Dashboard Fix (2026-03-09)
+**Problem:** Dashboard threw "Unable to parse: 2024-07-" error
+**Root cause:** `get_database_connection()` loaded stale `dashboard_data_optimized.parquet` (24MB Streamlit Cloud file) instead of fresh partition files
+**Fix:** Modified to prefer `master_all_data_part_*.parquet` when they exist locally
+
+#### Part 6: Uyak Data Gap Discovery (2026-03-09)
+**Problem:** Strict quality filters removed virtually all Uyak Creek data in 5-25km middle section
+**Investigation:**
+- `geolocation_qual == 0`: Only 4-15% retention; narrow creek pixels have flags due to land/water proximity
+- Relaxed to `< 4`: Still only 2.8% pass `classification_qual` (bit flags, not 0-3 scale)
+- Root cause: Most quality flag bits fire on narrow rivers because the channel is narrow, not because data is bad
+
+**Actions Taken:**
+1. Backed up strict-filter data to `batch_outputs/backup_strict_filters/`
+2. Relaxed from `== 0` to `< 4` — still too strict
+3. Ultimately disabled quality flag filters entirely pending expert review
+
+#### Part 7: Expert Meeting Preparation (2026-03-09)
+**Actions Taken:**
+1. Added comprehensive "PIXC Quality Flag Reference" to `SCIENTIFIC_METHODOLOGY.md`:
+   - `geolocation_qual`: 23 individual bit flags documented
+   - `classification_qual`: 16 individual bit flags documented
+   - Each flag: bit position, mask, name, severity, description, narrow river impact, recommendation
+   - Flags categorized as "DISCUSS" (need expert input), "Exclude" (instrument), "ALWAYS EXCLUDE" (bad data)
+   - Key question framed: "Does the flag mean WSE is wrong, or just higher uncertainty?"
+2. Updated all documentation to mark quality flags as "pending expert review"
+3. Framed PIXC reference as candidate filters, not applied filters
+
+#### Part 8: Final Documentation Cleanup (2026-03-09)
+- `SCIENTIFIC_METHODOLOGY.md`: Verification status, filter chain, data flow, checklist, Q&A all updated
+- `README.md`: Filter table now shows Status column (Active vs Pending)
+- Three commits pushed: `c81e76f`, `e16702d`, `c2ad2ae`
+
+**Current State:**
+- **Active filters:** Cross-track (10-60km), Classification (3-4), MAD outlier (3.5)
+- **Disabled filters:** `geolocation_qual`, `classification_qual` (pending expert)
+- **Data:** Being reprocessed with disabled quality flags
+- **Backup:** Strict-filter data in `batch_outputs/backup_strict_filters/`
+- **Next step:** Expert meeting to determine which bit flags to use
+
+### 2026-04-01: Crossover Calibration Quality Filter Implementation
+**Problem Addressed:**
+- SWOT expert recommended filtering on crossover calibration quality
+- Crossover calibration corrects meter-scale roll/phase errors in KaRIn height measurements
+- When this correction is missing, `height` (and WSE) can be off by meters due to uncorrected cross-track tilts
+- Width-independent filter — does NOT disproportionately remove Uyak Creek data
+
+**Actions Taken:**
+1. Added `XOVERCAL_SUSPECT_MASK` (bit 6) and `XOVERCAL_MISSING_MASK` (bit 23) constants to SWOT_Pull.py
+2. Added `height_cor_xover_qual` extraction from NetCDF (backup/validation variable)
+3. Added crossover calibration filter step after cross-track filter, before classification
+4. Updated filter chain comment to reflect new order
+5. Updated documentation (Claude_notes.md, SCIENTIFIC_METHODOLOGY.md)
+
+**Filter Strategy:**
+- **Exclude only `xovercal_missing` (bit 23)** — pixels with NO crossover correction applied
+- **Keep `xovercal_suspect` (bit 6)** — correction was applied but may be imprecise
+- Rationale: Suspect corrections still better than no correction; for relative gradient comparison between rivers in the same pass, even suspect corrections preserve the relative WSE difference
+
+**Expected Impact:**
+- Minimal data loss (<5-10%) — only early-mission passes or specific orbital geometries lack crossover calibration
+- Both rivers equally affected (width-independent)
+- Filter logs show per-granule statistics
 
 **Technical Details:**
-- Quality flags are bit-flag variables; value 0 means all checks passed
-- Cross-track uses `np.abs()` (can be negative for left swath)
-- All new extractions use `if var in ds else np.nan` for backward compatibility
-- Quality columns not exported to CSV (excluded by `cols_export` list)
-- Each filter step logs pass/total counts via `tqdm.write()`
+- Primary method: Bit masking on `geolocation_qual` (bit 23 = mask 8388608)
+- Backup variable: `height_cor_xover_qual` (0=good, 1=suspect, 2=bad) — extracted but not used for filtering
+- Location: SWOT_Pull.py lines 253-262 (after cross-track filter, before disabled quality flags)
+- Constants: SWOT_Pull.py lines 27-29
 
-**Impact:**
-- Will significantly reduce point count per pass
-- Remaining points are higher quality (better WSE accuracy)
-- Requires data reprocessing (delete existing daily CSVs and re-run)
+**Note on Data Reprocessing:**
+Existing daily CSVs won't reflect the new filter. A full reprocess (deleting existing daily CSVs) is needed to apply to historical data.
 
-### Potential Improvements (Not Confirmed)
-- Automate Version 2.0 priority checking
+### 2026-04-01: Seasonal Comparison & Typhoon Impact Dashboard Tabs
+**Problem Addressed:**
+- Need year-over-year seasonal gradient comparison (high flow vs low flow) to detect long-term trends
+- Need before/after analysis of Typhoon Halong (Oct 12-14, 2025), which eroded ~60 feet of Quinhagak's shoreline
+
+**Actions Taken:**
+1. Added `SEASONAL_PERIODS` and `TYPHOON_PERIODS` constants to dashboard_swot.py
+2. Added `query_period_data()` helper function for reusable date-range queries with sampling
+3. Added `from plotly.subplots import make_subplots` import
+4. **Seasonal Comparison tab (Tab 8)**: 2×3 subplot grid — High Flow (May) vs Low Flow (Jul-Aug) for 2023-2025
+   - Shared Y-axes across all panels for consistent elevation comparison
+   - Linear trendlines with slope annotations on each panel
+   - Fallback logic for May 2023 (SWOT launched July 2023)
+   - Summary table with slope, R², point count, and pass count per period/river
+5. **Typhoon Impact tab (Tab 9)**: Three sections:
+   - Immediate Before/After (Aug-Sep 2025 vs Oct 15-Dec 2025)
+   - Same-Season Comparison (Summer 2025 vs Spring/Summer 2026)
+   - Binned Elevation Change chart (500m bins, post minus pre WSE)
+   - `st.metric` slope change widgets for at-a-glance comparison
+   - Graceful handling when post-storm data not yet available
+
+**Prerequisite:**
+- Data must be redownloaded for full range (July 2023 – present) with crossover calibration filter
+- Current data only covers Mar-Aug 2025
+
+### 2026-04-01: Ice Season Awareness (Dashboard Warnings)
+**Problem Addressed:**
+- Kanektok/Uyak rivers freeze Oct-May; SWOT may measure ice surface (0.5-2+ m above water)
+- PIXC product has no ice classification; `ice_clsf` only in PIXCVec/RiverSP
+- Typhoon Impact tab (Oct-Dec 2025) and Seasonal high-flow panels (May) overlap ice periods
+
+**Actions Taken:**
+1. Added `ICE_SEASONS`, `ICE_AFFECTED_MONTHS`, `OPEN_WATER_MONTHS` constants
+2. Added `get_ice_warning()` helper — checks if date range overlaps ice-affected months
+3. Added ice advisory warnings to:
+   - Seasonal Comparison tab (break-up caveat for May panels)
+   - Typhoon Impact tab (dynamic per-period warnings via `get_ice_warning()`)
+   - Temporal Evolution tab (general ice season note in header)
+4. Updated Claude_notes.md with Ice Handling section in Quality Filtering
+5. **No changes to SWOT_Pull.py** — data preserved for potential ice studies; warnings at analysis level
+
+**Decision rationale:** Dashboard-level warnings preferred over ingestion-level date filtering because:
+- Preserves all data (ice-period data has value for cryosphere analysis)
+- Classification filter (3-4) already excludes most ice pixels
+- Analyst can interpret with context rather than having data silently removed
+
+### In Progress
+- ⏳ **Quality flag filter tuning** — Awaiting SWOT expert guidance on which bit flags to exclude for narrow rivers
+- ⏳ **Data reprocessing** — Running with disabled quality flags to restore Uyak Creek data
+
+### Potential Improvements
 - Add height_uncertainty filtering thresholds
-- ~~Implement cross-track filtering in SWOT_Pull.py~~ ✅ Done (2026-03-07)
-- Create automated re-processing script for Part 1 data
 - Add data quality metrics dashboard
 - Export high-resolution plots for publications
-
-### Questions for User
-- Python version requirements?
-- Should create `requirements.txt`?
-- GitHub integration needs (`.gitignore`)?
-- Typical date range for analysis?
-- Any additional professor requirements?
+- Implement targeted bit-mask quality filtering (after expert review)
+- Update Streamlit Cloud data (dashboard_data_optimized.parquet) after filter finalization
 
 ---
 
@@ -1149,8 +1304,10 @@ Watch Streamlit Cloud logs for:
 ### Data Paths
 - **Polygon Boundaries**: `river_poly.zip` (root directory, refined 2026-02-11)
 - **Output Directory**: `batch_outputs/` (gitignored)
+- **Backup (strict filters)**: `batch_outputs/backup_strict_filters/` (data with geolocation_qual==0)
 - **Temp Downloads**: `temp_swot_batch/` (gitignored, auto-created/deleted)
 - **Documentation**: `Claude/` folder
+- **Quality Flag Reference**: `SCIENTIFIC_METHODOLOGY.md` (PIXC Quality Flag Reference section)
 - **Archive**: `old_stuff/` folder (not tracked in git)
 - **Utility Scripts**: `rebuild_master.py` (quick master file regeneration)
 
@@ -1158,7 +1315,9 @@ Watch Streamlit Cloud logs for:
 - **Distance Calculation**: `SWOT_Pull.py` lines 57-77 (`haversine_vectorized` function)
 - **MAD Outlier Detection**: `SWOT_Pull.py` lines 79-105 (`calculate_mad_outliers` function)
 - **WSE Calculation**: `SWOT_Pull.py` line 215 (in `process_granule`)
-- **PIXC Quality Filters**: `SWOT_Pull.py` lines 236-262 (cross-track, geolocation_qual, classification_qual in `process_granule`)
+- **Cross-Track Filter**: `SWOT_Pull.py` lines 246-251 (in `process_granule`)
+- **Crossover Cal Filter**: `SWOT_Pull.py` lines 253-262 (bit 23 of geolocation_qual)
+- **Quality Flag Filters**: `SWOT_Pull.py` lines 264-269 (DISABLED — commented out, pending expert review)
 - **Classification Filter**: `SWOT_Pull.py` line 265 (in `process_granule`)
 - **MAD Outlier Filter Application**: `SWOT_Pull.py` lines 267-287 (per-reach filtering in `process_granule`)
 - **Slope Calculation**: `SWOT_Pull.py` lines 238-242 (in `process_granule`)

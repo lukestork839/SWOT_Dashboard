@@ -2,7 +2,7 @@
 
 **Document Purpose:** This document provides a complete scientific verification of our SWOT data processing pipeline, with references to the official NASA SWOT handbook and specific code implementations.
 
-**Last Updated:** March 7, 2026
+**Last Updated:** April 1, 2026
 **Reference Document:** SWOT Science Data Products User Handbook (JPL D-109532, May 2024)
 **Study Area:** Kanektok River and Uyak Creek, Alaska
 
@@ -14,6 +14,7 @@
 |-----------|--------|---------------------|
 | **Data Product** | ✅ Verified | Using correct L2_HR_PIXC product, Version D (current recommended) |
 | **Cross-Track Filter** | ✅ Applied | 10–60 km from nadir (avoids nadir gap + far-swath noise) |
+| **Crossover Calibration Filter** | ✅ Applied | Exclude pixels missing crossover calibration (bit 23 of `geolocation_qual`) |
 | **PIXC Quality Flags** | ⏳ Pending Expert Review | `geolocation_qual` and `classification_qual` — see [PIXC Quality Flag Reference](#pixc-quality-flag-reference) |
 | **Classification Filter** | ✅ Verified | Classes 3-4 match Table 6.1, empirically validated in QGIS |
 | **MAD Outlier Filter** | ✅ Verified | Modified Z-score (Iglewicz & Hoaglin, 1993), per-reach |
@@ -26,6 +27,7 @@
 | **Distance Calculation** | ✅ Verified | Haversine formula appropriate for <100 km scale |
 | **Field Calibration** | ✅ **SUCCESSFULLY VERIFIED** | RTK GPS (±1 cm precision), agreement within 1 m after datum correction |
 | **Code Implementation** | ✅ Verified | All critical steps documented with file:line references |
+| **Ice Season Handling** | ✅ Documented | Dashboard warnings for Oct-May; Classes 3-4 exclude most ice; no PIXC ice flag available |
 
 **Overall Assessment:** 🎯 **CORE PROCESSING VERIFIED AND SCIENTIFICALLY SOUND** — PIXC quality flag filtering pending expert review
 
@@ -93,7 +95,7 @@ all_results = earthaccess.search_data(
 
 ## Data Quality Filtering
 
-Our pipeline applies sequential filters to extract reliable pixels from each SWOT pass. The current active filter chain uses spatial filtering, cross-track distance, classification, and MAD outlier detection. Additional PIXC quality flag filters (`geolocation_qual`, `classification_qual`) are documented below as candidates but are **not yet applied** — they are pending expert review to determine which specific bit flags are appropriate for narrow river analysis.
+Our pipeline applies sequential filters to extract reliable pixels from each SWOT pass. The current active filter chain uses spatial filtering, cross-track distance, crossover calibration quality, classification, and MAD outlier detection. Additional PIXC quality flag filters (`geolocation_qual`, `classification_qual`) are documented below as candidates but are **not yet applied** — they are pending expert review to determine which specific bit flags are appropriate for narrow river analysis.
 
 ### Filter Chain Overview
 
@@ -104,10 +106,11 @@ Filters are applied in this order during data ingestion (`SWOT_Pull.py`, `proces
 | 1 | Rough bounding box | ±0.02° around polygon | Fast spatial pre-filter | ✅ Active |
 | 2 | Exact polygon clipping | `.within()` river polygon | Isolate river channel pixels | ✅ Active |
 | 3 | **Cross-track distance** | 10–60 km from nadir | Remove nadir gap + far-swath noise | ✅ Active |
-| 4 | **Geolocation quality** | `geolocation_qual` bit mask | Remove pixels with geolocation errors | ⏳ Not yet applied |
-| 5 | **Classification quality** | `classification_qual` bit mask | Remove uncertain classifications | ⏳ Not yet applied |
-| 6 | **Classification** | Classes 3 & 4 only | Keep only reliable water pixels | ✅ Active |
-| 7 | **MAD outlier filter** | Modified Z-score ≤ 3.5 | Remove anomalous WSE values | ✅ Active |
+| 4 | **Crossover calibration** | Bit 23 of `geolocation_qual` = 0 | Remove pixels missing crossover cal correction | ✅ Active |
+| 5 | **Geolocation quality** | `geolocation_qual` bit mask | Remove pixels with geolocation errors | ⏳ Not yet applied |
+| 6 | **Classification quality** | `classification_qual` bit mask | Remove uncertain classifications | ⏳ Not yet applied |
+| 7 | **Classification** | Classes 3 & 4 only | Keep only reliable water pixels | ✅ Active |
+| 8 | **MAD outlier filter** | Modified Z-score ≤ 3.5 | Remove anomalous WSE values | ✅ Active |
 
 ### Why Quality Flag Filters Are Not Yet Applied
 
@@ -158,7 +161,38 @@ ct_mask = (np.abs(df['cross_track']) >= CROSS_TRACK_MIN) & \
 
 ---
 
-### Filter 4: Geolocation Quality (NOT YET APPLIED)
+### Filter 4: Crossover Calibration Quality
+
+**Status:** ✅ **Active** (added 2026-04-01)
+
+**SWOT Handbook Reference:** Section 9.4.2 (Crossover Calibration)
+
+**What crossover calibration does:** Corrects meter-scale roll/phase errors in KaRIn height measurements using crossover points (locations where ascending and descending orbits intersect). Without this correction, the `height` value can be off by meters due to uncorrected cross-track tilts.
+
+**Implementation:** `SWOT_Pull.py`, lines 27-29 (constants) and 253-262 (filter)
+
+```python
+XOVERCAL_MISSING_MASK = 8388608   # Bit 23 of geolocation_qual
+
+# Exclude pixels where crossover calibration is missing
+xover_mask = (df['geolocation_qual'].astype(int) & XOVERCAL_MISSING_MASK) == 0
+```
+
+**Filter strategy:**
+- **Exclude `xovercal_missing` (bit 23):** Pixels with NO crossover correction applied — WSE unreliable
+- **Keep `xovercal_suspect` (bit 6):** Correction was applied but may be imprecise — still better than no correction
+
+**Rationale for keeping suspect corrections:** For relative gradient comparison between two rivers in the same satellite pass, even imprecise crossover corrections preserve the relative WSE difference between rivers. Only the complete absence of correction (bit 23) introduces systematic biases that could affect one swath position more than another.
+
+**Why this filter is width-independent:** Crossover calibration depends on satellite orbital geometry and ocean crossover availability, not river width. Both Kanektok River and Uyak Creek are affected equally — this filter should not disproportionately remove data from the narrow tributary.
+
+**Expected impact:** Minimal data loss (<5-10%). Only passes where SWOT lacked ocean crossover calibration are affected — typically early-mission data or specific orbital geometries where crossover points were not available.
+
+**Backup variable:** `height_cor_xover_qual` (0=good, 1=suspect, 2=bad) is also extracted from NetCDF files where available, for validation purposes.
+
+---
+
+### Filter 5: Geolocation Quality (NOT YET APPLIED)
 
 **Status:** ⏳ **Pending expert review** — see [PIXC Quality Flag Reference](#pixc-quality-flag-reference)
 
@@ -179,7 +213,7 @@ Testing revealed that any threshold (`== 0`, `< 4`) removes nearly all data for 
 
 ---
 
-### Filter 5: Classification Quality (NOT YET APPLIED)
+### Filter 6: Classification Quality (NOT YET APPLIED)
 
 **Status:** ⏳ **Pending expert review** — see [PIXC Quality Flag Reference](#pixc-quality-flag-reference)
 
@@ -200,7 +234,7 @@ With `classification_qual < 4`, only **2.8%** of Uyak Creek pixels pass. Flags l
 
 ---
 
-### Filter 6: Classification (Water Type)
+### Filter 7: Classification (Water Type)
 
 **SWOT Handbook Reference:** Chapter 6, Table 6.1 (Page 76)
 
@@ -232,9 +266,39 @@ df_final = df_exact[df_exact['classification'].isin(DEFAULT_CLASSES)]
 
 **Observed impact:** Nearly all pixels that pass Filters 3–5 are already classified as water (Classes 3 or 4), so this filter removes very few additional points. Its primary role is as a safety net against any non-water pixels that passed earlier filters.
 
+#### Ice and Classification
+
+**Important note for seasonally frozen rivers (Kanektok/Uyak at ~59.8°N):**
+
+The PIXC classification scheme has **no dedicated ice class**. When rivers freeze, ice surfaces are classified based on radar backscatter behavior:
+- **Smooth ice** (glare ice, fresh ice) — behaves as a specular reflector at Ka-band → classified as **Class 5 (Dark water)** or **Class 1 (Land)** → **excluded by our filter**
+- **Rough/snow-covered ice** — scatters diffusely like land → classified as **Class 1-2** → **excluded**
+- **Partially frozen surfaces** (transition periods) — mixed ice/water signatures → **may pass as Class 3-4**
+
+This means our Classes 3-4 filter provides **partial but not complete** protection against ice-affected measurements. During freeze-up (Oct-Nov) and break-up (Apr-May), some ice-affected pixels may pass the classification filter.
+
+**Ice surface elevation ≠ water surface elevation.** Ka-band radar (35.75 GHz) has shallow penetration into ice (0.1-0.3 m), so SWOT measures the top of the ice, not the water beneath. The difference (ice thickness + freeboard) is typically 0.5-2+ m on Alaskan rivers, which would corrupt WSE and gradient calculations.
+
+**Ice detection flags:** The `ice_clsf` variable exists in PIXCVec and RiverSP products but is **not available in the base PIXC product** used by our pipeline.
+
+**Our approach:** Rather than filtering ice-affected dates at the ingestion level (permanently removing data), we apply **dashboard-level seasonal warnings** in the analysis tabs. This preserves data for potential cryosphere studies while alerting analysts to interpret ice-period WSE with caution.
+
+**Ice seasons for our study area:**
+| Season | Months | Reliability for WSE |
+|--------|--------|-------------------|
+| Open water | Jun-Sep | High — reliable |
+| Freeze-up | Oct-Nov | Caution — partial ice possible |
+| Frozen | Dec-Mar | Low — ice surface, not water |
+| Break-up | Apr-May | Caution — mixed ice/water |
+
+**References:**
+- SWOT Handbook Table 6.1 (JPL D-109532, page 76) — classification values
+- SMU thesis (2025): SWOT ice surface elevation validation near Fairbanks, AK — RMSE 0.66 m for rivers, 0.23 m for lakes
+- ABoVE AirSWOT: Ka-band penetration depth 0.1-0.3 m over dry snow
+
 ---
 
-### Filter 7: MAD Outlier Filter (WSE Anomaly Removal)
+### Filter 8: MAD Outlier Filter (WSE Anomaly Removal)
 
 **Purpose:** Remove anomalous water surface elevation measurements that deviate significantly from the per-reach median.
 
@@ -800,7 +864,8 @@ If a flag merely indicates higher uncertainty (but the WSE is still usable), we 
 | **Exact Polygon Clipping** | `SWOT_Pull.py` | 217-218 | GeoPandas `.within()` |
 | **WSE Calculation** | `SWOT_Pull.py` | 223 | Formula application |
 | **Distance Calculation** | `SWOT_Pull.py` | 62-77, 229-234 | `haversine_vectorized()` function |
-| **Cross-Track Filter** | `SWOT_Pull.py` | 23-25, 241-246 | `CROSS_TRACK_MIN/MAX` constants |
+| **Cross-Track Filter** | `SWOT_Pull.py` | 23-25, 246-251 | `CROSS_TRACK_MIN/MAX` constants |
+| **Crossover Cal Filter** | `SWOT_Pull.py` | 27-29, 253-262 | `XOVERCAL_MISSING_MASK` bit mask |
 | **Geolocation Quality Filter** | `SWOT_Pull.py` | — | Not yet applied (pending expert review) |
 | **Classification Quality Filter** | `SWOT_Pull.py` | — | Not yet applied (pending expert review) |
 | **Classification Filter** | `SWOT_Pull.py` | 21, 265 | `DEFAULT_CLASSES = [3, 4]` |
@@ -824,12 +889,13 @@ Calculate WSE = height - geoid - solid_tide - pole_tide - load_tide
 Calculate Distance from Confluence (Haversine)
          ↓
 [Filter 3: Cross-Track Distance (10-60 km)]
-[Filter 4: Geolocation Quality — NOT YET APPLIED (pending expert review)]
-[Filter 5: Classification Quality — NOT YET APPLIED (pending expert review)]
+[Filter 4: Crossover Calibration (exclude missing — bit 23 of geolocation_qual)]
+[Filter 5: Geolocation Quality — NOT YET APPLIED (pending expert review)]
+[Filter 6: Classification Quality — NOT YET APPLIED (pending expert review)]
          ↓
-[Filter 6: Classification (Classes 3-4)]
+[Filter 7: Classification (Classes 3-4)]
          ↓
-[Filter 7: MAD Outlier Filter (per-reach, threshold 3.5)]
+[Filter 8: MAD Outlier Filter (per-reach, threshold 3.5)]
          ↓
 Calculate Slope per River Reach (Linear Regression)
          ↓
@@ -854,6 +920,7 @@ Use this checklist to verify our processing against the SWOT handbook:
 
 ### Data Quality Filtering
 - [x] Cross-track distance filter: 10-60 km (avoids nadir gap and far-swath noise)
+- [x] Crossover calibration filter: Exclude pixels missing crossover cal (bit 23 of `geolocation_qual`)
 - [ ] Geolocation quality filter: `geolocation_qual` — pending expert review of which bit flags to apply
 - [ ] Classification quality filter: `classification_qual` — pending expert review of which bit flags to apply
 - [x] Classification filter: Classes 3 & 4 (water near land + open water)
@@ -946,4 +1013,4 @@ If you use or evaluate this methodology, please cite:
 
 **Document Status:** IN PROGRESS — PIXC quality flag filtering pending expert review
 **Verification Status:** ✅ Core processing VERIFIED AGAINST JPL D-109532
-**Last Reviewed:** March 9, 2026
+**Last Reviewed:** April 1, 2026
