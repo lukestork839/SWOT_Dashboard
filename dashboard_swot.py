@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 from plotly.subplots import make_subplots
 from scipy import stats
 from scipy.ndimage import gaussian_filter1d
@@ -29,6 +30,7 @@ except ImportError:
 # --- CONFIGURATION ---
 PAGE_TITLE = "SWOT River Dynamics: Kanektok & Uyak"
 DATA_DIR = "batch_outputs"
+SAMPLE_DATA_DIR = "sample_data"
 MAX_PLOT_POINTS = 15000  # Reduced for large datasets (was 25000)
 MAX_BASELINE_POINTS = 30000  # Reduced for Streamlit Cloud (was 50000)
 MAX_MAP_POINTS = 5000  # Strict limit for map rendering
@@ -145,6 +147,50 @@ def calculate_detrending(dist_km, wse, method):
         method_name = "LOESS (Local Regression)"
 
     return baseline_pred, coeffs, method_name
+
+@st.cache_data(ttl=3600)
+def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
+    """
+    Compute a smooth slope profile for a single river by:
+    1. Binning raw data into regular 100m intervals (median WSE per bin)
+    2. Smoothing the binned WSE with a Gaussian filter (window ~ smooth_km)
+    3. Computing numerical derivative of the smoothed curve
+
+    Args:
+        dist_km: distance values for one river
+        wse: WSE values for one river
+        smooth_km: smoothing window in km (controls noise vs detail)
+        n_eval: number of evenly-spaced output points
+
+    Returns:
+        tuple: (x_eval, slope_cm_km, y_fitted)
+    """
+    import pandas as pd
+    x = np.array(dist_km)
+    y = np.array(wse)
+
+    # Bin into 100m intervals and take median (robust to outliers)
+    bin_size = 0.1  # km
+    bins = np.round(x / bin_size) * bin_size
+    df = pd.DataFrame({'bin': bins, 'wse': y})
+    bin_medians = df.groupby('bin')['wse'].median().sort_index()
+
+    x_binned = bin_medians.index.values
+    y_binned = bin_medians.values
+
+    # Gaussian smoothing with sigma in physical distance units
+    # sigma in bins = smooth_km / bin_size
+    sigma_bins = smooth_km / bin_size
+    y_smooth = gaussian_filter1d(y_binned, sigma=sigma_bins, mode='nearest')
+
+    # Interpolate onto regular eval grid
+    x_eval = np.linspace(x_binned.min(), x_binned.max(), n_eval)
+    y_fitted = np.interp(x_eval, x_binned, y_smooth)
+
+    # Numerical derivative: slope in m/km -> * 100 for cm/km
+    slope_cm_km = np.gradient(y_fitted, x_eval) * 100
+
+    return x_eval, slope_cm_km, y_fitted
 
 @st.cache_data(ttl=3600)
 def detect_anomalies_mad(data, threshold=3.5):
@@ -275,12 +321,16 @@ def get_database_connection():
     """
     Initialize DuckDB connection with parquet data.
     Cached as a resource to prevent reconnecting on every interaction.
-    Prefers partition files (from SWOT_Pull.py) over the single optimized file.
+
+    Data source priority:
+      1. Full dataset partition files from SWOT_Pull.py (batch_outputs/)
+      2. Bundled sample data for quick demo (sample_data/)
+      3. Download from GitHub Releases (Streamlit Cloud fallback)
     """
     try:
         con = duckdb.connect(database=':memory:')
 
-        # Prefer partition files from SWOT_Pull.py (local development)
+        # 1. Prefer full partition files from SWOT_Pull.py (local development)
         partition_pattern = os.path.join(DATA_DIR, "master_all_data_part_*.parquet")
         import glob
         partition_files = glob.glob(partition_pattern)
@@ -288,11 +338,19 @@ def get_database_connection():
         if partition_files:
             con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{partition_pattern}')")
         else:
-            # Fallback: download optimized file (Streamlit Cloud)
-            parquet_file = download_data_if_needed()
-            if parquet_file is None:
-                return None
-            con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{parquet_file}')")
+            # 2. Fallback: bundled sample data (works out of the box after git clone)
+            sample_pattern = os.path.join(SAMPLE_DATA_DIR, "*.parquet")
+            sample_files = glob.glob(sample_pattern)
+
+            if sample_files:
+                con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{sample_pattern}')")
+                st.info("📦 Using bundled sample data (May-Jul 2025). Run `python SWOT_Pull.py` to download the full dataset.")
+            else:
+                # 3. Fallback: download optimized file (Streamlit Cloud)
+                parquet_file = download_data_if_needed()
+                if parquet_file is None:
+                    return None
+                con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{parquet_file}')")
 
         # Memory optimization: Set DuckDB memory limit (recommended for Streamlit Cloud)
         con.execute("SET memory_limit='600MB'")
@@ -432,6 +490,30 @@ def main():
         help="Adjust transparency of map points (lower = more transparent, easier to see basemap)",
         key="point_opacity"
     )
+
+    st.sidebar.write("---")
+    st.sidebar.write("### 4. Display Theme")
+    light_mode = st.sidebar.toggle("Light mode (for screenshots/posters)", value=False, key="light_mode")
+    if light_mode:
+        plot_bg = "white"
+        font_color = "black"
+        plotly_template = "plotly_white"
+        st.markdown("""<style>
+            .stApp, .stMainBlockContainer, [data-testid="stAppViewContainer"],
+            [data-testid="stHeader"], section[data-testid="stSidebar"] {
+                background-color: #ffffff !important; color: #000000 !important;
+            }
+            .stMarkdown, .stMarkdown p, .stMarkdown h1, .stMarkdown h2,
+            .stMarkdown h3, .stMarkdown li, .stTabs [data-baseweb="tab"],
+            .stMetricValue, .stMetricLabel, .stCaption, label, span {
+                color: #000000 !important;
+            }
+        </style>""", unsafe_allow_html=True)
+    else:
+        plotly_template = "plotly_white"
+        plot_bg = "white"
+        font_color = "black"
+
 
     # --- DATA LOADING WITH CACHING ---
     # Only reload data when form is submitted OR when data is not yet loaded
@@ -590,55 +672,68 @@ def main():
         st.session_state.metrics_calculated = detrend_method
 
     # --- TABS ---
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
-        "📈 Gradient Profile", "🔀 Elevation Difference", "🎯 Detrended Profile",
-        "📐 Interval Slopes", "🗺️ Map View", "📄 Raw Data", "⏳ Temporal Evolution",
-        "📊 Seasonal Comparison", "🌊 Typhoon Impact"
+    tab1, tab3, tab5, tab_pocketed = st.tabs([
+        "📈 Gradient Profile", "🎯 Detrended Profile", "🗺️ Map View", "📂 More Tabs"
     ])
 
     with tab1:
         st.subheader(f"River Profile ({start_date} to {end_date})")
         
-        fig = px.scatter(
-            viz_df, 
-            x="dist_km", 
-            y="wse", 
-            color="Reach_Name", 
-            color_discrete_map=COLOR_MAP, 
-            opacity=0.3, 
-            hover_data=["Pass_Date", "height_uncertainty"],
-            labels={
-                "wse": "Water Surface Elevation (m)", 
-                "dist_km": "Distance from Confluence Anchor (km)"
-            }
-        )
+        fig = go.Figure()
 
-        # Trendlines
         for reach in selected_reaches:
             reach_data = viz_df[viz_df['Reach_Name'] == reach]
-            if len(reach_data) < 5: continue
-            
-            slope, intercept, r, _, _ = stats.linregress(reach_data['dist_km'], reach_data['wse'])
-            slope_cm = abs(slope * 100) # Use Absolute value for display "Steepness"
-            
-            x_range = np.linspace(reach_data['dist_km'].min(), reach_data['dist_km'].max(), 100)
-            y_range = intercept + slope * x_range
-            
+            if len(reach_data) == 0:
+                continue
             line_color = COLOR_MAP.get(reach, "black")
-            
+
+            # Solid legend marker (invisible data, shown in legend)
             fig.add_trace(go.Scatter(
-                x=x_range, 
-                y=y_range, 
-                mode='lines',
-                name=f"{reach} Trend: {slope_cm:.1f} cm/km",
-                line=dict(color=line_color, width=4, dash='dash')
+                x=[None], y=[None],
+                mode='markers',
+                name=reach,
+                marker=dict(color=line_color, size=8, opacity=1.0),
+                legendgroup=reach,
             ))
+            # Scatter points (translucent data, hidden from legend)
+            fig.add_trace(go.Scatter(
+                x=reach_data['dist_km'],
+                y=reach_data['wse'],
+                mode='markers',
+                marker=dict(color=line_color, size=5, opacity=0.3),
+                legendgroup=reach,
+                showlegend=False,
+                hovertemplate='<b>' + reach + '</b><br>'
+                              'Distance: %{x:.2f} km<br>'
+                              'WSE: %{y:.2f} m<br>'
+                              '<extra></extra>'
+            ))
+
+            # Trendline
+            if len(reach_data) >= 5:
+                slope, intercept, r, _, _ = stats.linregress(reach_data['dist_km'], reach_data['wse'])
+                slope_cm = abs(slope * 100)
+                x_range = np.linspace(reach_data['dist_km'].min(), reach_data['dist_km'].max(), 100)
+                y_range = intercept + slope * x_range
+
+                fig.add_trace(go.Scatter(
+                    x=x_range,
+                    y=y_range,
+                    mode='lines',
+                    name=f"{reach} Trend: {slope_cm:.1f} cm/km",
+                    line=dict(color=line_color, width=4, dash='dash')
+                ))
+
+        fig.update_layout(
+            xaxis_title="Distance from Anchor Point (km)",
+            yaxis_title="Water Surface Elevation (m)",
+        )
 
         # 🔄 REVERSE THE X-AXIS HERE
         fig.update_xaxes(autorange="reversed")
 
-        fig.update_layout(height=600, template="plotly_white")
-        st.plotly_chart(fig, width="stretch")
+        fig.update_layout(height=600, template=plotly_template)
+        st.plotly_chart(fig, width="stretch", theme=None)
 
         # Add interpretation guide
         st.info("""
@@ -660,8 +755,14 @@ def main():
         💡 **Tip**: Use the other tabs for detailed comparisons!
         - "Elevation Difference" shows which river is higher at each distance
         - "Detrended Profile" removes overall slope to highlight subtle differences
-        - "Interval Slopes" shows how steepness varies along the river
+        - "Slope Profile" shows how steepness varies along the river
         """)
+
+    with tab_pocketed:
+        tab2, tab4, tab6, tab7, tab8, tab9 = st.tabs([
+            "🔀 Elevation Difference", "📐 Slope Profile", "📄 Raw Data",
+            "⏳ Temporal Evolution", "📊 Seasonal Comparison", "🌊 Typhoon Impact"
+        ])
 
     with tab2:
         st.subheader(f"Elevation Difference: Kanektok - Uyak ({start_date} to {end_date})")
@@ -743,17 +844,17 @@ def main():
 
                     # Update layout
                     fig_diff.update_layout(
-                        xaxis_title="Distance from Confluence Anchor (km)",
+                        xaxis_title="Distance from Anchor Point (km)",
                         yaxis_title="Elevation Difference (m)",
                         height=600,
-                        template="plotly_white",
+                        template=plotly_template,
                         hovermode='x unified'
                     )
 
                     # Reverse x-axis to match other plots (Coast on left, Confluence on right)
                     fig_diff.update_xaxes(autorange="reversed")
 
-                    st.plotly_chart(fig_diff, width="stretch")
+                    st.plotly_chart(fig_diff, width="stretch", theme=None)
 
                     # Add interpretation guide
                     st.info("""
@@ -871,12 +972,22 @@ def main():
 
                     line_color = COLOR_MAP.get(reach, "black")
 
+                    # Solid legend marker
+                    fig_detrend.add_trace(go.Scatter(
+                        x=[None], y=[None],
+                        mode='markers',
+                        name=reach,
+                        marker=dict(color=line_color, size=8, opacity=1.0),
+                        legendgroup=reach,
+                    ))
+                    # Translucent data points (hidden from legend)
                     fig_detrend.add_trace(go.Scatter(
                         x=reach_data['dist_km'],
                         y=reach_data['residual'],
                         mode='markers',
-                        name=reach,
                         marker=dict(color=line_color, size=3, opacity=0.4),
+                        legendgroup=reach,
+                        showlegend=False,
                         hovertemplate='<b>' + reach + '</b><br>' +
                                       'Distance: %{x:.2f} km<br>' +
                                       'Residual: %{y:.3f} m<br>' +
@@ -895,10 +1006,10 @@ def main():
 
                 # Update layout
                 fig_detrend.update_layout(
-                    xaxis_title="Distance from Confluence Anchor (km)",
+                    xaxis_title="Distance from Anchor Point (km)",
                     yaxis_title=f"Residual Elevation (m) - Detrended using {method_name}",
                     height=600,
-                    template="plotly_white",
+                    template=plotly_template,
                     hovermode='closest',
                     showlegend=True
                 )
@@ -906,7 +1017,7 @@ def main():
                 # Reverse x-axis to match other plots
                 fig_detrend.update_xaxes(autorange="reversed")
 
-                st.plotly_chart(fig_detrend, width="stretch")
+                st.plotly_chart(fig_detrend, width="stretch", theme=None)
 
                 # Show fit quality metrics
                 col1, col2, col3 = st.columns(3)
@@ -1048,15 +1159,15 @@ def main():
                     ))
 
                     fig_baseline.update_layout(
-                        xaxis_title="Distance from Confluence Anchor (km)",
+                        xaxis_title="Distance from Anchor Point (km)",
                         yaxis_title="Water Surface Elevation (m)",
                         height=500,
-                        template="plotly_white",
+                        template=plotly_template,
                         title=f"Original Data with {method_name} Baseline"
                     )
 
                     fig_baseline.update_xaxes(autorange="reversed")
-                    st.plotly_chart(fig_baseline, width="stretch")
+                    st.plotly_chart(fig_baseline, width="stretch", theme=None)
 
         except Exception as e:
             st.error(f"Error calculating detrended profile: {e}")
@@ -1064,146 +1175,99 @@ def main():
             st.code(traceback.format_exc())
 
     with tab4:
-        st.subheader(f"Interval Slopes: 100m Segments ({start_date} to {end_date})")
+        st.subheader(f"Slope Profile ({start_date} to {end_date})")
 
-        # Query to calculate slopes for 100m intervals per river
+        # Query raw data per river
         slope_query = f"""
-            WITH binned_data AS (
-                SELECT
-                    ROUND(dist_km / 0.1) * 0.1 AS dist_bin,
-                    Reach_Name,
-                    AVG(wse) AS avg_wse,
-                    COUNT(*) AS point_count
-                FROM river_data
-                {where_clause}
-                GROUP BY dist_bin, Reach_Name
-                HAVING COUNT(*) >= 3  -- Require at least 3 points per bin for reliable average
-            ),
-            slopes AS (
-                SELECT
-                    dist_bin,
-                    Reach_Name,
-                    avg_wse,
-                    point_count,
-                    LAG(avg_wse) OVER (PARTITION BY Reach_Name ORDER BY dist_bin) as prev_wse,
-                    LAG(dist_bin) OVER (PARTITION BY Reach_Name ORDER BY dist_bin) as prev_dist,
-                    (dist_bin - LAG(dist_bin) OVER (PARTITION BY Reach_Name ORDER BY dist_bin)) as dist_gap,
-                    CASE
-                        WHEN LAG(dist_bin) OVER (PARTITION BY Reach_Name ORDER BY dist_bin) IS NOT NULL
-                        THEN ((avg_wse - LAG(avg_wse) OVER (PARTITION BY Reach_Name ORDER BY dist_bin)) /
-                              (dist_bin - LAG(dist_bin) OVER (PARTITION BY Reach_Name ORDER BY dist_bin))) * 100
-                        ELSE NULL
-                    END as interval_slope_cm_km
-                FROM binned_data
-            )
-            SELECT
-                dist_bin,
-                Reach_Name,
-                avg_wse,
-                point_count,
-                interval_slope_cm_km,
-                dist_gap
-            FROM slopes
-            WHERE interval_slope_cm_km IS NOT NULL
-              AND dist_gap <= 0.15  -- Only include consecutive bins (max 150m gap allows for slight irregularities)
-              AND ABS(interval_slope_cm_km) <= 1000  -- Filter out unrealistic extreme slopes
-            ORDER BY Reach_Name, dist_bin
+            SELECT dist_km, wse, Reach_Name
+            FROM river_data
+            {where_clause}
+            ORDER BY Reach_Name, dist_km
         """
 
         try:
-            slope_df = con.execute(slope_query).fetchdf()
+            slope_raw_df = con.execute(slope_query).fetchdf()
 
-            if len(slope_df) == 0:
-                st.warning("No interval slope data available for the selected filters.")
+            if len(slope_raw_df) == 0:
+                st.warning("No data available for the selected filters.")
             else:
-                # Create the interval slopes plot
                 fig_slopes = go.Figure()
+                slope_stats = []
 
                 for reach in selected_reaches:
-                    reach_data = slope_df[slope_df['Reach_Name'] == reach]
-                    if len(reach_data) == 0:
+                    reach_data = slope_raw_df[slope_raw_df['Reach_Name'] == reach]
+                    if len(reach_data) < 10:
+                        st.warning(f"Insufficient data for {reach} ({len(reach_data)} points). Need at least 10.")
                         continue
 
+                    x_eval, slope_cm_km, y_fitted = calculate_slope_profile(
+                        reach_data['dist_km'].tolist(),
+                        reach_data['wse'].tolist()
+                    )
+
                     line_color = COLOR_MAP.get(reach, "black")
+                    abs_slope = np.abs(slope_cm_km)
 
                     fig_slopes.add_trace(go.Scatter(
-                        x=reach_data['dist_bin'],
-                        y=reach_data['interval_slope_cm_km'].abs(),  # Absolute value for "steepness"
-                        mode='lines+markers',
+                        x=x_eval,
+                        y=abs_slope,
+                        mode='lines',
                         name=reach,
-                        line=dict(color=line_color, width=2),
-                        marker=dict(size=4),
-                        customdata=reach_data[['point_count', 'dist_gap']],
+                        line=dict(color=line_color, width=3),
                         hovertemplate='<b>' + reach + '</b><br>' +
                                       'Distance: %{x:.2f} km<br>' +
-                                      'Slope: %{y:.2f} cm/km<br>' +
-                                      'Points in bin: %{customdata[0]}<br>' +
-                                      'Gap to prev: %{customdata[1]:.2f} km<br>' +
+                                      'Slope: %{y:.1f} cm/km<br>' +
                                       '<extra></extra>'
                     ))
 
-                # Update layout
+                    slope_stats.append({
+                        "River": reach,
+                        "Mean Slope (cm/km)": abs_slope.mean(),
+                        "Max Slope (cm/km)": abs_slope.max(),
+                        "Min Slope (cm/km)": abs_slope.min(),
+                        "Slope at Coast (cm/km)": abs_slope[0],
+                        "Slope at Confluence (cm/km)": abs_slope[-1],
+                        "Points Used": len(reach_data)
+                    })
+
                 fig_slopes.update_layout(
-                    xaxis_title="Distance from Confluence Anchor (km)",
-                    yaxis_title="Interval Slope (cm/km) - Absolute Value",
+                    xaxis_title="Distance from Anchor Point (km)",
+                    yaxis_title="Slope (cm/km)",
                     height=600,
-                    template="plotly_white",
+                    template=plotly_template,
                     hovermode='x unified',
                     showlegend=True
                 )
-
-                # Reverse x-axis to match other plots
                 fig_slopes.update_xaxes(autorange="reversed")
 
-                st.plotly_chart(fig_slopes, width="stretch")
+                st.plotly_chart(fig_slopes, width="stretch", theme=None)
 
-                # Add interpretation guide
                 st.info("""
                 **How to Read This Graph:**
-                - Each point represents the **average slope** over a ~100-meter river segment
-                - **Higher values** = Steeper gradient (rapid elevation change)
-                - **Lower values** = Gentler gradient (gradual elevation change)
-                - Values are absolute (steepness) for easier comparison
-                - Helps identify specific reaches with different hydraulic characteristics
-
-                **Quality Filters Applied:**
-                - Bins require ≥3 data points for reliable averaging
-                - Only consecutive bins shown (≤150m gap)
-                - Extreme outliers removed (>1000 cm/km filtered out)
+                - Shows how river steepness varies along its length
+                - Raw WSE data is binned (100m medians) then smoothed with a 2km Gaussian window
+                - Slope is the derivative of the smoothed elevation profile
+                - **Higher values** = Steeper gradient (more hydraulic energy)
+                - Compare rivers to identify where one is significantly steeper
                 """)
 
-                # Show summary statistics per river
-                st.subheader("Interval Slope Statistics")
-
-                stats_data = []
-                for reach in selected_reaches:
-                    reach_data = slope_df[slope_df['Reach_Name'] == reach]
-                    if len(reach_data) > 0:
-                        stats_data.append({
-                            "River": reach,
-                            "Average Slope (cm/km)": reach_data['interval_slope_cm_km'].abs().mean(),
-                            "Max Slope (cm/km)": reach_data['interval_slope_cm_km'].abs().max(),
-                            "Min Slope (cm/km)": reach_data['interval_slope_cm_km'].abs().min(),
-                            "Std Dev (cm/km)": reach_data['interval_slope_cm_km'].abs().std(),
-                            "Number of Intervals": len(reach_data),
-                            "Avg Points/Bin": reach_data['point_count'].mean()
-                        })
-
-                if stats_data:
-                    stats_summary = pd.DataFrame(stats_data)
+                if slope_stats:
+                    st.subheader("Slope Profile Statistics")
+                    stats_summary = pd.DataFrame(slope_stats)
                     st.dataframe(
                         stats_summary.style.format({
-                            "Average Slope (cm/km)": "{:.2f}",
-                            "Max Slope (cm/km)": "{:.2f}",
-                            "Min Slope (cm/km)": "{:.2f}",
-                            "Std Dev (cm/km)": "{:.2f}"
+                            "Mean Slope (cm/km)": "{:.1f}",
+                            "Max Slope (cm/km)": "{:.1f}",
+                            "Min Slope (cm/km)": "{:.1f}",
+                            "Slope at Coast (cm/km)": "{:.1f}",
+                            "Slope at Confluence (cm/km)": "{:.1f}",
                         }),
                         width="stretch",
                         hide_index=True
                     )
 
         except Exception as e:
-            st.error(f"Error calculating interval slopes: {e}")
+            st.error(f"Error calculating slope profile: {e}")
 
     with tab5:
         st.subheader("Satellite Data Point Locations")
@@ -1714,12 +1778,12 @@ def main():
                 xaxis_title="Date",
                 yaxis_title="Water Surface Elevation (m)",
                 height=400,
-                template="plotly_white",
+                template=plotly_template,
                 hovermode='x unified',
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
 
-            st.plotly_chart(fig_wse, use_container_width=True)
+            st.plotly_chart(fig_wse, use_container_width=True, theme=None)
 
         with col2:
             st.markdown("#### Average Gradient per Pass")
@@ -1760,11 +1824,11 @@ def main():
                 xaxis_title="Date",
                 yaxis_title="Hydraulic Gradient (cm/km)",
                 height=400,
-                template="plotly_white",
+                template=plotly_template,
                 hovermode='x unified'
             )
 
-            st.plotly_chart(fig_grad, use_container_width=True)
+            st.plotly_chart(fig_grad, use_container_width=True, theme=None)
 
         # Second row: WSE at specific distances and elevation difference
         col1, col2 = st.columns(2)
@@ -1806,11 +1870,11 @@ def main():
                 xaxis_title="Date",
                 yaxis_title="Water Surface Elevation (m)",
                 height=400,
-                template="plotly_white",
+                template=plotly_template,
                 hovermode='x unified'
             )
 
-            st.plotly_chart(fig_dist, use_container_width=True)
+            st.plotly_chart(fig_dist, use_container_width=True, theme=None)
 
         with col2:
             st.markdown("#### Elevation Difference Over Time")
@@ -1869,11 +1933,11 @@ def main():
                     xaxis_title="Date",
                     yaxis_title="Elevation Difference (m)",
                     height=400,
-                    template="plotly_white",
+                    template=plotly_template,
                     hovermode='x unified'
                 )
 
-                st.plotly_chart(fig_diff, use_container_width=True)
+                st.plotly_chart(fig_diff, use_container_width=True, theme=None)
             else:
                 st.warning("⚠️ Elevation difference requires both rivers to be selected.")
 
@@ -2004,13 +2068,13 @@ def main():
                     xaxis_title="Month",
                     yaxis_title="Distance from Confluence (km)",
                     height=500,
-                    template="plotly_white"
+                    template=plotly_template
                 )
 
                 # Reverse Y-axis (coast at top, confluence at bottom)
                 fig_heat.update_yaxes(autorange="reversed")
 
-                st.plotly_chart(fig_heat, use_container_width=True)
+                st.plotly_chart(fig_heat, use_container_width=True, theme=None)
 
         # === SUMMARY STATISTICS ===
         st.markdown("### Summary Statistics")
@@ -2137,10 +2201,10 @@ def main():
             fig_seasonal.update_xaxes(autorange="reversed", row=row, col=col)
 
         fig_seasonal.update_layout(
-            height=800, template="plotly_white",
+            height=800, template=plotly_template,
             title_text="Seasonal WSE Profiles: High Flow (May) vs Low Flow (Jul-Aug)"
         )
-        st.plotly_chart(fig_seasonal, use_container_width=True)
+        st.plotly_chart(fig_seasonal, use_container_width=True, theme=None)
 
         # Summary statistics table
         if summary_rows:
@@ -2227,8 +2291,8 @@ def main():
 
                 fig_imm.update_xaxes(autorange="reversed", row=1, col=panel_idx)
 
-            fig_imm.update_layout(height=500, template="plotly_white")
-            st.plotly_chart(fig_imm, use_container_width=True)
+            fig_imm.update_layout(height=500, template=plotly_template)
+            st.plotly_chart(fig_imm, use_container_width=True, theme=None)
 
             # Slope change metrics
             cols = st.columns(len(slope_changes))
@@ -2266,9 +2330,9 @@ def main():
                         name=f"{reach} {abs(slope * 100):.1f} cm/km",
                     ))
             fig_pre_only.update_xaxes(autorange="reversed")
-            fig_pre_only.update_layout(height=500, template="plotly_white",
+            fig_pre_only.update_layout(height=500, template=plotly_template,
                                        title_text=pre["label"])
-            st.plotly_chart(fig_pre_only, use_container_width=True)
+            st.plotly_chart(fig_pre_only, use_container_width=True, theme=None)
         else:
             st.warning("Insufficient data for immediate before/after comparison. Ensure data covers Aug-Dec 2025.")
 
@@ -2318,9 +2382,9 @@ def main():
 
                 fig_season.update_xaxes(autorange="reversed", row=1, col=panel_idx)
 
-            fig_season.update_layout(height=500, template="plotly_white",
+            fig_season.update_layout(height=500, template=plotly_template,
                                      title_text="Same-Season Comparison: Summer 2025 vs Spring/Summer 2026")
-            st.plotly_chart(fig_season, use_container_width=True)
+            st.plotly_chart(fig_season, use_container_width=True, theme=None)
 
             # Slope change metrics
             cols = st.columns(len(season_slope_changes))
@@ -2372,11 +2436,11 @@ Re-run the data download (`SWOT_Pull.py`) after May 2026 and this section will a
                     fig_change.add_hline(y=0, line_dash="dash", line_color="gray")
                     fig_change.update_xaxes(autorange="reversed")
                     fig_change.update_layout(
-                        height=400, template="plotly_white",
+                        height=400, template=plotly_template,
                         yaxis_title="WSE Change (m)", xaxis_title="Distance from Confluence (km)",
                         title_text="Post-Storm minus Pre-Storm WSE"
                     )
-                    st.plotly_chart(fig_change, use_container_width=True)
+                    st.plotly_chart(fig_change, use_container_width=True, theme=None)
                     st.caption("Positive = WSE increased post-storm. Negative = WSE decreased. 500m bins, min 3 points per bin.")
                 else:
                     st.info("Not enough overlapping distance bins between pre- and post-storm periods to compute elevation change.")

@@ -39,10 +39,7 @@ level = "info"
 enableProfilingStats = false
 
 [theme]
-# Custom theme - dark mode (matches SWOT branding)
-base = "dark"
+# Light theme for poster/figure exports
+base = "light"
 primaryColor = "#1f77b4"  # Dodger blue (matches Uyak Creek)
-backgroundColor = "#0e1117"
-secondaryBackgroundColor = "#262730"
-textColor = "#fafafa"
 font = "sans serif"

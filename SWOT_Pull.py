@@ -16,7 +16,7 @@ import math
 # --- CONFIGURATION ---
 OUTPUT_BASE = "batch_outputs"
 TEMP_DIR = "temp_swot_batch"
-POLYGON_PATH = "/home/luke/University/SWOT/river_poly.zip"
+POLYGON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "river_poly.zip")
 
 DEFAULT_CLASSES = [3,4]
 
@@ -42,10 +42,10 @@ KEEP_COLUMNS = [
 ROWS_PER_CHUNK = 100000  # Safe chunk size for dashboard loading
 
 # --- 📍 THE CONFLUENCE ANCHOR ---
-# 59.826973° N, 161.372337° W
+# 59.82463509° N, 161.33397834° W
 # All distances will be measured as a straight line from this point.
-ANCHOR_LAT = 59.826973
-ANCHOR_LON = -161.372337
+ANCHOR_LAT = 59.82463509
+ANCHOR_LON = -161.33397834
 
 # --- NAME MAPPING ---
 NAME_MAPPING = {
