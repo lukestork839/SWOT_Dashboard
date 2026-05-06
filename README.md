@@ -12,7 +12,23 @@ Interactive visualization of NASA SWOT satellite data for two Alaskan rivers (Ka
 ```bash
 git clone https://github.com/lukestork839/SWOT_Dashboard.git
 cd SWOT_Dashboard
-pip install -r requirements.txt
+```
+
+**One-command setup** (creates a virtual environment, installs dependencies, and launches the dashboard):
+
+| Platform | Command |
+|----------|---------|
+| **Windows** | Double-click `setup.bat` or run it in PowerShell |
+| **Linux/Mac** | `./setup.sh` |
+
+**Or manually:**
+
+```bash
+python -m venv venv
+source venv/bin/activate        # Linux/Mac
+# venv\Scripts\activate         # Windows
+
+python -m pip install -r requirements.txt
 streamlit run dashboard_swot.py
 ```
 
@@ -190,6 +206,8 @@ For the complete scientific documentation, see:
 
 ```
 SWOT_Dashboard/
+├── setup.bat                        # One-command setup for Windows
+├── setup.sh                         # One-command setup for Linux/Mac
 ├── SWOT_Pull.py                     # Data ingestion: NASA download + processing pipeline
 ├── dashboard_swot.py                # Visualization: Streamlit dashboard (~2400 lines)
 ├── rebuild_master.py                # Utility: rebuild master parquets from daily CSVs
@@ -286,6 +304,14 @@ To use this framework for a different study area:
 ---
 
 ## Troubleshooting
+
+### Windows: `python` or `pip` not recognized
+
+Python is installed but Windows can't find it. Try these in order:
+
+1. Open Start Menu, search **"Manage app execution aliases"**, turn OFF `python.exe` and `python3.exe`
+2. Use `python -m pip` instead of `pip` directly
+3. If Python isn't installed: download from https://www.python.org/downloads/ and **check "Add python.exe to PATH"** during install
 
 ### `earthaccess` authentication fails
 
