@@ -2,7 +2,7 @@
 ## Kanektok River - Uyak Creek Avulsion Risk Assessment
 
 **Study Location:** Kanektok River distributary system, Alaska
-**Reference Point:** 59.826973°N, -161.372337°W (split point where Uyak diverges from Kanektok)
+**Reference Point:** 59.82463509°N, -161.33397834°W (upriver of bifurcation point where Uyak diverges from Kanektok)
 **Scientific Objective:** Assess avulsion risk by comparing hydraulic gradients between parallel channels
 
 ---
@@ -194,9 +194,9 @@ Full run (July 2023 – December 2025, 295 granules):
 ### Method: Haversine Great-Circle Distance
 
 **Reference Point (Anchor):**
-- Latitude: 59.826973°N
-- Longitude: -161.372337°W
-- Physical Location: Split point where Uyak Creek diverges from Kanektok River
+- Latitude: 59.82463509°N
+- Longitude: -161.33397834°W
+- Physical Location: Upriver of bifurcation point where Uyak Creek diverges from Kanektok River
 
 **Formula Implementation:**
 ```python

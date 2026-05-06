@@ -22,11 +22,7 @@ ENV/
 *~
 
 # Project-specific: Large data files
-# Ignore batch_outputs folder...
 batch_outputs/
-
-# ...BUT track optimized parquet partition files (via Git LFS) for Streamlit Cloud
-!batch_outputs/master_all_data_part_*.parquet
 
 # Ignore temp directories
 temp_swot_batch/
@@ -36,9 +32,28 @@ temp_calibration_data/
 # Project-specific: Claude Code workspace
 .claude/
 
-# Project-specific: Credentials (if any)
+# Internal development notes (not needed by public users)
+Claude/
+DEPLOYMENT.md
+DEPLOYMENT_SUMMARY.md
+NEXT_STEPS.md
+dashboard_optimizations.md
+PERFORMANCE_UPDATE.md
+
+# Backup and diagnostic files
+*.backup
+calibration_diagnostic.py
+
+# Dev container config (personal)
+.devcontainer/
+
+# Poster assets (personal)
+poster_assets/
+
+# Project-specific: Credentials and local config
 .netrc
 *.credentials
+.swot_cli_config.json
 
 # OS
 .DS_Store

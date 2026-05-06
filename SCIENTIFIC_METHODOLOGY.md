@@ -541,8 +541,8 @@ df_exact = gdf_temp[gdf_temp.geometry.within(polygon)]
 **Our Approach:** Fixed confluence anchor point
 
 ```python
-ANCHOR_LAT = 59.826973  # Confluence location (North)
-ANCHOR_LON = -161.372337  # Confluence location (West)
+ANCHOR_LAT = 59.82463509  # Anchor point (North)
+ANCHOR_LON = -161.33397834  # Anchor point (West)
 ```
 
 **Implementation:** `SWOT_Pull.py`, lines 31-34 (constants) and lines 42-51 (function)

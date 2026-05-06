@@ -2,191 +2,145 @@
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Streamlit App](https://img.shields.io/badge/Streamlit-Live%20App-FF4B4B?logo=streamlit)](https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/)
-
----
-
-## 🌐 Live Dashboard
-
-**Try it now (NOT FUNCTIONING):** [https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/](https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/)
 
 Interactive visualization of NASA SWOT satellite data for two Alaskan rivers (Kanektok River and Uyak Creek), comparing hydraulic gradients to assess avulsion risk.
 
 ---
 
-## 📋 For Scientific Reviewers
-
-**→ START HERE:** [`SCIENTIFIC_METHODOLOGY.md`](SCIENTIFIC_METHODOLOGY.md)
-
-This document provides complete verification of our data processing:
-- ✅ All processing steps verified against SWOT Handbook (JPL D-109532)
-- ✅ Field calibration with RTK GPS (±1 cm precision)
-- ✅ Code implementation references for every critical step
-- ✅ Full 7-stage quality filter chain with scientific rationale
-- ✅ WSE formula component-by-component verification
-- ✅ Independent validation results
-
-**Status:** ALL PROCESSING STEPS VERIFIED AND SCIENTIFICALLY SOUND
-
----
-
-## 🚀 Quick Start - Using This Repository
-
-### Prerequisites
-
-1. **Python 3.8+** installed
-2. **NASA Earthdata Account** (free): https://urs.earthdata.nasa.gov/
-
-### Installation
+## Quick Start
 
 ```bash
-# Clone the repository
 git clone https://github.com/lukestork839/SWOT_Dashboard.git
 cd SWOT_Dashboard
-
-# Install dependencies
 pip install -r requirements.txt
-```
-
----
-
-## 📊 The Two Main Scripts
-
-### 1. `SWOT_Pull.py` - Data Ingestion
-
-**Purpose:** Downloads and processes SWOT satellite data from NASA Earthdata.
-
-**How to use:**
-
-```bash
-python SWOT_Pull.py
-```
-
-**What it does:**
-1. Prompts you for date range (YYYY-MM-DD format)
-2. Authenticates with NASA Earthdata (first time only)
-3. Downloads SWOT Version D NetCDF files for your date range
-4. Applies strict quality filter chain (PIXC quality flags, classification, MAD outlier detection)
-5. Calculates Water Surface Elevation with geoid + tide corrections
-6. Calculates distance from confluence using Haversine formula
-7. Exports daily CSV files (one per satellite pass)
-8. Creates optimized parquet files for dashboard
-
-**Key features:**
-- ✅ **Resumable:** Skips already-processed dates if interrupted
-- ✅ **Progress bars:** Shows download progress with ETA
-- ✅ **Automatic optimization:** Creates dashboard-ready files
-- ✅ **Verified processing:** All corrections verified against SWOT handbook
-
-**Example:**
-```bash
-python SWOT_Pull.py
-# Enter start date: 2024-06-01
-# Enter end date: 2024-06-30
-# Processing...
-# ✅ Complete! Created master_all_data.parquet
-```
-
-**Output files:**
-- `batch_outputs/data/YYYY-MM-DD_data.csv` (daily checkpoints)
-- `batch_outputs/master_all_data.csv` (combined dataset)
-- `batch_outputs/master_all_data_part_*.parquet` (optimized for dashboard)
-
----
-
-### 2. `dashboard_swot.py` - Interactive Visualization
-
-**Purpose:** Interactive Streamlit dashboard for exploring and analyzing SWOT data.
-
-**How to use:**
-
-```bash
 streamlit run dashboard_swot.py
 ```
 
-Then open your browser to: `http://localhost:8501`
-
-**What it provides:**
-
-**6 Analysis Tabs:**
-
-1. **Gradient Profile** - WSE vs. distance with trendlines showing river steepness
-2. **Elevation Difference** - Direct comparison between the two rivers (Kanektok - Uyak)
-3. **Detrended Profile** - Remove large-scale trends to reveal subtle differences
-4. **Interval Slopes** - Segment-by-segment slope analysis (100m intervals)
-5. **Map View** - Interactive GIS map with measuring tools and multiple basemaps
-6. **Raw Data** - Table view with CSV export capability
-
-**Interactive Controls:**
-- Date range slider (filter by satellite pass dates)
-- River selection (analyze one or both rivers)
-- Detrending method selector (Linear, Polynomial, LOESS)
-- Map coloring options (river name, WSE, classification, etc.)
-- Point opacity control
-
-**Requirements:** Must run `SWOT_Pull.py` first to generate data files.
+Open `http://localhost:8501` in your browser. The dashboard ships with **bundled sample data** (May-Jul 2025, ~114k points across 15 satellite passes) so you can explore immediately without downloading anything.
 
 ---
 
-## 📚 Documentation Files
+## Project Overview
 
-### Essential Reading
+This project has two main components:
 
-| File | Purpose | Audience |
-|------|---------|----------|
-| **`SCIENTIFIC_METHODOLOGY.md`** | Complete scientific verification guide | **→ Reviewers/Evaluators** |
-| **`README.md`** (this file) | Quick start and usage guide | **→ New users** |
-| **`requirements.txt`** | Python package dependencies | **→ Setup** |
+```
+SWOT_Pull.py ──► batch_outputs/ ──► dashboard_swot.py
+(download)        (parquet files)     (visualization)
+```
 
-### Additional Documentation
+1. **`SWOT_Pull.py`** downloads raw SWOT satellite data from NASA, applies quality filters, computes Water Surface Elevation (WSE), and outputs optimized parquet files.
+2. **`dashboard_swot.py`** reads those parquet files (or the bundled sample data) and presents an interactive Streamlit dashboard.
 
-| File | Purpose |
-|------|---------|
-| `SWOT_Processing_Documentation.md` | Detailed technical documentation with formulas |
-| `Claude/Claude_notes.md` | Development history and workflow notes |
-| `Claude/Verification_Summary.md` | Processing verification summary |
-| `DEPLOYMENT.md` | Streamlit Cloud deployment guide |
-| `calibration_diagnostic.py` | Script for field calibration analysis |
+You only need step 2 to explore the dashboard. Step 1 is for downloading your own data.
 
----
+### Data Loading Priority
 
-## 🔬 Scientific Overview
+The dashboard looks for data in this order:
 
-### What This Project Does
+1. **Full dataset** -- `batch_outputs/master_all_data_part_*.parquet` (created by `SWOT_Pull.py`)
+2. **Sample data** -- `sample_data/sample_data.parquet` (bundled in repo, used after a fresh clone)
+3. **Remote download** -- Downloads from GitHub Releases (fallback for Streamlit Cloud deployment)
 
-Analyzes NASA SWOT satellite data to compare hydraulic gradients between two rivers at their confluence:
-- **Kanektok River** (main stem)
-- **Uyak Creek** (tributary/distributary)
-- **Location:** Alaska, USA
-
-### Why It Matters
-
-**Avulsion Risk Assessment:** If the distributary develops a steeper gradient than the main stem, it could capture more flow and permanently switch channels (avulsion) - a major hazard for:
-- Flood risk patterns
-- Infrastructure and communities
-- Ecosystem dynamics
-- Sediment transport
-
-### The Data: NASA SWOT
-
-- **Satellite:** Surface Water and Ocean Topography (launched December 2022)
-- **Instrument:** Ka-band Radar Interferometry (KaRIn)
-- **Product:** L2_HR_PIXC (High-Resolution Pixel Cloud)
-- **Resolution:** ~10-100m pixel spacing
-- **Vertical Accuracy:** ~10cm for rivers
-- **Coverage:** Can measure narrow rivers previously invisible to satellites
+When you run `SWOT_Pull.py` to download full data, the dashboard automatically picks it up on next launch.
 
 ---
 
-## 🧮 Core Methodology (Summary)
+## Downloading Full Data
 
-### Water Surface Elevation (WSE) Formula
+The sample data covers May-July 2025 (3 months). To download the complete SWOT archive (July 2023 onwards), you need a free NASA Earthdata account.
+
+### 1. Create a NASA Earthdata Account
+
+Register at https://urs.earthdata.nasa.gov/ (free, takes ~2 minutes).
+
+### 2. Run the Ingestion Script
+
+```bash
+python SWOT_Pull.py
+```
+
+You'll be prompted for:
+- **Start date** (YYYY-MM-DD): e.g., `2023-07-01` (SWOT launched July 2023)
+- **End date** (YYYY-MM-DD): e.g., `2026-01-01`
+
+On first run, `earthaccess` will prompt for your NASA Earthdata credentials and cache them locally.
+
+### 3. What It Does
+
+For each satellite pass in your date range:
+
+1. Checks if that date is already processed (skips if so -- **resumable**)
+2. Downloads the SWOT NetCDF file (~500 MB each, temporary)
+3. Extracts pixel cloud data within the river polygon boundaries (`river_poly.zip`)
+4. Applies the quality filter chain (see [Scientific Methodology](#scientific-methodology))
+5. Computes WSE with geoid and tide corrections
+6. Computes distance from the confluence anchor point (Haversine)
+7. Calculates per-reach gradient (linear regression)
+8. Saves a daily CSV checkpoint to `batch_outputs/data/YYYY-MM-DD_data.csv`
+9. Deletes the temporary NetCDF file
+
+After processing all passes, it rebuilds the master files:
+- `batch_outputs/master_all_data.csv` -- full dataset (all columns)
+- `batch_outputs/master_all_data.parquet` -- optimized single file
+- `batch_outputs/master_all_data_part_*.parquet` -- partitioned for dashboard performance
+
+**Typical runtime:** ~2-4 hours for the full 2023-present archive (depends on internet speed). The script is fully resumable -- if interrupted, just run it again and it picks up where it left off.
+
+### 4. Rebuild Without Re-downloading
+
+If you change column settings or want to regenerate master files from existing daily CSVs without re-downloading:
+
+```bash
+python rebuild_master.py
+```
+
+---
+
+## Dashboard Features
+
+### Analysis Tabs
+
+The dashboard organizes analysis into top-level tabs and nested "More Tabs":
+
+**Top-level:**
+
+| Tab | What It Shows |
+|-----|---------------|
+| **Gradient Profile** | WSE vs. distance scatter plot with linear regression trendlines. Shows overall river steepness in cm/km. |
+| **Detrended Profile** | Removes the large-scale elevation trend (Relative Elevation Model). Reveals subtle systematic differences between rivers. Supports Linear, Polynomial (2nd/3rd order), and LOESS baselines. |
+| **Map View** | Interactive Folium map with multiple basemaps (satellite, terrain, etc.), measuring tools for distance/area, and color-by options (river name, WSE, classification, detrended residual, interval slope). |
+
+**Nested under "More Tabs":**
+
+| Tab | What It Shows |
+|-----|---------------|
+| **Elevation Difference** | Direct Kanektok minus Uyak WSE comparison in 100m distance bins. Shows which river is higher at each point. |
+| **Slope Profile** | How steepness varies along each river. Uses Gaussian-smoothed binned medians with numerical derivative. |
+| **Raw Data** | Table view of the data with CSV export. |
+| **Temporal Evolution** | Time series of monthly WSE averages and gradients. Includes moving average trendlines, WSE at fixed distances, anomaly detection, and heatmaps. |
+| **Seasonal Comparison** | Year-over-year comparison: high flow (May) vs. low flow (Jul-Aug) for 2023-2025. |
+| **Typhoon Impact** | Before/after analysis of Typhoon Halong (Oct 12-14, 2025). Immediate impact and same-season comparison. |
+
+### Sidebar Controls
+
+- **Date range slider** -- filter by satellite pass dates
+- **River selection** -- analyze one or both rivers
+- **Detrending method** -- Linear, Polynomial (2nd/3rd order), LOESS
+- **Map display options** -- color-by metric, basemap style, point opacity
+- **Theme toggle** -- light mode for screenshots/posters
+
+---
+
+## Scientific Methodology
+
+### WSE Formula
 
 ```
 WSE = height - geoid - solid_earth_tide - pole_tide - load_tide
 ```
 
-**All corrections verified against SWOT Handbook (JPL D-109532)**
+All corrections verified against the SWOT Science Data Products User Handbook (JPL D-109532, Section 11.3). Field-validated with RTK GPS in November 2025 at Quinhagak, Alaska.
 
 | Correction | Model | Typical Magnitude |
 |------------|-------|-------------------|
@@ -195,110 +149,188 @@ WSE = height - geoid - solid_earth_tide - pole_tide - load_tide
 | Pole Tide | IERS | ~0.002 m |
 | Load Tide | FES2014 | ~0.001 m |
 
+### Quality Filter Chain (Applied in Order)
+
+| # | Filter | Criterion | Purpose |
+|---|--------|-----------|---------|
+| 1 | Bounding box | +/- 0.02 deg buffer | Fast spatial pre-filter |
+| 2 | Polygon clipping | `.within()` against `river_poly.zip` | Exact river boundaries |
+| 3 | Cross-track distance | 10-60 km from nadir | Avoids nadir gap and far-swath noise |
+| 4 | Crossover calibration | Bit 23 of `geolocation_qual` = 0 | Excludes pixels without crossover correction (meter-scale errors) |
+| 5 | Classification | Classes 3 and 4 only | Keeps high-quality water pixels (Handbook Table 6.1) |
+| 6 | MAD outlier removal | Modified Z-score <= 3.5, per-reach | Removes anomalous WSE measurements |
+
+**Pending expert review:** `geolocation_qual` and `classification_qual` bit-mask filters are implemented but disabled. They remove nearly all data for narrow rivers (~50-100m wide) like Uyak Creek due to land/water mixing effects. See `SCIENTIFIC_METHODOLOGY.md` for the full PIXC quality flag reference.
+
 ### Distance Calculation
 
-**Confluence Anchor Method:** All measurements referenced to common confluence point (59.826973°N, 161.372337°W)
-- **Method:** Haversine great-circle distance
-- **Convention:** 0 km = confluence, ~70 km = coast
-- **Purpose:** Enables direct gradient comparison between rivers
+All measurements referenced to a common confluence anchor point using Haversine great-circle distance:
 
-### Quality Filtering
+```python
+ANCHOR_LAT = 59.82463509   # just upriver of the bifurcation
+ANCHOR_LON = -161.33397834
+```
 
-Filters currently applied during data ingestion:
+Convention: 0 km = anchor/confluence, ~70 km = coast. X-axis is reversed in all plots (coast on left, confluence on right).
 
-| Filter | Criterion | Purpose | Status |
-|--------|-----------|---------|--------|
-| Cross-track distance | 10–60 km from nadir | Avoid nadir gap + far-swath noise | ✅ Active |
-| Geolocation quality | `geolocation_qual` bit mask | Remove phase unwrapping errors, layover | ⏳ Pending expert review |
-| Classification quality | `classification_qual` bit mask | Ensure reliable water classification | ⏳ Pending expert review |
-| Classification | Classes 3 & 4 only | Keep high-quality water pixels (Handbook Table 6.1) | ✅ Active |
-| MAD outlier filter | Modified Z-score ≤ 3.5 | Remove anomalous WSE values (per-reach) | ✅ Active |
+### Ice Season Awareness
 
-**Note:** PIXC quality flag filters (`geolocation_qual`, `classification_qual`) are not yet applied. Testing showed they remove nearly all data for narrow rivers like Uyak Creek. Expert consultation is underway to determine which specific bit flags to use. See `SCIENTIFIC_METHODOLOGY.md` for the full flag reference.
+At ~59.8N, the rivers freeze October through May. The PIXC product has no ice classification, but:
+- The Class 3-4 filter excludes most ice (smooth ice classifies as dark water or land)
+- Dashboard tabs that span ice months display contextual warnings
+- Data is preserved (not filtered by date) for potential ice studies
 
-**See:** `SCIENTIFIC_METHODOLOGY.md` for detailed rationale, references, and quality flag analysis
-
-### Gradient Analysis
-
-- **Method:** Linear regression (WSE vs. distance)
-- **Units:** cm/km (centimeters drop per kilometer)
-- **Interpretation:** Steeper (more negative) slope = faster hydraulic gradient
+For the complete scientific documentation, see:
+- [`SCIENTIFIC_METHODOLOGY.md`](SCIENTIFIC_METHODOLOGY.md) -- verification, quality flag reference, calibration results
+- [`SWOT_Processing_Documentation.md`](SWOT_Processing_Documentation.md) -- detailed technical processing documentation
 
 ---
 
-## ✅ Verification & Validation
-
-### Field Calibration (November 2025)
-
-**Equipment:** Emlid Reach RS3 RTK GPS
-**Precision:** ±1 cm
-**Location:** Quinhagak, Alaska (Kanektok River)
-
-**Results:**
-- ✅ SWOT processing formula: **100% CORRECT**
-- ✅ All corrections verified
-- ✅ Field measurements agree within 1 m (after datum correction)
-
-**Key Finding:** Identified 9.6 m vertical datum offset between SWOT (EGM2008) and field GPS (NAVD88) - this is expected and documented.
-
-**See:** `SCIENTIFIC_METHODOLOGY.md` for complete calibration analysis
-
----
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 SWOT_Dashboard/
-├── SWOT_Pull.py                    # ← Main data ingestion script
-├── dashboard_swot.py               # ← Interactive visualization dashboard
-├── SCIENTIFIC_METHODOLOGY.md       # ← Complete scientific verification
-├── README.md                       # ← This file
-├── requirements.txt                # Python dependencies
-├── river_poly.zip                  # River boundary polygons
-├── calibration_diagnostic.py       # Field calibration analysis tool
-│
-├── batch_outputs/                  # Data directory (created by SWOT_Pull.py)
-│   ├── data/                       # Daily CSV files (checkpoints)
-│   ├── master_all_data.csv         # Combined dataset
-│   └── master_all_data_part_*.parquet  # Optimized for dashboard
-│
-├── Claude/                         # Technical documentation
-│   ├── Claude_notes.md             # Development history
-│   ├── Verification_Summary.md     # Processing verification
-│   └── SWOT_Handbook.pdf           # NASA reference document
-│
-└── SWOT_Processing_Documentation.md   # Detailed technical docs
+├── SWOT_Pull.py                     # Data ingestion: NASA download + processing pipeline
+├── dashboard_swot.py                # Visualization: Streamlit dashboard (~2400 lines)
+├── rebuild_master.py                # Utility: rebuild master parquets from daily CSVs
+├── requirements.txt                 # Python dependencies (pip install -r requirements.txt)
+├── river_poly.zip                   # River boundary polygons (GeoPackage format)
+├── sample_data/                     # Bundled sample dataset for out-of-the-box demo
+│   └── sample_data.parquet          #   ~114k points, May-Jul 2025, both rivers
+├── batch_outputs/                   # Full dataset directory (gitignored, created by SWOT_Pull.py)
+│   ├── data/                        #   Daily CSV checkpoints (YYYY-MM-DD_data.csv)
+│   ├── master_all_data.csv          #   Combined dataset, all columns
+│   ├── master_all_data.parquet      #   Single optimized parquet
+│   └── master_all_data_part_*.parquet  # Partitioned for dashboard performance
+├── .streamlit/
+│   └── config.toml                  # Streamlit server/theme configuration
+├── SCIENTIFIC_METHODOLOGY.md        # Complete scientific verification document
+├── SWOT_Processing_Documentation.md # Detailed technical processing docs
+└── README.md                        # This file
 ```
 
 ---
 
-## 🛠️ Configuration
+## Tech Stack
 
-### Key Settings (in `SWOT_Pull.py`)
-
-```python
-# Confluence anchor point
-ANCHOR_LAT = 59.826973
-ANCHOR_LON = -161.372337
-
-# Quality filters
-DEFAULT_CLASSES = [3, 4]       # Water near land + Open water
-CROSS_TRACK_MIN = 10000       # 10 km from nadir (meters)
-CROSS_TRACK_MAX = 60000       # 60 km from nadir (meters)
-MAD_THRESHOLD = 3.5           # Modified Z-score outlier threshold
-```
-
-### River Polygons
-
-`river_poly.zip` contains GeoPackage boundaries for:
-- Polygon 1: Uyak Creek
-- Polygon 2: Kanektok River
+| Component | Library | Purpose |
+|-----------|---------|---------|
+| Satellite data access | `earthaccess` | NASA Earthdata authentication and download |
+| NetCDF reading | `xarray`, `netCDF4` | Read SWOT HDF5/NetCDF files |
+| Data processing | `pandas`, `numpy`, `scipy` | Tabular data, math, linear regression |
+| Spatial operations | `geopandas`, `shapely` | Polygon clipping, coordinate transforms |
+| Dashboard framework | `streamlit` | Web UI with interactive widgets |
+| Charts | `plotly` | Interactive scatter, line, heatmap plots |
+| Maps | `folium`, `streamlit-folium` | Interactive maps with measuring tools |
+| Database | `duckdb` | In-memory SQL queries on parquet files |
+| Progress bars | `tqdm` | Progress feedback during long downloads |
 
 ---
 
-## 📖 Citation
+## Configuration Reference
 
-If you use this code or methodology in your research:
+### `SWOT_Pull.py` Settings
+
+All configurable constants are at the top of `SWOT_Pull.py`:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `POLYGON_PATH` | `river_poly.zip` (relative) | Path to river boundary polygons |
+| `ANCHOR_LAT/LON` | 59.825, -161.334 | Confluence anchor point for distance calculation |
+| `DEFAULT_CLASSES` | `[3, 4]` | SWOT classification classes to keep |
+| `CROSS_TRACK_MIN/MAX` | 10,000 / 60,000 m | Cross-track distance filter range |
+| `XOVERCAL_MISSING_MASK` | Bit 23 (8388608) | Crossover calibration missing flag |
+| `MAD_THRESHOLD` | 3.5 | Modified Z-score threshold for outlier detection |
+| `MIN_POINTS_FOR_MAD` | 10 | Minimum points to apply MAD filter |
+| `KEEP_COLUMNS` | (see code) | Columns preserved in output parquets |
+| `ROWS_PER_CHUNK` | 100,000 | Rows per partition file |
+| `NAME_MAPPING` | `{1: Uyak, 2: Kanektok}` | Polygon ID to river name mapping |
+
+### `dashboard_swot.py` Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `DATA_DIR` | `batch_outputs` | Directory for full dataset |
+| `SAMPLE_DATA_DIR` | `sample_data` | Directory for bundled sample data |
+| `MAX_PLOT_POINTS` | 15,000 | Max points rendered in scatter plots |
+| `MAX_BASELINE_POINTS` | 30,000 | Max points for detrending baseline fit |
+| `MAX_MAP_POINTS` | 5,000 | Max points rendered on Folium map |
+
+---
+
+## Adapting for Your Own Rivers
+
+To use this framework for a different study area:
+
+1. **Create river polygons** -- Use QGIS or similar to draw polygon boundaries around your rivers. Save as a GeoPackage or Shapefile in EPSG:4326 (WGS84). Zip the result and replace `river_poly.zip`.
+
+2. **Update `SWOT_Pull.py`**:
+   - Set `ANCHOR_LAT`/`ANCHOR_LON` to your reference point
+   - Update `NAME_MAPPING` with your river names and polygon IDs
+   - Adjust `CROSS_TRACK_MIN/MAX` if needed for your study area geometry
+
+3. **Run the pipeline**:
+   ```bash
+   python SWOT_Pull.py
+   # Enter your date range
+   ```
+
+4. **Launch the dashboard**:
+   ```bash
+   streamlit run dashboard_swot.py
+   ```
+   The dashboard auto-detects river names from the data -- no dashboard code changes needed.
+
+**Note:** The dashboard color mapping (`COLOR_MAP` in `dashboard_swot.py`) defaults to Kanektok/Uyak colors. Update this dict if you want specific colors for your rivers. If your river names aren't in the map, the dashboard falls back to black.
+
+---
+
+## Troubleshooting
+
+### `earthaccess` authentication fails
+
+On first run, `earthaccess.login()` will prompt for your NASA Earthdata username and password. Credentials are cached in `~/.netrc`. If authentication fails:
+- Verify your account at https://urs.earthdata.nasa.gov/
+- Delete `~/.netrc` and try again
+- Check that you've accepted the SWOT data EULA on the Earthdata website
+
+### Dashboard shows "No data found"
+
+The dashboard requires at least one data source. Check:
+1. Does `sample_data/sample_data.parquet` exist? (It should after cloning.)
+2. If using full data, does `batch_outputs/master_all_data_part_*.parquet` exist? (Run `SWOT_Pull.py` first.)
+
+### Streamlit port already in use
+
+```bash
+streamlit run dashboard_swot.py --server.port 8502
+```
+
+### `geopandas` or `shapely` installation issues
+
+These packages have C dependencies. If `pip install` fails:
+```bash
+# Ubuntu/Debian
+sudo apt-get install libgdal-dev libspatialindex-dev
+
+# macOS
+brew install gdal spatialindex
+
+# Or use conda instead of pip
+conda install -c conda-forge geopandas
+```
+
+### Map tab is slow or crashes
+
+The Folium map renders individual circle markers in Python, which is expensive. The dashboard limits map points to 5,000 (configurable via `MAX_MAP_POINTS`). If it's still slow, reduce this value.
+
+### Download interrupted mid-run
+
+Just run `SWOT_Pull.py` again with the same date range. It checks for existing daily CSVs and skips already-processed dates automatically.
+
+---
+
+## Citation
 
 **SWOT Mission:**
 - NASA SWOT Mission: https://swot.jpl.nasa.gov/
@@ -309,20 +341,6 @@ If you use this code or methodology in your research:
 
 ---
 
-## 📧 Questions?
+## License
 
-**For methodology questions:** See `SCIENTIFIC_METHODOLOGY.md`
-**For technical issues:** Open an issue on GitHub
-**For calibration data:** Contact repository author (raw field data available upon request)
-
----
-
-## 📝 License
-
-MIT License - SWOT data is publicly available through NASA Earthdata
-
----
-
-**Last Updated:** March 7, 2026
-**Status:** ✅ Production • Live Dashboard • Field-Validated
-**Live URL:** https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/
+MIT License -- SWOT data is publicly available through NASA Earthdata.
