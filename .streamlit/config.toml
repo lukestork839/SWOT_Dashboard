@@ -17,8 +17,8 @@ maxMessageSize = 200
 # Don't gather usage stats in production
 gatherUsageStats = false
 
-# Server address (leave default for Streamlit Cloud)
-serverAddress = "0.0.0.0"
+# Server address for browser auto-open URL (localhost works on all platforms)
+serverAddress = "localhost"
 
 [runner]
 # Performance settings
