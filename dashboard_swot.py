@@ -1593,80 +1593,87 @@ def main():
                 st.session_state.temporal_where = where_clause
 
                 # Query for WSE evolution at specific distances
-                dist_evolution_query = f"""
-                WITH distance_targets AS (
-                    SELECT * FROM (VALUES (10.0), (20.0), (30.0), (40.0), (50.0), (60.0)) AS t(target_dist)
-                ),
-                nearest_points AS (
-                    SELECT
-                        DATE_TRUNC('month', CAST(Pass_Date AS DATE)) AS month,
-                        Pass_Date,
-                        Reach_Name,
-                        dist_km,
-                        wse,
-                        dt.target_dist,
-                        ABS(dist_km - dt.target_dist) AS dist_diff,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY Pass_Date, Reach_Name, dt.target_dist
-                            ORDER BY ABS(dist_km - dt.target_dist)
-                        ) AS rn
-                    FROM river_data, distance_targets dt
-                    {where_clause}
-                )
-                SELECT
-                    month,
-                    Pass_Date,
-                    Reach_Name,
-                    target_dist,
-                    AVG(wse) AS wse_at_distance,
-                    COUNT(*) AS sample_size
-                FROM nearest_points
-                WHERE rn <= 5
-                  AND dist_diff < 0.5
-                GROUP BY month, Pass_Date, Reach_Name, target_dist
-                ORDER BY Pass_Date, target_dist, Reach_Name
-                """
-
-                dist_evolution_df = con.execute(dist_evolution_query).fetchdf()
-                st.session_state.dist_evolution_df = dist_evolution_df
-
-                # Query for elevation difference over time (only if both rivers selected)
-                if len(selected_reaches) == 2:
-                    elev_diff_query = f"""
-                    WITH binned_wse AS (
+                # Note: This cross-join query can fail over httpfs (remote parquet)
+                try:
+                    dist_evolution_query = f"""
+                    WITH distance_targets AS (
+                        SELECT * FROM (VALUES (10.0), (20.0), (30.0), (40.0), (50.0), (60.0)) AS t(target_dist)
+                    ),
+                    nearest_points AS (
                         SELECT
                             DATE_TRUNC('month', CAST(Pass_Date AS DATE)) AS month,
                             Pass_Date,
-                            ROUND(dist_km / 0.5) * 0.5 AS dist_bin,
                             Reach_Name,
-                            AVG(wse) AS avg_wse
-                        FROM river_data
+                            dist_km,
+                            wse,
+                            dt.target_dist,
+                            ABS(dist_km - dt.target_dist) AS dist_diff,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY Pass_Date, Reach_Name, dt.target_dist
+                                ORDER BY ABS(dist_km - dt.target_dist)
+                            ) AS rn
+                        FROM river_data, distance_targets dt
                         {where_clause}
-                        GROUP BY month, Pass_Date, dist_bin, Reach_Name
-                        HAVING COUNT(*) >= 3
-                    ),
-                    kanektok AS (
-                        SELECT month, Pass_Date, dist_bin, avg_wse AS k_wse
-                        FROM binned_wse WHERE Reach_Name = 'Kanektok_River'
-                    ),
-                    uyak AS (
-                        SELECT month, Pass_Date, dist_bin, avg_wse AS u_wse
-                        FROM binned_wse WHERE Reach_Name = 'Uyak_Creek'
                     )
                     SELECT
-                        k.month,
-                        k.Pass_Date,
-                        AVG(k.k_wse - u.u_wse) AS avg_elev_diff,
-                        STDDEV(k.k_wse - u.u_wse) AS std_elev_diff,
-                        COUNT(*) AS overlap_bins
-                    FROM kanektok k
-                    JOIN uyak u ON k.Pass_Date = u.Pass_Date AND k.dist_bin = u.dist_bin
-                    GROUP BY k.month, k.Pass_Date
-                    ORDER BY k.Pass_Date
+                        month,
+                        Pass_Date,
+                        Reach_Name,
+                        target_dist,
+                        AVG(wse) AS wse_at_distance,
+                        COUNT(*) AS sample_size
+                    FROM nearest_points
+                    WHERE rn <= 5
+                      AND dist_diff < 0.5
+                    GROUP BY month, Pass_Date, Reach_Name, target_dist
+                    ORDER BY Pass_Date, target_dist, Reach_Name
                     """
 
-                    elev_diff_df = con.execute(elev_diff_query).fetchdf()
-                    st.session_state.elev_diff_df = elev_diff_df
+                    dist_evolution_df = con.execute(dist_evolution_query).fetchdf()
+                    st.session_state.dist_evolution_df = dist_evolution_df
+                except Exception:
+                    st.session_state.dist_evolution_df = pd.DataFrame()
+
+                # Query for elevation difference over time (only if both rivers selected)
+                try:
+                    if len(selected_reaches) == 2:
+                        elev_diff_query = f"""
+                        WITH binned_wse AS (
+                            SELECT
+                                DATE_TRUNC('month', CAST(Pass_Date AS DATE)) AS month,
+                                Pass_Date,
+                                ROUND(dist_km / 0.5) * 0.5 AS dist_bin,
+                                Reach_Name,
+                                AVG(wse) AS avg_wse
+                            FROM river_data
+                            {where_clause}
+                            GROUP BY month, Pass_Date, dist_bin, Reach_Name
+                            HAVING COUNT(*) >= 3
+                        ),
+                        kanektok AS (
+                            SELECT month, Pass_Date, dist_bin, avg_wse AS k_wse
+                            FROM binned_wse WHERE Reach_Name = 'Kanektok_River'
+                        ),
+                        uyak AS (
+                            SELECT month, Pass_Date, dist_bin, avg_wse AS u_wse
+                            FROM binned_wse WHERE Reach_Name = 'Uyak_Creek'
+                        )
+                        SELECT
+                            k.month,
+                            k.Pass_Date,
+                            AVG(k.k_wse - u.u_wse) AS avg_elev_diff,
+                            STDDEV(k.k_wse - u.u_wse) AS std_elev_diff,
+                            COUNT(*) AS overlap_bins
+                        FROM kanektok k
+                        JOIN uyak u ON k.Pass_Date = u.Pass_Date AND k.dist_bin = u.dist_bin
+                        GROUP BY k.month, k.Pass_Date
+                        ORDER BY k.Pass_Date
+                        """
+
+                        elev_diff_df = con.execute(elev_diff_query).fetchdf()
+                        st.session_state.elev_diff_df = elev_diff_df
+                except Exception:
+                    pass
         else:
             temporal_df = st.session_state.temporal_df
             dist_evolution_df = st.session_state.dist_evolution_df
@@ -1727,7 +1734,7 @@ def main():
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
 
-            st.plotly_chart(fig_wse, use_container_width=True, theme=None)
+            st.plotly_chart(fig_wse, width='stretch', theme=None)
 
         with col2:
             st.markdown("#### Average Gradient per Pass")
@@ -1772,7 +1779,7 @@ def main():
                 hovermode='x unified'
             )
 
-            st.plotly_chart(fig_grad, use_container_width=True, theme=None)
+            st.plotly_chart(fig_grad, width='stretch', theme=None)
 
         # Second row: WSE at specific distances and elevation difference
         col1, col2 = st.columns(2)
@@ -1780,11 +1787,15 @@ def main():
         with col1:
             st.markdown("#### WSE Evolution at Fixed Distances")
 
-            fig_dist = go.Figure()
+            dist_evolution_df = st.session_state.get("dist_evolution_df", pd.DataFrame())
+            if len(dist_evolution_df) == 0:
+                st.info("WSE at fixed distances not available (query too complex for remote data).")
+            else:
+                fig_dist = go.Figure()
 
-            for reach in selected_reaches:
-                for target_dist in [10, 20, 30, 40, 50, 60]:
-                    subset = dist_evolution_df[
+                for reach in selected_reaches:
+                    for target_dist in [10, 20, 30, 40, 50, 60]:
+                        subset = dist_evolution_df[
                         (dist_evolution_df['Reach_Name'] == reach) &
                         (dist_evolution_df['target_dist'] == target_dist)
                     ].sort_values('Pass_Date')
@@ -1810,15 +1821,15 @@ def main():
                         legendgroup=reach
                     ))
 
-            fig_dist.update_layout(
-                xaxis_title="Date",
-                yaxis_title="Water Surface Elevation (m)",
-                height=400,
-                template=plotly_template,
-                hovermode='x unified'
-            )
+                fig_dist.update_layout(
+                    xaxis_title="Date",
+                    yaxis_title="Water Surface Elevation (m)",
+                    height=400,
+                    template=plotly_template,
+                    hovermode='x unified'
+                )
 
-            st.plotly_chart(fig_dist, use_container_width=True, theme=None)
+                st.plotly_chart(fig_dist, width='stretch', theme=None)
 
         with col2:
             st.markdown("#### Elevation Difference Over Time")
@@ -1881,7 +1892,7 @@ def main():
                     hovermode='x unified'
                 )
 
-                st.plotly_chart(fig_diff, use_container_width=True, theme=None)
+                st.plotly_chart(fig_diff, width='stretch', theme=None)
             else:
                 st.warning("⚠️ Elevation difference requires both rivers to be selected.")
 
@@ -1938,7 +1949,7 @@ def main():
                         'monthly_avg_wse': '{:.2f} m',
                         'monthly_avg_gradient': '{:.2f} cm/km'
                     }),
-                    use_container_width=True
+                    width='stretch'
                 )
             else:
                 st.success("✅ No anomalies detected in selected data")
@@ -2018,7 +2029,7 @@ def main():
                 # Reverse Y-axis (coast at top, confluence at bottom)
                 fig_heat.update_yaxes(autorange="reversed")
 
-                st.plotly_chart(fig_heat, use_container_width=True, theme=None)
+                st.plotly_chart(fig_heat, width='stretch', theme=None)
 
         # === SUMMARY STATISTICS ===
         st.markdown("### Summary Statistics")
@@ -2056,7 +2067,7 @@ def main():
                 'Avg Gradient (cm/km)': '{:.2f}',
                 'Gradient Trend (cm/km/year)': '{:.4f}'
             }),
-            use_container_width=True
+            width='stretch'
         )
 
         st.info("""
@@ -2148,12 +2159,12 @@ def main():
             height=800, template=plotly_template,
             title_text="Seasonal WSE Profiles: High Flow (May) vs Low Flow (Jul-Aug)"
         )
-        st.plotly_chart(fig_seasonal, use_container_width=True, theme=None)
+        st.plotly_chart(fig_seasonal, width='stretch', theme=None)
 
         # Summary statistics table
         if summary_rows:
             st.subheader("Slope Summary")
-            st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(summary_rows), width='stretch', hide_index=True)
 
         st.info("""**How to read this:** Each panel shows WSE vs distance for both rivers.
         Top row = high flow (May), bottom row = low flow (July-August).
@@ -2227,7 +2238,7 @@ def main():
 
             fig_season.update_layout(height=500, template=plotly_template,
                                      title_text="Same-Season Comparison: Summer 2025 vs Summer 2026")
-            st.plotly_chart(fig_season, use_container_width=True, theme=None)
+            st.plotly_chart(fig_season, width='stretch', theme=None)
 
             # Slope change metrics
             cols = st.columns(len(season_slope_changes))
@@ -2274,7 +2285,7 @@ def main():
                         yaxis_title="WSE Change (m)", xaxis_title="Distance from Anchor Point (km)",
                         title_text="Summer 2026 minus Summer 2025 WSE"
                     )
-                    st.plotly_chart(fig_change, use_container_width=True, theme=None)
+                    st.plotly_chart(fig_change, width='stretch', theme=None)
                     st.caption("Positive = WSE increased post-storm. Negative = WSE decreased. 500m bins, min 3 points per bin. Same-season comparison eliminates ice artifacts.")
                 else:
                     st.info("Not enough overlapping distance bins between pre- and post-storm seasons.")
@@ -2368,7 +2379,7 @@ June-August 2026 data. Re-run `SWOT_Pull.py` after June 2026 to populate this se
 
                         fig_interim.update_layout(height=500, template=plotly_template,
                                                   title_text=f"Same-Month Comparison: {month_name} 2025 vs {month_name} 2026")
-                        st.plotly_chart(fig_interim, use_container_width=True, theme=None)
+                        st.plotly_chart(fig_interim, width='stretch', theme=None)
 
                         # Slope change metrics
                         cols = st.columns(len(interim_slope_changes))
@@ -2437,7 +2448,7 @@ June-August 2026 data. Re-run `SWOT_Pull.py` after June 2026 to populate this se
                     fig_imm.update_xaxes(autorange="reversed", row=1, col=panel_idx)
 
                 fig_imm.update_layout(height=500, template=plotly_template)
-                st.plotly_chart(fig_imm, use_container_width=True, theme=None)
+                st.plotly_chart(fig_imm, width='stretch', theme=None)
 
                 # Slope change metrics
                 cols = st.columns(len(slope_changes))
