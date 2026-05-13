@@ -2086,22 +2086,24 @@ def main():
         st.subheader("Seasonal Comparison: High Flow vs Low Flow (2023-2025)")
         st.caption("Top row: High flow (May). Bottom row: Low flow (July-August). Each panel compares both rivers.")
 
+        # Build subplot titles in grid order (row-major: left-to-right, top-to-bottom)
+        # make_subplots assigns titles as (1,1),(1,2),(1,3),(2,1),(2,2),(2,3)
+        title_grid = [[None]*3 for _ in range(2)]
+        for p in SEASONAL_PERIODS:
+            title_grid[p["row"]][p["col"]] = p["label"]
+        grid_ordered_titles = [title_grid[r][c] for r in range(2) for c in range(3)]
+
         fig_seasonal = make_subplots(
             rows=2, cols=3,
-            subplot_titles=[p["label"] for p in SEASONAL_PERIODS],
+            subplot_titles=grid_ordered_titles,
             shared_yaxes=True, horizontal_spacing=0.04, vertical_spacing=0.08
         )
 
         summary_rows = []
 
-        # Debug: show what dates the database actually contains
-        debug_dates = con.execute("SELECT DISTINCT CAST(Pass_Date AS VARCHAR) as d FROM river_data ORDER BY d").fetchdf()
-        st.caption(f"DEBUG — Dates in database: {debug_dates['d'].tolist()}")
-
         for period in SEASONAL_PERIODS:
             row, col = period["row"] + 1, period["col"] + 1  # Plotly 1-indexed
             df_period, stats_period, period_count = query_period_data(con, period["start"], period["end"], selected_reaches)
-            st.caption(f"DEBUG — {period['label']}: {period_count} points, df is None: {df_period is None}")
 
             used_label = period["label"]
 
