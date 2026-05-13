@@ -2094,9 +2094,14 @@ def main():
 
         summary_rows = []
 
+        # Debug: show what dates the database actually contains
+        debug_dates = con.execute("SELECT DISTINCT CAST(Pass_Date AS VARCHAR) as d FROM river_data ORDER BY d").fetchdf()
+        st.caption(f"DEBUG — Dates in database: {debug_dates['d'].tolist()}")
+
         for period in SEASONAL_PERIODS:
             row, col = period["row"] + 1, period["col"] + 1  # Plotly 1-indexed
             df_period, stats_period, period_count = query_period_data(con, period["start"], period["end"], selected_reaches)
+            st.caption(f"DEBUG — {period['label']}: {period_count} points, df is None: {df_period is None}")
 
             used_label = period["label"]
 
