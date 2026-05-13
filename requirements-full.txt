@@ -1,0 +1,28 @@
+# SWOT River Dynamics Project - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core data processing
+earthaccess>=0.5.0     # NASA Earthdata authentication & download
+xarray>=2023.0.0       # NetCDF data handling
+pandas>=2.0.0          # Tabular data manipulation
+geopandas>=0.13.0      # Spatial data operations
+numpy>=1.24.0          # Numerical computing
+scipy>=1.10.0          # Statistical functions (linregress)
+
+# Visualization & Dashboard
+streamlit>=1.28.0      # Web dashboard framework
+plotly>=5.17.0         # Interactive plotting
+matplotlib>=3.7.0      # Static plotting (legacy/fallback)
+folium>=0.15.0         # Interactive maps with measuring tools
+streamlit-folium>=0.15.0  # Folium integration for Streamlit
+
+# Database & Optimization
+duckdb>=0.9.0          # In-memory SQL database for dashboard
+
+# Progress bars & UX
+tqdm>=4.65.0           # Progress bars for long-running operations
+
+# Optional but recommended
+netCDF4>=1.6.0         # NetCDF file format support (used by xarray)
+shapely>=2.0.0         # Geometric operations (used by geopandas)
+pyproj>=3.4.0          # Cartographic projections (used by geopandas)

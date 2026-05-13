@@ -28,11 +28,12 @@ python -m venv venv
 source venv/bin/activate        # Linux/Mac
 # venv\Scripts\activate         # Windows
 
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-full.txt   # Full deps (ingestion + dashboard)
+# Or: pip install -r requirements.txt             # Dashboard-only deps
 streamlit run dashboard_swot.py
 ```
 
-Open `http://localhost:8501` in your browser. The dashboard ships with **bundled sample data** (May-Jul 2025, ~114k points across 15 satellite passes) so you can explore immediately without downloading anything.
+Open `http://localhost:8501` in your browser. Without local data, the dashboard loads a remote dataset (May-Jul 2025, 685k points) from GitHub Releases via DuckDB. Run `SWOT_Pull.py` to download the full archive locally.
 
 ---
 
@@ -46,7 +47,7 @@ SWOT_Pull.py ──► batch_outputs/ ──► dashboard_swot.py
 ```
 
 1. **`SWOT_Pull.py`** downloads raw SWOT satellite data from NASA, applies quality filters, computes Water Surface Elevation (WSE), and outputs optimized parquet files.
-2. **`dashboard_swot.py`** reads those parquet files (or the bundled sample data) and presents an interactive Streamlit dashboard.
+2. **`dashboard_swot.py`** reads those parquet files and presents an interactive Streamlit dashboard.
 
 You only need step 2 to explore the dashboard. Step 1 is for downloading your own data.
 
@@ -54,11 +55,10 @@ You only need step 2 to explore the dashboard. Step 1 is for downloading your ow
 
 The dashboard looks for data in this order:
 
-1. **Full dataset** -- `batch_outputs/master_all_data_part_*.parquet` (created by `SWOT_Pull.py`)
-2. **Sample data** -- `sample_data/sample_data.parquet` (bundled in repo, used after a fresh clone)
-3. **Remote download** -- Downloads from GitHub Releases (fallback for Streamlit Cloud deployment)
+1. **Full dataset** -- `batch_outputs/master_all_data_part_*.parquet` (created by `SWOT_Pull.py`, local development)
+2. **Remote parquet** -- Read directly from GitHub Releases via DuckDB `httpfs` (Streamlit Cloud deployment)
 
-When you run `SWOT_Pull.py` to download full data, the dashboard automatically picks it up on next launch.
+When running locally with `SWOT_Pull.py` data, the dashboard uses local files. On Streamlit Cloud, DuckDB reads the parquet file remotely from GitHub Releases, fetching only the data chunks needed per query.
 
 ---
 
@@ -211,10 +211,9 @@ SWOT_Dashboard/
 ├── SWOT_Pull.py                     # Data ingestion: NASA download + processing pipeline
 ├── dashboard_swot.py                # Visualization: Streamlit dashboard (~2400 lines)
 ├── rebuild_master.py                # Utility: rebuild master parquets from daily CSVs
-├── requirements.txt                 # Python dependencies (pip install -r requirements.txt)
+├── requirements.txt                 # Dashboard dependencies (used by Streamlit Cloud)
+├── requirements-full.txt            # Full dependencies including ingestion pipeline
 ├── river_poly.zip                   # River boundary polygons (GeoPackage format)
-├── sample_data/                     # Bundled sample dataset for out-of-the-box demo
-│   └── sample_data.parquet          #   ~114k points, May-Jul 2025, both rivers
 ├── batch_outputs/                   # Full dataset directory (gitignored, created by SWOT_Pull.py)
 │   ├── data/                        #   Daily CSV checkpoints (YYYY-MM-DD_data.csv)
 │   ├── master_all_data.csv          #   Combined dataset, all columns
@@ -268,8 +267,8 @@ All configurable constants are at the top of `SWOT_Pull.py`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `DATA_DIR` | `batch_outputs` | Directory for full dataset |
-| `SAMPLE_DATA_DIR` | `sample_data` | Directory for bundled sample data |
+| `DATA_DIR` | `batch_outputs` | Directory for full dataset (local dev) |
+| `REMOTE_PARQUET_URL` | GitHub Release URL | Remote parquet for Streamlit Cloud |
 | `MAX_PLOT_POINTS` | 15,000 | Max points rendered in scatter plots |
 | `MAX_BASELINE_POINTS` | 30,000 | Max points for detrending baseline fit |
 | `MAX_MAP_POINTS` | 5,000 | Max points rendered on Folium map |
@@ -323,8 +322,8 @@ On first run, `earthaccess.login()` will prompt for your NASA Earthdata username
 ### Dashboard shows "No data found"
 
 The dashboard requires at least one data source. Check:
-1. Does `sample_data/sample_data.parquet` exist? (It should after cloning.)
-2. If using full data, does `batch_outputs/master_all_data_part_*.parquet` exist? (Run `SWOT_Pull.py` first.)
+1. If running locally, does `batch_outputs/master_all_data_part_*.parquet` exist? (Run `SWOT_Pull.py` first.)
+2. If on Streamlit Cloud, check that the GitHub Release at `v2.0-data` exists and contains the parquet file.
 
 ### Streamlit port already in use
 

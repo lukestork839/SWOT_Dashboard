@@ -30,7 +30,7 @@ except ImportError:
 # --- CONFIGURATION ---
 PAGE_TITLE = "SWOT River Dynamics: Kanektok & Uyak"
 DATA_DIR = "batch_outputs"
-SAMPLE_DATA_DIR = "sample_data"
+REMOTE_PARQUET_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/swot_may_jul_2025.parquet"
 MAX_PLOT_POINTS = 15000  # Reduced for large datasets (was 25000)
 MAX_BASELINE_POINTS = 30000  # Reduced for Streamlit Cloud (was 50000)
 MAX_MAP_POINTS = 5000  # Strict limit for map rendering
@@ -260,62 +260,6 @@ def query_period_data(con, period_start, period_end, selected_reaches, max_point
 
     return df, stats_df, count
 
-def download_data_if_needed():
-    """
-    Download parquet data from GitHub Releases if not available locally.
-    Handles Git LFS limitation on Streamlit Cloud.
-
-    Returns:
-        str: Path to the parquet file, or None if download failed
-    """
-    import urllib.request
-    import shutil
-
-    parquet_file = os.path.join(DATA_DIR, "dashboard_data_optimized.parquet")
-
-    # Create directory if it doesn't exist
-    os.makedirs(DATA_DIR, exist_ok=True)
-
-    # Check if file exists and is valid (not a Git LFS pointer)
-    file_is_valid = False
-    if os.path.exists(parquet_file):
-        file_size = os.path.getsize(parquet_file)
-        # Git LFS pointer files are tiny (<200 bytes), real parquet should be >1MB
-        if file_size > 1_000_000:
-            file_is_valid = True
-        else:
-            st.warning(f"⚠️ Detected Git LFS pointer file ({file_size} bytes). Downloading actual data...")
-
-    # Download from GitHub Releases if needed
-    if not file_is_valid:
-        GITHUB_RELEASE_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v1.0-data/dashboard_data_optimized.parquet"
-
-        try:
-            with st.spinner("📥 Downloading data from GitHub Releases (24MB)... This may take 30-60 seconds."):
-                # Download with progress (if possible)
-                urllib.request.urlretrieve(GITHUB_RELEASE_URL, parquet_file)
-
-                # Verify download
-                final_size = os.path.getsize(parquet_file)
-                if final_size < 1_000_000:
-                    st.error(f"❌ Download failed. File is too small ({final_size} bytes).")
-                    return None
-
-                st.success(f"✅ Data downloaded successfully ({final_size / 1_000_000:.1f} MB)")
-                return parquet_file
-
-        except Exception as e:
-            st.error(f"❌ Failed to download data: {e}")
-            st.info("""
-            **Troubleshooting:**
-            1. Check that the GitHub Release exists at: https://github.com/lukestork839/SWOT_Dashboard/releases
-            2. Ensure the release has the file: `dashboard_data_optimized.parquet`
-            3. If running locally, run `python SWOT_Pull.py` to generate data files
-            """)
-            return None
-
-    return parquet_file
-
 @st.cache_resource
 def get_database_connection():
     """
@@ -323,14 +267,13 @@ def get_database_connection():
     Cached as a resource to prevent reconnecting on every interaction.
 
     Data source priority:
-      1. Full dataset partition files from SWOT_Pull.py (batch_outputs/)
-      2. Bundled sample data for quick demo (sample_data/)
-      3. Download from GitHub Releases (Streamlit Cloud fallback)
+      1. Full dataset partition files from SWOT_Pull.py (batch_outputs/) — local dev
+      2. Remote parquet via DuckDB httpfs from GitHub Releases — Streamlit Cloud
     """
     try:
         con = duckdb.connect(database=':memory:')
 
-        # 1. Prefer full partition files from SWOT_Pull.py (local development)
+        # 1. Prefer local partition files (local development)
         partition_pattern = os.path.join(DATA_DIR, "master_all_data_part_*.parquet")
         import glob
         partition_files = glob.glob(partition_pattern)
@@ -338,19 +281,11 @@ def get_database_connection():
         if partition_files:
             con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{partition_pattern}')")
         else:
-            # 2. Fallback: bundled sample data (works out of the box after git clone)
-            sample_pattern = os.path.join(SAMPLE_DATA_DIR, "*.parquet")
-            sample_files = glob.glob(sample_pattern)
-
-            if sample_files:
-                con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{sample_pattern}')")
-                st.info("📦 Using bundled sample data (May-Jul 2025). Run `python SWOT_Pull.py` to download the full dataset.")
-            else:
-                # 3. Fallback: download optimized file (Streamlit Cloud)
-                parquet_file = download_data_if_needed()
-                if parquet_file is None:
-                    return None
-                con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{parquet_file}')")
+            # 2. Read parquet remotely from GitHub Releases via DuckDB httpfs
+            con.execute("INSTALL httpfs")
+            con.execute("LOAD httpfs")
+            con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{REMOTE_PARQUET_URL}')")
+            st.info("🌐 Loading data from GitHub Releases. First query may take 10-30 seconds.")
 
         # Memory optimization: Set DuckDB memory limit (recommended for Streamlit Cloud)
         con.execute("SET memory_limit='600MB'")
@@ -359,7 +294,7 @@ def get_database_connection():
 
     except Exception as e:
         st.error(f"❌ Could not connect to data: {e}")
-        st.info("💡 This usually means the parquet files are missing or corrupted. Try running `python SWOT_Pull.py` to regenerate the data.")
+        st.info("💡 If running locally, run `python SWOT_Pull.py` to generate data. If on Streamlit Cloud, check that the GitHub Release exists.")
         import traceback
         st.code(traceback.format_exc())
         return None
@@ -866,10 +801,19 @@ def main():
                     """)
 
                     # Show summary statistics
-                    col1, col2, col3 = st.columns(3)
+                    max_abs_idx = diff_df['elevation_diff'].abs().idxmax()
+                    max_abs_diff = diff_df.loc[max_abs_idx, 'elevation_diff']
+                    max_kanektok = diff_df['elevation_diff'].max()  # Most positive = Kanektok highest above Uyak
+                    max_uyak = diff_df['elevation_diff'].min()      # Most negative = Uyak highest above Kanektok
+
+                    col1, col2, col3, col4 = st.columns(4)
                     col1.metric("Average Difference", f"{diff_df['elevation_diff'].mean():.3f} m")
-                    col2.metric("Max Difference", f"{diff_df['elevation_diff'].max():.3f} m")
-                    col3.metric("Number of Bins", len(diff_df))
+                    col2.metric("Max |Difference|", f"{max_abs_diff:.3f} m",
+                                help="Largest absolute elevation difference (positive = Kanektok higher, negative = Uyak higher)")
+                    col3.metric("Kanektok Max Above", f"+{max_kanektok:.3f} m",
+                                help="Greatest elevation where Kanektok is above Uyak")
+                    col4.metric("Uyak Max Above", f"{max_uyak:.3f} m",
+                                help="Greatest elevation where Uyak is above Kanektok")
 
             except Exception as e:
                 st.error(f"Error calculating elevation difference: {e}")
@@ -2228,117 +2172,16 @@ def main():
         st.subheader("Typhoon Halong Impact Analysis (October 12-14, 2025)")
         st.caption("Compare river profiles before and after Typhoon Halong struck Quinhagak, Alaska, eroding ~60 feet of shoreline.")
 
-        # Ice season warnings for each typhoon analysis period
-        ice_warnings = {}
-        for key, period in TYPHOON_PERIODS.items():
-            severity, seasons = get_ice_warning(period["start"], period["end"])
-            if severity:
-                ice_warnings[key] = seasons
-
-        if ice_warnings:
-            affected = "; ".join(f"**{TYPHOON_PERIODS[k]['label']}** overlaps {v}" for k, v in ice_warnings.items())
-            st.warning(f"""**Ice Season Advisory:** {affected}.
-            Post-storm data (Oct-Dec 2025) spans freeze-up and frozen periods. Some SWOT measurements
-            may reflect ice surface elevation rather than open water (0.5-2+ m higher). The classification
-            filter (Classes 3-4) excludes most ice, but interpret post-storm WSE with caution —
-            apparent elevation increases could be ice rather than storm-deposited sediment.""")
-
         # Build rivers_sql for this tab scope
         rivers_sql_tab9 = ", ".join([f"'{r}'" for r in selected_reaches])
 
-        # --- Section A: Immediate Before/After ---
-        st.markdown("### Immediate Impact")
+        st.info("""**Methodology:** To isolate geomorphic changes caused by the typhoon from seasonal WSE
+        variation, this analysis compares the **same season** before and after the storm (Summer 2025 vs
+        Summer 2026). Comparing open-water months to freeze-up months would introduce a 0.5-2+ m ice
+        artifact — SWOT measures ice surface elevation, not water beneath the ice.""")
 
-        pre = TYPHOON_PERIODS["pre_immediate"]
-        post = TYPHOON_PERIODS["post_immediate"]
-
-        df_pre, stats_pre, n_pre = query_period_data(con, pre["start"], pre["end"], selected_reaches)
-        df_post, stats_post, n_post = query_period_data(con, post["start"], post["end"], selected_reaches)
-
-        if df_pre is not None and df_post is not None:
-            fig_imm = make_subplots(
-                rows=1, cols=2,
-                subplot_titles=[pre["label"], post["label"]],
-                shared_yaxes=True, horizontal_spacing=0.06
-            )
-
-            slope_changes = {}
-            for panel_idx, (df_panel, label) in enumerate([(df_pre, "pre"), (df_post, "post")], 1):
-                for reach in selected_reaches:
-                    reach_df = df_panel[df_panel['Reach_Name'] == reach]
-                    if len(reach_df) < 5:
-                        continue
-
-                    fig_imm.add_trace(go.Scatter(
-                        x=reach_df['dist_km'], y=reach_df['wse'],
-                        mode='markers',
-                        marker=dict(color=COLOR_MAP.get(reach, "black"), size=3, opacity=0.3),
-                        name=reach,
-                        showlegend=(panel_idx == 1),
-                        legendgroup=reach,
-                    ), row=1, col=panel_idx)
-
-                    slope, intercept, _, _, _ = stats.linregress(reach_df['dist_km'], reach_df['wse'])
-                    slope_changes.setdefault(reach, {})[label] = slope * 100
-                    x_range = np.linspace(reach_df['dist_km'].min(), reach_df['dist_km'].max(), 50)
-                    fig_imm.add_trace(go.Scatter(
-                        x=x_range, y=intercept + slope * x_range,
-                        mode='lines',
-                        line=dict(color=COLOR_MAP.get(reach, "black"), width=3, dash='dash'),
-                        name=f"{abs(slope * 100):.1f} cm/km",
-                        showlegend=False,
-                    ), row=1, col=panel_idx)
-
-                fig_imm.update_xaxes(autorange="reversed", row=1, col=panel_idx)
-
-            fig_imm.update_layout(height=500, template=plotly_template)
-            st.plotly_chart(fig_imm, use_container_width=True, theme=None)
-
-            # Slope change metrics
-            cols = st.columns(len(slope_changes))
-            for i, (reach, slopes) in enumerate(slope_changes.items()):
-                if "pre" in slopes and "post" in slopes:
-                    change = abs(slopes["post"]) - abs(slopes["pre"])
-                    cols[i].metric(
-                        f"{reach} Slope",
-                        f"{abs(slopes['post']):.2f} cm/km",
-                        delta=f"{change:+.2f} cm/km vs pre-storm"
-                    )
-
-        elif df_pre is not None:
-            st.warning("No post-storm data available (Oct-Dec 2025). Rivers may have been frozen or no SWOT passes occurred.")
-            st.markdown("**Pre-storm baseline (Aug-Sep 2025) is shown below:**")
-
-            fig_pre_only = go.Figure()
-            for reach in selected_reaches:
-                reach_df = df_pre[df_pre['Reach_Name'] == reach]
-                if len(reach_df) == 0:
-                    continue
-                fig_pre_only.add_trace(go.Scatter(
-                    x=reach_df['dist_km'], y=reach_df['wse'],
-                    mode='markers',
-                    marker=dict(color=COLOR_MAP.get(reach, "black"), size=3, opacity=0.3),
-                    name=reach,
-                ))
-                if len(reach_df) >= 5:
-                    slope, intercept, _, _, _ = stats.linregress(reach_df['dist_km'], reach_df['wse'])
-                    x_range = np.linspace(reach_df['dist_km'].min(), reach_df['dist_km'].max(), 50)
-                    fig_pre_only.add_trace(go.Scatter(
-                        x=x_range, y=intercept + slope * x_range,
-                        mode='lines',
-                        line=dict(color=COLOR_MAP.get(reach, "black"), width=3, dash='dash'),
-                        name=f"{reach} {abs(slope * 100):.1f} cm/km",
-                    ))
-            fig_pre_only.update_xaxes(autorange="reversed")
-            fig_pre_only.update_layout(height=500, template=plotly_template,
-                                       title_text=pre["label"])
-            st.plotly_chart(fig_pre_only, use_container_width=True, theme=None)
-        else:
-            st.warning("Insufficient data for immediate before/after comparison. Ensure data covers Aug-Dec 2025.")
-
-        # --- Section B: Same-Season Comparison ---
-        st.markdown("---")
-        st.markdown("### Same-Season Comparison")
+        # --- Section A: Same-Season Comparison (PRIMARY) ---
+        st.markdown("### Same-Season Comparison (Summer 2025 vs Summer 2026)")
 
         pre_s = TYPHOON_PERIODS["pre_season"]
         post_s = TYPHOON_PERIODS["post_season"]
@@ -2383,7 +2226,7 @@ def main():
                 fig_season.update_xaxes(autorange="reversed", row=1, col=panel_idx)
 
             fig_season.update_layout(height=500, template=plotly_template,
-                                     title_text="Same-Season Comparison: Summer 2025 vs Spring/Summer 2026")
+                                     title_text="Same-Season Comparison: Summer 2025 vs Summer 2026")
             st.plotly_chart(fig_season, use_container_width=True, theme=None)
 
             # Slope change metrics
@@ -2396,30 +2239,21 @@ def main():
                         f"{abs(slopes['post']):.2f} cm/km",
                         delta=f"{change:+.2f} cm/km vs pre-storm"
                     )
-        else:
-            st.info("""**Same-season post-storm data not yet available.**
 
-As of April 2026, Alaska rivers are likely still frozen or just beginning breakup.
-This comparison will become available once SWOT captures summer 2026 data (May-August).
-
-Re-run the data download (`SWOT_Pull.py`) after May 2026 and this section will automatically populate.""")
-
-        # --- Section C: Binned Elevation Change ---
-        st.markdown("---")
-        st.markdown("### Elevation Change by Distance")
-
-        if df_pre is not None and df_post is not None:
+            # Binned elevation change using same-season data
+            st.markdown("---")
+            st.markdown("### Elevation Change by Distance (Same-Season)")
             try:
                 change_query = f"""
                     WITH pre AS (
                         SELECT ROUND(dist_km / 0.5) * 0.5 AS dist_bin, Reach_Name, AVG(wse) AS pre_wse
-                        FROM river_data WHERE Pass_Date >= '{pre["start"]}' AND Pass_Date <= '{pre["end"]}'
+                        FROM river_data WHERE Pass_Date >= '{pre_s["start"]}' AND Pass_Date <= '{pre_s["end"]}'
                         AND Reach_Name IN ({rivers_sql_tab9})
                         GROUP BY dist_bin, Reach_Name HAVING COUNT(*) >= 3
                     ),
                     post AS (
                         SELECT ROUND(dist_km / 0.5) * 0.5 AS dist_bin, Reach_Name, AVG(wse) AS post_wse
-                        FROM river_data WHERE Pass_Date >= '{post["start"]}' AND Pass_Date <= '{post["end"]}'
+                        FROM river_data WHERE Pass_Date >= '{post_s["start"]}' AND Pass_Date <= '{post_s["end"]}'
                         AND Reach_Name IN ({rivers_sql_tab9})
                         GROUP BY dist_bin, Reach_Name HAVING COUNT(*) >= 3
                     )
@@ -2437,17 +2271,188 @@ Re-run the data download (`SWOT_Pull.py`) after May 2026 and this section will a
                     fig_change.update_xaxes(autorange="reversed")
                     fig_change.update_layout(
                         height=400, template=plotly_template,
-                        yaxis_title="WSE Change (m)", xaxis_title="Distance from Confluence (km)",
-                        title_text="Post-Storm minus Pre-Storm WSE"
+                        yaxis_title="WSE Change (m)", xaxis_title="Distance from Anchor Point (km)",
+                        title_text="Summer 2026 minus Summer 2025 WSE"
                     )
                     st.plotly_chart(fig_change, use_container_width=True, theme=None)
-                    st.caption("Positive = WSE increased post-storm. Negative = WSE decreased. 500m bins, min 3 points per bin.")
+                    st.caption("Positive = WSE increased post-storm. Negative = WSE decreased. 500m bins, min 3 points per bin. Same-season comparison eliminates ice artifacts.")
                 else:
-                    st.info("Not enough overlapping distance bins between pre- and post-storm periods to compute elevation change.")
+                    st.info("Not enough overlapping distance bins between pre- and post-storm seasons.")
             except Exception as e:
                 st.error(f"Error computing elevation change: {e}")
+
         else:
-            st.info("Elevation change analysis requires both pre-storm (Aug-Sep 2025) and post-storm (Oct-Dec 2025) data.")
+            st.info("""**Open-water post-storm data not yet available.**
+
+As of May 2026, Alaska rivers are just beginning breakup. The open-water same-season
+comparison (Summer 2025 vs Summer 2026) will become available once SWOT captures
+June-August 2026 data. Re-run `SWOT_Pull.py` after June 2026 to populate this section.""")
+
+            # --- Interim: Same-Month Year-over-Year (ice-season, but matched conditions) ---
+            # Find the latest month we have in both pre- and post-typhoon years
+            try:
+                interim_query = """
+                    SELECT EXTRACT(MONTH FROM CAST(Pass_Date AS DATE)) AS mo,
+                           EXTRACT(YEAR FROM CAST(Pass_Date AS DATE)) AS yr,
+                           COUNT(*) AS pts, COUNT(DISTINCT Pass_Date) AS passes
+                    FROM river_data
+                    WHERE EXTRACT(YEAR FROM CAST(Pass_Date AS DATE)) IN (2025, 2026)
+                      AND EXTRACT(MONTH FROM CAST(Pass_Date AS DATE)) <= 5
+                    GROUP BY yr, mo
+                    HAVING COUNT(DISTINCT Pass_Date) >= 3
+                    ORDER BY yr, mo
+                """
+                interim_df = con.execute(interim_query).fetchdf()
+
+                # Find months present in both years
+                months_2025 = set(interim_df[interim_df['yr'] == 2025]['mo'].astype(int))
+                months_2026 = set(interim_df[interim_df['yr'] == 2026]['mo'].astype(int))
+                shared_months = sorted(months_2025 & months_2026, reverse=True)
+
+                if shared_months:
+                    # Use the latest shared month for the best interim comparison
+                    compare_month = shared_months[0]
+                    month_name = ["", "Jan", "Feb", "Mar", "Apr", "May"][compare_month]
+
+                    st.markdown(f"### Interim Comparison: {month_name} 2025 vs {month_name} 2026 (same-month, year-over-year)")
+                    st.warning(f"""**Interim analysis — interpret with caution.** {month_name} falls within the
+                    ice/break-up season at this latitude. Both years are compared under the **same seasonal
+                    conditions**, so ice artifacts should be similar and largely cancel out when comparing
+                    **slopes** (gradients). However, absolute WSE values will be affected by ice thickness
+                    and are not reliable. **Focus on slope changes, not WSE changes.** This will be replaced
+                    by the open-water comparison once summer 2026 data is available.""")
+
+                    pre_interim_start = f"2025-{compare_month:02d}-01"
+                    pre_interim_end = f"2025-{compare_month:02d}-28"
+                    post_interim_start = f"2026-{compare_month:02d}-01"
+                    post_interim_end = f"2026-{compare_month:02d}-28"
+
+                    df_pre_int, stats_pre_int, n_pre_int = query_period_data(con, pre_interim_start, pre_interim_end, selected_reaches)
+                    df_post_int, stats_post_int, n_post_int = query_period_data(con, post_interim_start, post_interim_end, selected_reaches)
+
+                    if df_pre_int is not None and df_post_int is not None:
+                        fig_interim = make_subplots(
+                            rows=1, cols=2,
+                            subplot_titles=[f"{month_name} 2025 (Pre-Storm)", f"{month_name} 2026 (Post-Storm)"],
+                            shared_yaxes=True, horizontal_spacing=0.06
+                        )
+
+                        interim_slope_changes = {}
+                        for panel_idx, (df_panel, label) in enumerate([(df_pre_int, "pre"), (df_post_int, "post")], 1):
+                            for reach in selected_reaches:
+                                reach_df = df_panel[df_panel['Reach_Name'] == reach]
+                                if len(reach_df) < 5:
+                                    continue
+
+                                fig_interim.add_trace(go.Scatter(
+                                    x=reach_df['dist_km'], y=reach_df['wse'],
+                                    mode='markers',
+                                    marker=dict(color=COLOR_MAP.get(reach, "black"), size=3, opacity=0.3),
+                                    name=reach,
+                                    showlegend=(panel_idx == 1),
+                                    legendgroup=reach,
+                                ), row=1, col=panel_idx)
+
+                                slope, intercept, _, _, _ = stats.linregress(reach_df['dist_km'], reach_df['wse'])
+                                interim_slope_changes.setdefault(reach, {})[label] = slope * 100
+                                x_range = np.linspace(reach_df['dist_km'].min(), reach_df['dist_km'].max(), 50)
+                                fig_interim.add_trace(go.Scatter(
+                                    x=x_range, y=intercept + slope * x_range,
+                                    mode='lines',
+                                    line=dict(color=COLOR_MAP.get(reach, "black"), width=3, dash='dash'),
+                                    name=f"{abs(slope * 100):.1f} cm/km",
+                                    showlegend=False,
+                                ), row=1, col=panel_idx)
+
+                            fig_interim.update_xaxes(autorange="reversed", row=1, col=panel_idx)
+
+                        fig_interim.update_layout(height=500, template=plotly_template,
+                                                  title_text=f"Same-Month Comparison: {month_name} 2025 vs {month_name} 2026")
+                        st.plotly_chart(fig_interim, use_container_width=True, theme=None)
+
+                        # Slope change metrics
+                        cols = st.columns(len(interim_slope_changes))
+                        for i, (reach, slopes) in enumerate(interim_slope_changes.items()):
+                            if "pre" in slopes and "post" in slopes:
+                                change = abs(slopes["post"]) - abs(slopes["pre"])
+                                cols[i].metric(
+                                    f"{reach} Slope",
+                                    f"{abs(slopes['post']):.2f} cm/km",
+                                    delta=f"{change:+.2f} cm/km vs pre-storm"
+                                )
+
+            except Exception as e:
+                st.error(f"Error computing interim comparison: {e}")
+
+        # --- Section B: Immediate Before/After (ice-contaminated, for reference only) ---
+        st.markdown("---")
+        with st.expander("Immediate Before/After (Aug-Sep vs Oct-Dec 2025) — ice-contaminated, use with caution"):
+            st.error("""**Ice Contamination Warning:** This comparison is between open-water (Aug-Sep) and
+            freeze-up/frozen (Oct-Dec) periods. Post-storm WSE values are likely **artificially elevated
+            by 0.5-2+ meters** because SWOT measures ice surface, not water beneath it. The PIXC
+            classification filter (Classes 3-4) excludes most ice but partially frozen surfaces may
+            still pass. **Do not use these slope changes to draw conclusions about storm impact.**
+            Use the same-season comparison above instead.""")
+
+            pre = TYPHOON_PERIODS["pre_immediate"]
+            post = TYPHOON_PERIODS["post_immediate"]
+
+            df_pre, stats_pre, n_pre = query_period_data(con, pre["start"], pre["end"], selected_reaches)
+            df_post, stats_post, n_post = query_period_data(con, post["start"], post["end"], selected_reaches)
+
+            if df_pre is not None and df_post is not None:
+                fig_imm = make_subplots(
+                    rows=1, cols=2,
+                    subplot_titles=[pre["label"], post["label"]],
+                    shared_yaxes=True, horizontal_spacing=0.06
+                )
+
+                slope_changes = {}
+                for panel_idx, (df_panel, label) in enumerate([(df_pre, "pre"), (df_post, "post")], 1):
+                    for reach in selected_reaches:
+                        reach_df = df_panel[df_panel['Reach_Name'] == reach]
+                        if len(reach_df) < 5:
+                            continue
+
+                        fig_imm.add_trace(go.Scatter(
+                            x=reach_df['dist_km'], y=reach_df['wse'],
+                            mode='markers',
+                            marker=dict(color=COLOR_MAP.get(reach, "black"), size=3, opacity=0.3),
+                            name=reach,
+                            showlegend=(panel_idx == 1),
+                            legendgroup=reach,
+                        ), row=1, col=panel_idx)
+
+                        slope, intercept, _, _, _ = stats.linregress(reach_df['dist_km'], reach_df['wse'])
+                        slope_changes.setdefault(reach, {})[label] = slope * 100
+                        x_range = np.linspace(reach_df['dist_km'].min(), reach_df['dist_km'].max(), 50)
+                        fig_imm.add_trace(go.Scatter(
+                            x=x_range, y=intercept + slope * x_range,
+                            mode='lines',
+                            line=dict(color=COLOR_MAP.get(reach, "black"), width=3, dash='dash'),
+                            name=f"{abs(slope * 100):.1f} cm/km",
+                            showlegend=False,
+                        ), row=1, col=panel_idx)
+
+                    fig_imm.update_xaxes(autorange="reversed", row=1, col=panel_idx)
+
+                fig_imm.update_layout(height=500, template=plotly_template)
+                st.plotly_chart(fig_imm, use_container_width=True, theme=None)
+
+                # Slope change metrics
+                cols = st.columns(len(slope_changes))
+                for i, (reach, slopes) in enumerate(slope_changes.items()):
+                    if "pre" in slopes and "post" in slopes:
+                        change = abs(slopes["post"]) - abs(slopes["pre"])
+                        cols[i].metric(
+                            f"{reach} Slope",
+                            f"{abs(slopes['post']):.2f} cm/km",
+                            delta=f"{change:+.2f} cm/km vs pre-storm"
+                        )
+            elif df_pre is not None:
+                st.warning("No post-storm data available for Oct-Dec 2025.")
+            else:
+                st.warning("Insufficient data for immediate before/after comparison.")
 
 if __name__ == "__main__":
     main()
