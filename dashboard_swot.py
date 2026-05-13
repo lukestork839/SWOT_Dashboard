@@ -233,35 +233,39 @@ def compute_moving_average(series, window, min_periods=2):
 
 def query_period_data(con, period_start, period_end, selected_reaches, max_points=5000):
     """Query river data for a specific date range, with sampling if needed."""
-    rivers_sql = ", ".join([f"'{r}'" for r in selected_reaches])
-    where = f"WHERE Reach_Name IN ({rivers_sql}) AND CAST(Pass_Date AS DATE) >= CAST('{period_start}' AS DATE) AND CAST(Pass_Date AS DATE) <= CAST('{period_end}' AS DATE)"
+    try:
+        rivers_sql = ", ".join([f"'{r}'" for r in selected_reaches])
+        where = f"WHERE Reach_Name IN ({rivers_sql}) AND CAST(Pass_Date AS DATE) >= CAST('{period_start}' AS DATE) AND CAST(Pass_Date AS DATE) <= CAST('{period_end}' AS DATE)"
 
-    count = con.execute(f"SELECT COUNT(*) FROM river_data {where}").fetchone()[0]
-    if count == 0:
+        count = con.execute(f"SELECT COUNT(*) FROM river_data {where}").fetchone()[0]
+        if count == 0:
+            return None, None, 0
+
+        if count > max_points:
+            step = int(count / max_points)
+            query = f"""SELECT * FROM (
+                SELECT *, row_number() OVER (ORDER BY Reach_Name, dist_km) as rn
+                FROM river_data {where}) sub WHERE rn % {step} = 0"""
+        else:
+            query = f"SELECT * FROM river_data {where} ORDER BY Reach_Name, dist_km"
+
+        df = con.execute(query).fetchdf()
+
+        # Statistics on full (unsampled) data
+        stats_df = con.execute(f"""
+            SELECT Reach_Name, COUNT(*) as n_points,
+                   COUNT(DISTINCT Pass_Date) as n_passes,
+                   AVG(wse) as mean_wse, AVG(slope_calc) as avg_slope
+            FROM river_data {where} GROUP BY Reach_Name
+        """).fetchdf()
+
+        return df, stats_df, count
+    except Exception:
         return None, None, 0
 
-    if count > max_points:
-        step = int(count / max_points)
-        query = f"""SELECT * FROM (
-            SELECT *, row_number() OVER (ORDER BY Reach_Name, dist_km) as rn
-            FROM river_data {where}) sub WHERE rn % {step} = 0"""
-    else:
-        query = f"SELECT * FROM river_data {where} ORDER BY Reach_Name, dist_km"
-
-    df = con.execute(query).fetchdf()
-
-    # Statistics on full (unsampled) data
-    stats_df = con.execute(f"""
-        SELECT Reach_Name, COUNT(*) as n_points,
-               COUNT(DISTINCT Pass_Date) as n_passes,
-               AVG(wse) as mean_wse, AVG(slope_calc) as avg_slope
-        FROM river_data {where} GROUP BY Reach_Name
-    """).fetchdf()
-
-    return df, stats_df, count
-
+# Cache key includes the remote URL so cache invalidates when data source changes
 @st.cache_resource
-def get_database_connection():
+def get_database_connection(_url_version=REMOTE_PARQUET_URL):
     """
     Initialize DuckDB connection with parquet data.
     Cached as a resource to prevent reconnecting on every interaction.
