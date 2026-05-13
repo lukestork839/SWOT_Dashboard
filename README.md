@@ -64,7 +64,7 @@ When running locally with `SWOT_Pull.py` data, the dashboard uses local files. O
 
 ## Downloading Full Data
 
-The sample data covers May-July 2025 (3 months). To download the complete SWOT archive (July 2023 onwards), you need a free NASA Earthdata account.
+The online dashboard serves May-July 2025 data (3 months, 685k points). To download the complete SWOT archive (July 2023 onwards) for local use, you need a free NASA Earthdata account.
 
 ### 1. Create a NASA Earthdata Account
 
