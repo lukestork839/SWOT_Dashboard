@@ -310,22 +310,16 @@ def main():
     # 1. Get Metadata (with loading indicator for large datasets)
     try:
         with st.spinner("Loading data metadata..."):
-            date_range = con.execute("SELECT MIN(CAST(Pass_Date AS VARCHAR)), MAX(CAST(Pass_Date AS VARCHAR)) FROM river_data").fetchone()
+            date_range = con.execute("SELECT MIN(Pass_Date), MAX(Pass_Date) FROM river_data").fetchone()
             if date_range is None or date_range[0] is None:
                 st.error("❌ No data found in parquet files. Please run SWOT_Pull.py first to generate data.")
                 st.stop()
 
-            min_date = pd.to_datetime(str(date_range[0])[:10])
-            max_date = pd.to_datetime(str(date_range[1])[:10])
+            min_date = pd.to_datetime(date_range[0])
+            max_date = pd.to_datetime(date_range[1])
             available_reaches = con.execute("SELECT DISTINCT Reach_Name FROM river_data").fetchdf()['Reach_Name'].tolist()
     except Exception as e:
         st.error(f"❌ Could not read metadata: {e}")
-        # Debug info for remote parquet issues
-        try:
-            debug_dates = con.execute("SELECT MIN(Pass_Date), MAX(Pass_Date) FROM river_data").fetchone()
-            st.code(f"Raw date values: {debug_dates}\nTypes: {[type(d).__name__ for d in debug_dates]}")
-        except:
-            pass
         st.info("💡 If running locally, run `python SWOT_Pull.py` to generate data. If on Streamlit Cloud, check GitHub Release data.")
         st.stop()
         
