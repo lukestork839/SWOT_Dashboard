@@ -234,7 +234,7 @@ def compute_moving_average(series, window, min_periods=2):
 def query_period_data(con, period_start, period_end, selected_reaches, max_points=5000):
     """Query river data for a specific date range, with sampling if needed."""
     rivers_sql = ", ".join([f"'{r}'" for r in selected_reaches])
-    where = f"WHERE Reach_Name IN ({rivers_sql}) AND Pass_Date >= '{period_start}' AND Pass_Date <= '{period_end}'"
+    where = f"WHERE Reach_Name IN ({rivers_sql}) AND CAST(Pass_Date AS DATE) >= CAST('{period_start}' AS DATE) AND CAST(Pass_Date AS DATE) <= CAST('{period_end}' AS DATE)"
 
     count = con.execute(f"SELECT COUNT(*) FROM river_data {where}").fetchone()[0]
     if count == 0:
@@ -460,11 +460,11 @@ def main():
         # 3. FILTER DATA
         rivers_sql = "'" + "','".join(selected_reaches) + "'"
 
-        # Base conditions
+        # Base conditions (explicit CAST needed for DuckDB httpfs DATE filtering)
         where_clause = f"""
             WHERE Reach_Name IN ({rivers_sql})
-            AND Pass_Date >= '{start_date}'
-            AND Pass_Date <= '{end_date}'
+            AND CAST(Pass_Date AS DATE) >= CAST('{start_date}' AS DATE)
+            AND CAST(Pass_Date AS DATE) <= CAST('{end_date}' AS DATE)
         """
 
         # Check total count first (with timeout protection)
@@ -2258,13 +2258,13 @@ def main():
                 change_query = f"""
                     WITH pre AS (
                         SELECT ROUND(dist_km / 0.5) * 0.5 AS dist_bin, Reach_Name, AVG(wse) AS pre_wse
-                        FROM river_data WHERE Pass_Date >= '{pre_s["start"]}' AND Pass_Date <= '{pre_s["end"]}'
+                        FROM river_data WHERE CAST(Pass_Date AS DATE) >= CAST('{pre_s["start"]}' AS DATE) AND CAST(Pass_Date AS DATE) <= CAST('{pre_s["end"]}' AS DATE)
                         AND Reach_Name IN ({rivers_sql_tab9})
                         GROUP BY dist_bin, Reach_Name HAVING COUNT(*) >= 3
                     ),
                     post AS (
                         SELECT ROUND(dist_km / 0.5) * 0.5 AS dist_bin, Reach_Name, AVG(wse) AS post_wse
-                        FROM river_data WHERE Pass_Date >= '{post_s["start"]}' AND Pass_Date <= '{post_s["end"]}'
+                        FROM river_data WHERE CAST(Pass_Date AS DATE) >= CAST('{post_s["start"]}' AS DATE) AND CAST(Pass_Date AS DATE) <= CAST('{post_s["end"]}' AS DATE)
                         AND Reach_Name IN ({rivers_sql_tab9})
                         GROUP BY dist_bin, Reach_Name HAVING COUNT(*) >= 3
                     )
