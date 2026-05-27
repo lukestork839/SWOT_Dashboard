@@ -564,7 +564,9 @@ def main():
         
         fig = go.Figure()
 
-        for reach in selected_reaches:
+        # Draw Kanektok first so Uyak layers on top
+        plot_order = sorted(selected_reaches, key=lambda r: r == "Uyak_Creek")
+        for reach in plot_order:
             reach_data = viz_df[viz_df['Reach_Name'] == reach]
             if len(reach_data) == 0:
                 continue
@@ -856,8 +858,8 @@ def main():
                 # Create detrended plot
                 fig_detrend = go.Figure()
 
-                # Plot residuals for each river
-                for reach in selected_reaches:
+                # Plot residuals for each river (Uyak on top)
+                for reach in sorted(selected_reaches, key=lambda r: r == "Uyak_Creek"):
                     reach_data = plot_df[plot_df['Reach_Name'] == reach]
                     if len(reach_data) == 0:
                         continue
