@@ -17,15 +17,8 @@ from streamlit_folium import st_folium
 import matplotlib.colors as mcolors
 import matplotlib.cm as cm
 
-# Try importing LinearColormap from different locations depending on version
-try:
-    from branca.colormap import LinearColormap
-except ImportError:
-    try:
-        from folium.colormap import LinearColormap
-    except ImportError:
-        # Fallback: create a dummy class if not available
-        LinearColormap = None
+from branca.element import MacroElement
+from jinja2 import Template as JinjaTemplate
 
 # --- CONFIGURATION ---
 PAGE_TITLE = "SWOT River Dynamics: Kanektok & Uyak"
@@ -62,17 +55,18 @@ TYPHOON_PERIODS = {
 
 # --- ICE SEASON DEFINITIONS (Kanektok/Uyak at ~59.8°N) ---
 # SWOT PIXC has no ice classification class. Classes 3-4 exclude most ice
-# (smooth ice → dark water Class 5, rough ice → land Class 1-2), but
-# partially frozen surfaces during transition months may still pass.
+# (rough ice → land Class 1-2), but smooth river ice classifies as water
+# (Class 3-4) and passes through quality filters during frozen months.
+# Analysis of 170 passes (2023-2026) shows peak contamination Dec-Mar:
+#   - Uyak Creek: 80-95% Class 4 (vs 35-55% in open water)
+#   - Kanektok River: 58-77% Class 4 (wider river, less complete freeze)
+# Oct-Nov are ice-free in the data; Apr-May are transitional but mostly usable.
 # Ice surface elevation ≠ water surface elevation (off by ice thickness 0.5-2+ m).
-# ice_clsf flag exists only in PIXCVec/RiverSP products, not base PIXC.
 ICE_SEASONS = {
-    "freeze_up": {"months": [10, 11], "label": "Freeze-up (Oct-Nov)", "severity": "caution"},
-    "frozen":    {"months": [12, 1, 2, 3], "label": "Frozen (Dec-Mar)", "severity": "warning"},
-    "break_up":  {"months": [4, 5], "label": "Break-up (Apr-May)", "severity": "caution"},
+    "frozen": {"months": [12, 1, 2, 3], "label": "Frozen (Dec-Mar)", "severity": "warning"},
 }
-ICE_AFFECTED_MONTHS = {10, 11, 12, 1, 2, 3, 4, 5}  # Oct-May
-OPEN_WATER_MONTHS = {6, 7, 8, 9}  # Jun-Sep (reliable for WSE analysis)
+ICE_AFFECTED_MONTHS = {12, 1, 2, 3}  # Dec-Mar (data-validated peak ice contamination)
+OPEN_WATER_MONTHS = {4, 5, 6, 7, 8, 9, 10, 11}  # Apr-Nov (reliable for WSE analysis)
 
 def get_ice_warning(start_date_str, end_date_str):
     """Check if a date range overlaps with ice-affected months.
@@ -217,6 +211,43 @@ def detect_anomalies_mad(data, threshold=3.5):
     modified_z_score = 0.6745 * (data - median) / mad
     return np.abs(modified_z_score) > threshold
 
+class VerticalColorbar(MacroElement):
+    """Vertical colorbar legend as a Leaflet control on the left side of the map."""
+
+    def __init__(self, caption, colors, vmin, vmax):
+        super().__init__()
+        self._name = 'VerticalColorbar'
+        self.caption = caption
+        self.gradient_css = ', '.join(colors)
+        self.vmin = float(vmin)
+        self.vmax = float(vmax)
+        self.vmid = float((vmin + vmax) / 2)
+
+        self._template = JinjaTemplate("""
+            {% macro script(this, kwargs) %}
+                var legend = L.control({position: 'topleft'});
+                legend.onAdd = function(map) {
+                    var div = L.DomUtil.create('div', 'vertical-legend');
+                    div.style.marginTop = '10px';
+                    div.innerHTML = '<div style="background:white;padding:6px 8px;border-radius:4px;'
+                        + 'border:2px solid rgba(0,0,0,0.2);font:11px Arial,sans-serif">'
+                        + '<div style="font-weight:bold;margin-bottom:4px;text-align:center">'
+                        + '{{ this.caption }}</div>'
+                        + '<div style="display:flex;align-items:stretch">'
+                        + '<div style="background:linear-gradient(to top,{{ this.gradient_css }});'
+                        + 'width:18px;height:120px;border:1px solid #ccc"></div>'
+                        + '<div style="display:flex;flex-direction:column;'
+                        + 'justify-content:space-between;margin-left:4px;font-size:10px">'
+                        + '<span>{{ "%.1f"|format(this.vmax) }}</span>'
+                        + '<span>{{ "%.1f"|format(this.vmid) }}</span>'
+                        + '<span>{{ "%.1f"|format(this.vmin) }}</span>'
+                        + '</div></div></div>';
+                    return div;
+                };
+                legend.addTo({{ this._parent.get_name() }});
+            {% endmacro %}
+        """)
+
 def compute_moving_average(series, window, min_periods=2):
     """
     Compute rolling moving average with edge handling.
@@ -338,120 +369,25 @@ def main():
             value=(min_date.date(), max_date.date())
         )
 
+        exclude_ice = st.checkbox(
+            "Exclude ice season (Dec-Mar)",
+            value=True,
+            help="Smooth river ice passes SWOT Class 3-4 filters during Dec-Mar, producing elevated WSE readings (0.5-2+ m above true water surface)."
+        )
+
         selected_reaches = st.multiselect(
             "Select Rivers:",
             available_reaches,
             default=available_reaches
         )
 
-        st.write("### 2. Detrending Method")
-        detrend_method = st.selectbox(
-            "Baseline Trend:",
-            options=[
-                "Polynomial (2nd order)",
-                "Polynomial (3rd order)",
-                "Linear",
-                "LOESS (Local Regression)"
-            ],
-            index=0,
-            help="Method to calculate baseline elevation trend for detrended analysis"
-        )
-
-        # Method descriptions
-        with st.expander("ℹ️ About Baseline Trend Methods"):
-            st.markdown("""
-            **Polynomial (2nd order)** - *Recommended for most cases*
-            - Fits a smooth curved baseline (parabola)
-            - Best for: Rivers with gentle, consistent curvature
-            - Good balance of smoothness and flexibility
-
-            **Polynomial (3rd order)** - *More flexible*
-            - Fits a more complex curve with one inflection point
-            - Best for: Rivers with varying curvature (steep→gentle→steep)
-            - Can capture more detail but may overfit noise
-
-            **Linear** - *Simplest*
-            - Fits a straight line baseline
-            - Best for: Rivers with approximately constant gradient
-            - May miss important curvature in the profile
-
-            **LOESS (Local Regression)** - *Adaptive*
-            - Smoothly adapts to local variations in the data
-            - Best for: Complex profiles with varying characteristics
-            - Most flexible but can be sensitive to data density
-
-            💡 **Tip**: Start with Polynomial (2nd order). If rivers show significant
-            elevation differences near the edges but not in the middle (or vice versa),
-            try a more flexible method.
-            """)
-
         submitted = st.form_submit_button("🔄 Update Analysis")
 
-    # --- MAP DISPLAY OPTIONS (OUTSIDE FORM FOR INSTANT UPDATES) ---
-    st.sidebar.write("---")
-    st.sidebar.write("### 3. Map Display Options")
-    st.sidebar.caption("💡 These update instantly without re-analyzing data")
+    # Hardcoded detrending method
+    detrend_method = "Polynomial (2nd order)"
 
-    map_color_by = st.sidebar.selectbox(
-        "Color Points By:",
-        options=[
-            "River Name",
-            "WSE (Water Surface Elevation)",
-            "Classification",
-            "Detrended Residual (m)",
-            "Interval Slope (cm/km)"
-        ],
-        index=0,
-        help="Choose what metric to visualize on the map",
-        key="map_color_by"
-    )
-
-    basemap_style = st.sidebar.selectbox(
-        "Basemap Style:",
-        options=[
-            "OpenStreetMap",
-            "Terrain (Stamen)",
-            "Satellite (ESRI)",
-            "Watercolor (Stamen)",
-            "CartoDB Positron (Light)",
-            "CartoDB Dark Matter"
-        ],
-        index=0,
-        key="basemap_style"
-    )
-
-    point_opacity = st.sidebar.slider(
-        "Point Opacity:",
-        min_value=0.1,
-        max_value=1.0,
-        value=0.7,
-        step=0.1,
-        help="Adjust transparency of map points (lower = more transparent, easier to see basemap)",
-        key="point_opacity"
-    )
-
-    st.sidebar.write("---")
-    st.sidebar.write("### 4. Display Theme")
-    light_mode = st.sidebar.toggle("Light mode (for screenshots/posters)", value=False, key="light_mode")
-    if light_mode:
-        plot_bg = "white"
-        font_color = "black"
-        plotly_template = "plotly_white"
-        st.markdown("""<style>
-            .stApp, .stMainBlockContainer, [data-testid="stAppViewContainer"],
-            [data-testid="stHeader"], section[data-testid="stSidebar"] {
-                background-color: #ffffff !important; color: #000000 !important;
-            }
-            .stMarkdown, .stMarkdown p, .stMarkdown h1, .stMarkdown h2,
-            .stMarkdown h3, .stMarkdown li, .stTabs [data-baseweb="tab"],
-            .stMetricValue, .stMetricLabel, .stCaption, label, span {
-                color: #000000 !important;
-            }
-        </style>""", unsafe_allow_html=True)
-    else:
-        plotly_template = "plotly_white"
-        plot_bg = "white"
-        font_color = "black"
+    # Display theme (light mode default)
+    plotly_template = "plotly_white"
 
 
     # --- DATA LOADING WITH CACHING ---
@@ -470,6 +406,20 @@ def main():
             AND CAST(Pass_Date AS DATE) >= CAST('{start_date}' AS DATE)
             AND CAST(Pass_Date AS DATE) <= CAST('{end_date}' AS DATE)
         """
+
+        # Ice season filtering (Dec-Mar: smooth ice passes Class 3-4 filters)
+        if exclude_ice:
+            where_clause += "\n            AND MONTH(CAST(Pass_Date AS DATE)) NOT IN (12, 1, 2, 3)"
+        else:
+            severity, season_labels = get_ice_warning(str(start_date), str(end_date))
+            if severity:
+                st.warning(
+                    "**Ice season data included.** Your date range spans "
+                    f"{season_labels}. Smooth river ice passes SWOT Class 3-4 filters, "
+                    "producing WSE readings 0.5-2+ m above the true water surface. "
+                    "Uyak Creek is most affected (narrow channel freezes completely). "
+                    "Use caution when interpreting winter data."
+                )
 
         # Check total count first (with timeout protection)
         try:
@@ -523,6 +473,7 @@ def main():
         st.session_state.end_date = end_date
         st.session_state.detrend_method = detrend_method
         st.session_state.where_clause = where_clause
+        st.session_state.exclude_ice = exclude_ice
     else:
         # Use cached data (instant - no database query!)
         viz_df = st.session_state.viz_df
@@ -1218,298 +1169,258 @@ def main():
             st.error(f"Error calculating slope profile: {e}")
 
     with tab5:
-        st.subheader("Satellite Data Point Locations")
+        @st.fragment
+        def render_map():
+            st.subheader("Satellite Data Point Locations")
 
-        # Sample data if too large (for performance) - STRICT limit for large datasets
-        if len(viz_df) > MAX_MAP_POINTS:
-            map_df = viz_df.sample(MAX_MAP_POINTS)
-            st.info(f"📍 Showing {MAX_MAP_POINTS:,} sampled points (out of {len(viz_df):,}) for map performance.")
-        else:
-            map_df = viz_df
-
-        # Calculate map center
-        center_lat = map_df['latitude'].mean()
-        center_lon = map_df['longitude'].mean()
-
-        # Map basemap style to Folium tiles
-        basemap_tiles = {
-            "OpenStreetMap": "OpenStreetMap",
-            "Terrain (Stamen)": "Stamen Terrain",
-            "Satellite (ESRI)": "Esri WorldImagery",
-            "Watercolor (Stamen)": "Stamen Watercolor",
-            "CartoDB Positron (Light)": "CartoDB positron",
-            "CartoDB Dark Matter": "CartoDB dark_matter"
-        }
-
-        selected_tiles = basemap_tiles.get(basemap_style, "OpenStreetMap")
-
-        # Create Folium map
-        m = folium.Map(
-            location=[center_lat, center_lon],
-            zoom_start=10,
-            tiles=selected_tiles,
-            control_scale=True
-        )
-
-        # Add measuring tool (Distance & Area)
-        plugins.MeasureControl(
-            position='topleft',
-            primary_length_unit='kilometers',
-            secondary_length_unit='meters',
-            primary_area_unit='sqkilometers',
-            secondary_area_unit='acres'
-        ).add_to(m)
-
-        # Configure coloring based on user selection
-        if map_color_by == "River Name":
-            # Discrete colors by river
-            color_mapping = {
-                "Kanektok_River": "firebrick",
-                "Uyak_Creek": "dodgerblue"
-            }
-
-            for reach_name, color in color_mapping.items():
-                reach_data = map_df[map_df['Reach_Name'] == reach_name]
-                feature_group = folium.FeatureGroup(name=reach_name)
-
-                for _, row in reach_data.iterrows():
-                    folium.CircleMarker(
-                        location=[row['latitude'], row['longitude']],
-                        radius=3,
-                        color=color,
-                        fill=True,
-                        fillColor=color,
-                        fillOpacity=point_opacity,
-                        weight=0,  # No border for cleaner look
-                        popup=folium.Popup(
-                            f"<b>{reach_name}</b><br>"
-                            f"WSE: {row['wse']:.2f} m<br>"
-                            f"Date: {row['Pass_Date']}<br>"
-                            f"Class: {row['classification']}",
-                            max_width=200
-                        )
-                    ).add_to(feature_group)
-
-                feature_group.add_to(m)
-
-        elif map_color_by == "WSE (Water Surface Elevation)":
-            # Continuous colors by WSE using viridis colormap
-            wse_min = map_df['wse'].min()
-            wse_max = map_df['wse'].max()
-
-            # Create colormap
-            colormap = cm.get_cmap('viridis')
-            norm = mcolors.Normalize(vmin=wse_min, vmax=wse_max)
-
-            feature_group = folium.FeatureGroup(name="WSE Elevation")
-
-            for _, row in map_df.iterrows():
-                wse_val = row['wse']
-                rgba = colormap(norm(wse_val))
-                hex_color = mcolors.rgb2hex(rgba[:3])
-
-                folium.CircleMarker(
-                    location=[row['latitude'], row['longitude']],
-                    radius=3,
-                    color=hex_color,
-                    fill=True,
-                    fillColor=hex_color,
-                    fillOpacity=point_opacity,
-                    weight=0,  # No border for cleaner look
-                    popup=folium.Popup(
-                        f"<b>{row['Reach_Name']}</b><br>"
-                        f"WSE: {wse_val:.2f} m<br>"
-                        f"Date: {row['Pass_Date']}<br>"
-                        f"Class: {row['classification']}",
-                        max_width=200
-                    )
-                ).add_to(feature_group)
-
-            feature_group.add_to(m)
-
-            # Add colorbar legend (if available)
-            if LinearColormap is not None:
-                colormap_legend = LinearColormap(
-                    colors=['#440154', '#31688e', '#35b779', '#fde724'],  # viridis colors
-                    vmin=wse_min,
-                    vmax=wse_max,
-                    caption='Water Surface Elevation (m)'
+            # --- Map display controls (inside fragment for isolated reruns) ---
+            ctrl1, ctrl2, ctrl3 = st.columns(3)
+            with ctrl1:
+                map_color_by = st.selectbox(
+                    "Color Points By:",
+                    options=["River Name", "Classification", "Detrended Residual (m)", "Interval Slope (cm/km)"],
+                    index=0, key="map_color_by"
                 )
-                colormap_legend.add_to(m)
-
-        elif map_color_by == "Classification":
-            # Discrete colors by classification
-            class_colors = {
-                3: "#FFA500",  # Orange
-                4: "#00CED1",  # Turquoise
-                5: "#90EE90",  # Light green
-                6: "#FFB6C1",  # Light pink
-                7: "#DDA0DD"   # Plum
-            }
-
-            for class_val, color in class_colors.items():
-                class_data = map_df[map_df['classification'] == class_val]
-                if len(class_data) == 0:
-                    continue
-
-                feature_group = folium.FeatureGroup(name=f"Class {class_val}")
-
-                for _, row in class_data.iterrows():
-                    folium.CircleMarker(
-                        location=[row['latitude'], row['longitude']],
-                        radius=3,
-                        color=color,
-                        fill=True,
-                        fillColor=color,
-                        fillOpacity=point_opacity,
-                        weight=0,  # No border for cleaner look
-                        popup=folium.Popup(
-                            f"<b>{row['Reach_Name']}</b><br>"
-                            f"WSE: {row['wse']:.2f} m<br>"
-                            f"Date: {row['Pass_Date']}<br>"
-                            f"Classification: {class_val}",
-                            max_width=200
-                        )
-                    ).add_to(feature_group)
-
-                feature_group.add_to(m)
-
-        elif map_color_by == "Detrended Residual (m)":
-            # Continuous colors by detrended residual using diverging colormap (RdBu)
-            res_min = map_df['detrended_residual'].min()
-            res_max = map_df['detrended_residual'].max()
-            res_abs_max = max(abs(res_min), abs(res_max))
-
-            # Create diverging colormap (red-white-blue)
-            colormap = cm.get_cmap('RdBu_r')  # Reversed: red=positive, blue=negative
-            norm = mcolors.Normalize(vmin=-res_abs_max, vmax=res_abs_max)
-
-            feature_group = folium.FeatureGroup(name="Detrended Residual")
-
-            for _, row in map_df.iterrows():
-                res_val = row['detrended_residual']
-                rgba = colormap(norm(res_val))
-                hex_color = mcolors.rgb2hex(rgba[:3])
-
-                folium.CircleMarker(
-                    location=[row['latitude'], row['longitude']],
-                    radius=3,
-                    color=hex_color,
-                    fill=True,
-                    fillColor=hex_color,
-                    fillOpacity=point_opacity,
-                    weight=0,  # No border for cleaner look
-                    popup=folium.Popup(
-                        f"<b>{row['Reach_Name']}</b><br>"
-                        f"Residual: {res_val:+.3f} m<br>"
-                        f"WSE: {row['wse']:.2f} m<br>"
-                        f"Date: {row['Pass_Date']}",
-                        max_width=200
-                    )
-                ).add_to(feature_group)
-
-            feature_group.add_to(m)
-
-            # Add colorbar legend (if available)
-            if LinearColormap is not None:
-                colormap_legend = LinearColormap(
-                    colors=['#2166ac', '#4393c3', '#92c5de', '#d1e5f0',
-                            '#f7f7f7', '#fddbc7', '#f4a582', '#d6604d', '#b2182b'],  # RdBu colors
-                    vmin=-res_abs_max,
-                    vmax=res_abs_max,
-                    caption='Residual (m)'  # Shortened to prevent cut-off
+            with ctrl2:
+                basemap_style = st.selectbox(
+                    "Basemap Style:",
+                    options=["OpenStreetMap", "Satellite (ESRI)"],
+                    index=1, key="basemap_style"
                 )
-                colormap_legend.add_to(m)
+            with ctrl3:
+                point_opacity = st.slider(
+                    "Point Opacity:", min_value=0.1, max_value=1.0,
+                    value=0.7, step=0.1, key="point_opacity"
+                )
 
-        elif map_color_by == "Interval Slope (cm/km)":
-            # Continuous colors by interval slope using sequential colormap (YlOrRd)
-            slope_min = map_df['interval_slope'].abs().min()
-            slope_max = map_df['interval_slope'].abs().max()
+            # Sample data if too large
+            if len(viz_df) > MAX_MAP_POINTS:
+                map_df = viz_df.sample(MAX_MAP_POINTS)
+                st.info(f"📍 Showing {MAX_MAP_POINTS:,} sampled points (out of {len(viz_df):,}) for map performance.")
+            else:
+                map_df = viz_df
 
-            # Create sequential colormap (yellow to red)
-            colormap = cm.get_cmap('YlOrRd')
-            norm = mcolors.Normalize(vmin=slope_min, vmax=slope_max)
+            center_lat = map_df['latitude'].mean()
+            center_lon = map_df['longitude'].mean()
 
-            feature_group = folium.FeatureGroup(name="Interval Slope")
+            basemap_tiles = {"OpenStreetMap": "OpenStreetMap", "Satellite (ESRI)": "Esri WorldImagery"}
+            selected_tiles = basemap_tiles.get(basemap_style, "Esri WorldImagery")
 
-            for _, row in map_df.iterrows():
-                slope_val = abs(row['interval_slope'])  # Use absolute value
-                rgba = colormap(norm(slope_val))
-                hex_color = mcolors.rgb2hex(rgba[:3])
+            m = folium.Map(
+                location=[center_lat, center_lon],
+                zoom_start=10, tiles=selected_tiles, control_scale=True
+            )
 
-                folium.CircleMarker(
-                    location=[row['latitude'], row['longitude']],
-                    radius=3,
-                    color=hex_color,
-                    fill=True,
-                    fillColor=hex_color,
-                    fillOpacity=point_opacity,
-                    weight=0,  # No border for cleaner look
-                    popup=folium.Popup(
-                        f"<b>{row['Reach_Name']}</b><br>"
-                        f"Interval Slope: {slope_val:.2f} cm/km<br>"
-                        f"WSE: {row['wse']:.2f} m<br>"
-                        f"Date: {row['Pass_Date']}",
-                        max_width=200
+            plugins.MeasureControl(
+                position='topleft',
+                primary_length_unit='kilometers', secondary_length_unit='meters',
+                primary_area_unit='sqkilometers', secondary_area_unit='acres'
+            ).add_to(m)
+
+            # Configure coloring based on user selection
+            if map_color_by == "River Name":
+                for reach_name, color in COLOR_MAP.items():
+                    reach_data = map_df[map_df['Reach_Name'] == reach_name]
+                    if len(reach_data) == 0:
+                        continue
+
+                    features = [
+                        {
+                            "type": "Feature",
+                            "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
+                            "properties": {
+                                "River": reach_name, "WSE": f"{wse:.2f} m",
+                                "Date": str(date), "Class": int(cls),
+                            }
+                        }
+                        for lon, lat, wse, date, cls in zip(
+                            reach_data['longitude'], reach_data['latitude'],
+                            reach_data['wse'], reach_data['Pass_Date'],
+                            reach_data['classification']
+                        )
+                    ]
+
+                    folium.GeoJson(
+                        {"type": "FeatureCollection", "features": features},
+                        name=reach_name,
+                        marker=folium.CircleMarker(radius=3, weight=0, fill=True, fill_opacity=point_opacity),
+                        style_function=lambda x, c=color: {'fillColor': c, 'color': c},
+                        popup=folium.GeoJsonPopup(
+                            fields=['River', 'WSE', 'Date', 'Class'],
+                            aliases=['River', 'WSE', 'Date', 'Class'],
+                        ),
+                    ).add_to(m)
+
+            elif map_color_by == "Classification":
+                class_colors = {
+                    3: "#FFA500", 4: "#00CED1", 5: "#90EE90",
+                    6: "#FFB6C1", 7: "#DDA0DD"
+                }
+
+                for class_val, color in class_colors.items():
+                    class_data = map_df[map_df['classification'] == class_val]
+                    if len(class_data) == 0:
+                        continue
+
+                    features = [
+                        {
+                            "type": "Feature",
+                            "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
+                            "properties": {
+                                "River": reach, "WSE": f"{wse:.2f} m",
+                                "Date": str(date), "Class": int(class_val),
+                            }
+                        }
+                        for lon, lat, reach, wse, date in zip(
+                            class_data['longitude'], class_data['latitude'],
+                            class_data['Reach_Name'], class_data['wse'],
+                            class_data['Pass_Date']
+                        )
+                    ]
+
+                    folium.GeoJson(
+                        {"type": "FeatureCollection", "features": features},
+                        name=f"Class {class_val}",
+                        marker=folium.CircleMarker(radius=3, weight=0, fill=True, fill_opacity=point_opacity),
+                        style_function=lambda x, c=color: {'fillColor': c, 'color': c},
+                        popup=folium.GeoJsonPopup(
+                            fields=['River', 'WSE', 'Date', 'Class'],
+                            aliases=['River', 'WSE', 'Date', 'Class'],
+                        ),
+                    ).add_to(m)
+
+            elif map_color_by == "Detrended Residual (m)":
+                # Fixed scale: -3 to 3m, positive=blue (above baseline), negative=red (below)
+                res_bound = 3.0
+                colormap_fn = cm.get_cmap('RdBu')
+                norm = mcolors.Normalize(vmin=-res_bound, vmax=res_bound, clip=True)
+
+                # Vectorized color computation
+                rgba_array = colormap_fn(norm(map_df['detrended_residual'].values))
+                hex_colors = [mcolors.rgb2hex(rgba[:3]) for rgba in rgba_array]
+
+                features = [
+                    {
+                        "type": "Feature",
+                        "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
+                        "properties": {
+                            "color": color, "River": reach,
+                            "Residual": f"{res:+.3f} m", "WSE": f"{wse:.2f} m",
+                            "Date": str(date),
+                        }
+                    }
+                    for lon, lat, color, reach, res, wse, date in zip(
+                        map_df['longitude'], map_df['latitude'], hex_colors,
+                        map_df['Reach_Name'], map_df['detrended_residual'],
+                        map_df['wse'], map_df['Pass_Date']
                     )
-                ).add_to(feature_group)
+                ]
 
-            feature_group.add_to(m)
+                folium.GeoJson(
+                    {"type": "FeatureCollection", "features": features},
+                    name="Detrended Residual",
+                    marker=folium.CircleMarker(radius=3, weight=0, fill=True, fill_opacity=point_opacity),
+                    style_function=lambda x: {
+                        'fillColor': x['properties']['color'],
+                        'color': x['properties']['color'],
+                    },
+                    popup=folium.GeoJsonPopup(
+                        fields=['River', 'Residual', 'WSE', 'Date'],
+                        aliases=['River', 'Residual', 'WSE', 'Date'],
+                    ),
+                ).add_to(m)
 
-            # Add colorbar legend (if available)
-            if LinearColormap is not None:
-                colormap_legend = LinearColormap(
-                    colors=['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026'],  # YlOrRd colors
+                VerticalColorbar(
+                    caption='Residual (m)',
+                    colors=['#b2182b', '#f4a582', '#f7f7f7', '#92c5de', '#2166ac'],
+                    vmin=-res_bound,
+                    vmax=res_bound,
+                ).add_to(m)
+
+            elif map_color_by == "Interval Slope (cm/km)":
+                slope_min = float(map_df['interval_slope'].abs().min())
+                slope_max = float(map_df['interval_slope'].abs().max())
+                colormap_fn = cm.get_cmap('YlOrRd')
+                norm = mcolors.Normalize(vmin=slope_min, vmax=slope_max)
+
+                # Vectorized color computation
+                abs_slopes = map_df['interval_slope'].abs().values
+                rgba_array = colormap_fn(norm(abs_slopes))
+                hex_colors = [mcolors.rgb2hex(rgba[:3]) for rgba in rgba_array]
+
+                features = [
+                    {
+                        "type": "Feature",
+                        "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
+                        "properties": {
+                            "color": color, "River": reach,
+                            "Slope": f"{slope:.2f} cm/km", "WSE": f"{wse:.2f} m",
+                            "Date": str(date),
+                        }
+                    }
+                    for lon, lat, color, reach, slope, wse, date in zip(
+                        map_df['longitude'], map_df['latitude'], hex_colors,
+                        map_df['Reach_Name'], abs_slopes,
+                        map_df['wse'], map_df['Pass_Date']
+                    )
+                ]
+
+                folium.GeoJson(
+                    {"type": "FeatureCollection", "features": features},
+                    name="Interval Slope",
+                    marker=folium.CircleMarker(radius=3, weight=0, fill=True, fill_opacity=point_opacity),
+                    style_function=lambda x: {
+                        'fillColor': x['properties']['color'],
+                        'color': x['properties']['color'],
+                    },
+                    popup=folium.GeoJsonPopup(
+                        fields=['River', 'Slope', 'WSE', 'Date'],
+                        aliases=['River', 'Slope', 'WSE', 'Date'],
+                    ),
+                ).add_to(m)
+
+                VerticalColorbar(
+                    caption='Slope (cm/km)',
+                    colors=['#ffffb2', '#fd8d3c', '#bd0026'],
                     vmin=slope_min,
                     vmax=slope_max,
-                    caption='Interval Slope Magnitude (cm/km)'
-                )
-                colormap_legend.add_to(m)
+                ).add_to(m)
 
-        # Add layer control (toggle layers on/off)
-        folium.LayerControl().add_to(m)
+            # Add layer control (toggle layers on/off)
+            folium.LayerControl().add_to(m)
 
-        # Display map in Streamlit
-        # Use key and returned_objects to prevent unwanted reruns
-        st_folium(
-            m,
-            width=1400,
-            height=600,
-            key="river_map",
-            returned_objects=[]  # Don't return any objects to prevent reruns
-        )
+            st_folium(
+                m, width=1400, height=600,
+                key="river_map", returned_objects=[]
+            )
 
-        # Add interpretation guide based on color mode
-        if map_color_by == "Detrended Residual (m)":
-            st.info(f"""
-            **Color Interpretation - Detrended Residual (using {detrend_method}):**
-            - **Red**: Points ABOVE the baseline trend (higher than expected elevation)
-            - **Blue**: Points BELOW the baseline trend (lower than expected elevation)
-            - **White**: Points exactly on the baseline
+            # Interpretation guides
+            if map_color_by == "Detrended Residual (m)":
+                st.info("""
+                **Color Interpretation - Detrended Residual (2nd Order Polynomial):**
+                - **Blue**: Points ABOVE the baseline trend (higher than expected elevation)
+                - **Red**: Points BELOW the baseline trend (lower than expected elevation)
+                - **White**: Points exactly on the baseline
 
-            **What this shows:**
-            - Spatial patterns of elevation deviations from the overall river profile
-            - Areas where water is consistently higher/lower than the fitted curve
-            - Red clusters = steeper than average reaches
-            - Blue clusters = gentler than average reaches
+                **What this shows:**
+                - Spatial patterns of elevation deviations from the overall river profile
+                - Blue clusters = river sits higher than expected at that distance
+                - Red clusters = river sits lower than expected at that distance
+                """)
+            elif map_color_by == "Interval Slope (cm/km)":
+                st.info("""
+                **Color Interpretation - Interval Slope:**
+                - **Yellow**: Gentle slopes (low gradient)
+                - **Orange**: Moderate slopes
+                - **Red**: Steep slopes (high gradient)
 
-            💡 Try different baseline methods in the sidebar to see how patterns change!
-            """)
-        elif map_color_by == "Interval Slope (cm/km)":
-            st.info("""
-            **Color Interpretation - Interval Slope:**
-            - **Yellow**: Gentle slopes (low gradient)
-            - **Orange**: Moderate slopes
-            - **Red**: Steep slopes (high gradient)
+                **What this shows:**
+                - Segment-by-segment steepness (100m intervals)
+                - Red areas = higher energy, faster flow potential
+                - Yellow areas = lower energy, slower flow
+                """)
 
-            **What this shows:**
-            - Segment-by-segment steepness (100m intervals)
-            - Spatial distribution of hydraulic gradients
-            - Red areas = higher energy, faster flow potential
-            - Yellow areas = lower energy, slower flow
-
-            💡 Compare both rivers to see which has consistently steeper reaches!
-            """)
+        render_map()
 
     with tab6:
         st.subheader("Data Inspector")
