@@ -534,28 +534,21 @@ def main():
         )
         viz_df['detrended_residual'] = viz_df['wse'].values - baseline_pred
 
-        # 2. Calculate Interval Slopes (100m bins)
-        viz_df['dist_bin'] = (viz_df['dist_km'] / 0.1).round() * 0.1
-
-        # Calculate mean WSE per bin per river
-        bin_means = viz_df.groupby(['Reach_Name', 'dist_bin'])['wse'].mean().reset_index()
-        bin_means = bin_means.sort_values(['Reach_Name', 'dist_bin'])
-
-        # Calculate slope between consecutive bins
-        bin_means['prev_wse'] = bin_means.groupby('Reach_Name')['wse'].shift(1)
-        bin_means['prev_dist'] = bin_means.groupby('Reach_Name')['dist_bin'].shift(1)
-        bin_means['interval_slope'] = ((bin_means['wse'] - bin_means['prev_wse']) /
-                                         (bin_means['dist_bin'] - bin_means['prev_dist'])) * 100
-
-        # Merge back to viz_df
-        viz_df = viz_df.merge(
-            bin_means[['Reach_Name', 'dist_bin', 'interval_slope']],
-            on=['Reach_Name', 'dist_bin'],
-            how='left'
-        )
-
-        # Fill NaN slopes with 0 for visualization
-        viz_df['interval_slope'] = viz_df['interval_slope'].fillna(0)
+        # 2. Calculate smoothed slopes (same method as Slope Profile tab)
+        # Bin to 100m medians, Gaussian smooth (2km window), interpolate back to each point
+        viz_df['interval_slope'] = 0.0
+        for reach in viz_df['Reach_Name'].unique():
+            reach_mask = viz_df['Reach_Name'] == reach
+            reach_data = viz_df[reach_mask]
+            if len(reach_data) < 10:
+                continue
+            x_eval, slope_cm_km, _ = calculate_slope_profile(
+                reach_data['dist_km'].tolist(),
+                reach_data['wse'].tolist()
+            )
+            # Interpolate smoothed slope onto each point's actual dist_km
+            point_slopes = np.interp(reach_data['dist_km'].values, x_eval, slope_cm_km)
+            viz_df.loc[reach_mask, 'interval_slope'] = point_slopes
 
         # Update session state
         st.session_state.viz_df = viz_df
