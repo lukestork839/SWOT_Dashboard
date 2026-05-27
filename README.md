@@ -191,10 +191,12 @@ Convention: 0 km = anchor/confluence, ~70 km = coast. X-axis is reversed in all 
 
 ### Ice Season Awareness
 
-At ~59.8N, the rivers freeze October through May. The PIXC product has no ice classification, but:
-- The Class 3-4 filter excludes most ice (smooth ice classifies as dark water or land)
-- Dashboard tabs that span ice months display contextual warnings
-- Data is preserved (not filtered by date) for potential ice studies
+At ~59.8N, peak ice contamination occurs December through March. Analysis of 170 satellite passes (2023-2026) shows that smooth river ice passes through the Class 3-4 quality filter and is misclassified as water -- Uyak Creek shows 80-95% Class 4 pixels during peak freeze (vs 35-55% in open water). October-November are ice-free in the data despite traditional freeze-up assumptions; April-May are transitional but mostly usable.
+
+- The dashboard **excludes Dec-Mar data by default** to prevent misinterpretation
+- Users can uncheck "Exclude ice season" in the sidebar to include winter data, which triggers a warning banner
+- Data is preserved in full (not deleted) for potential ice studies
+- Uyak Creek (narrow, shallow) freezes more completely than Kanektok River (wider, deeper)
 
 For the complete scientific documentation, see:
 - [`SCIENTIFIC_METHODOLOGY.md`](SCIENTIFIC_METHODOLOGY.md) -- verification, quality flag reference, calibration results
