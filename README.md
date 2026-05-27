@@ -33,7 +33,7 @@ python -m pip install -r requirements-full.txt   # Full deps (ingestion + dashbo
 streamlit run dashboard_swot.py
 ```
 
-Open `http://localhost:8501` in your browser. Without local data, the dashboard loads a remote dataset (May-Jul 2025, 685k points) from GitHub Releases via DuckDB. Run `SWOT_Pull.py` to download the full archive locally.
+Open `http://localhost:8501` in your browser. Without local data, the dashboard loads a remote dataset (Apr-Jul 2025 + Apr-May 2026, 1.38M points) from GitHub Releases via DuckDB. Run `SWOT_Pull.py` to download the full archive locally.
 
 ---
 
@@ -64,7 +64,7 @@ When running locally with `SWOT_Pull.py` data, the dashboard uses local files. O
 
 ## Downloading Full Data
 
-The online dashboard serves May-July 2025 data (3 months, 685k points). To download the complete SWOT archive (July 2023 onwards) for local use, you need a free NASA Earthdata account.
+The online dashboard serves Apr-Jul 2025 and Apr-May 2026 open water data (1.38M points, 29 passes). To download the complete SWOT archive (July 2023 onwards) for local use, you need a free NASA Earthdata account.
 
 ### 1. Create a NASA Earthdata Account
 
