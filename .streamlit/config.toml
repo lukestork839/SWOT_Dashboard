@@ -2,6 +2,9 @@
 # Optimized for SWOT River Dynamics Dashboard
 
 [server]
+# Serve static files (banner image on welcome page)
+enableStaticServing = true
+
 # File upload size (for future data upload features)
 maxUploadSize = 200
 
