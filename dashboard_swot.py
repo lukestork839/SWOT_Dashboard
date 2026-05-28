@@ -62,38 +62,9 @@ TYPHOON_PERIODS = {
 #   - Kanektok River: 58-77% Class 4 (wider river, less complete freeze)
 # Oct-Nov are ice-free in the data; Apr-May are transitional but mostly usable.
 # Ice surface elevation ≠ water surface elevation (off by ice thickness 0.5-2+ m).
-ICE_SEASONS = {
-    "frozen": {"months": [12, 1, 2, 3], "label": "Frozen (Dec-Mar)", "severity": "warning"},
-}
 ICE_AFFECTED_MONTHS = {12, 1, 2, 3}  # Dec-Mar (data-validated peak ice contamination)
 OPEN_WATER_MONTHS = {4, 5, 6, 7, 8, 9, 10, 11}  # Apr-Nov (reliable for WSE analysis)
 
-def get_ice_warning(start_date_str, end_date_str):
-    """Check if a date range overlaps with ice-affected months.
-    Returns (severity, message) or (None, None) if fully open water."""
-    start = pd.to_datetime(start_date_str)
-    end = pd.to_datetime(end_date_str)
-    # Collect all months spanned
-    months_spanned = set()
-    current = start.replace(day=1)
-    while current <= end:
-        months_spanned.add(current.month)
-        current += pd.DateOffset(months=1)
-
-    ice_months = months_spanned & ICE_AFFECTED_MONTHS
-    if not ice_months:
-        return None, None
-
-    # Determine which ice seasons are hit
-    hit_seasons = []
-    for season_key, season in ICE_SEASONS.items():
-        if ice_months & set(season["months"]):
-            hit_seasons.append(season)
-
-    # Use the most severe level
-    severity = "warning" if any(s["severity"] == "warning" for s in hit_seasons) else "caution"
-    season_labels = ", ".join(s["label"] for s in hit_seasons)
-    return severity, season_labels
 
 st.set_page_config(page_title=PAGE_TITLE, layout="wide", page_icon="🌊")
 
@@ -334,54 +305,174 @@ def get_database_connection(_url_version=REMOTE_PARQUET_URL):
         st.code(traceback.format_exc())
         return None
 
-def main():
-    con = get_database_connection()
-    if not con:
-        st.error("❌ Failed to initialize database connection.")
+@st.cache_data(ttl=3600)
+def load_metadata(_con):
+    """Return (all_pass_dates, available_reaches) from the database."""
+    date_range = _con.execute("SELECT MIN(Pass_Date), MAX(Pass_Date) FROM river_data").fetchone()
+    if date_range is None or date_range[0] is None:
+        return None, None
+
+    pass_dates_df = _con.execute("""
+        SELECT DISTINCT CAST(Pass_Date AS DATE) as pass_date
+        FROM river_data
+        ORDER BY pass_date DESC
+    """).fetchdf()
+    all_pass_dates = pass_dates_df['pass_date'].tolist()
+    available_reaches = _con.execute("SELECT DISTINCT Reach_Name FROM river_data").fetchdf()['Reach_Name'].tolist()
+    return all_pass_dates, available_reaches
+
+
+def _is_ice(d):
+    """Check if a date falls in the ice-affected season (Dec-Mar)."""
+    return d.month in (12, 1, 2, 3)
+
+
+def _select_passes(all_pass_dates, n):
+    """Set the first n pass checkboxes to True, rest to False."""
+    for i, d in enumerate(all_pass_dates):
+        st.session_state[f"pass_{d}"] = i < n
+    st.session_state.pass_defaults_initialized = True
+
+
+def render_pass_checklist(all_pass_dates):
+    """Render pass selection checkboxes with ice labels and quick-select buttons."""
+    RECENT_COUNT = 5
+
+    # Initialize defaults if needed
+    if "pass_defaults_initialized" not in st.session_state:
+        _select_passes(all_pass_dates, n=4)
+
+    # Select All / Clear All
+    col1, col2 = st.columns(2)
+    if col1.button("Select All (non-ice)", use_container_width=True):
+        for d in all_pass_dates:
+            st.session_state[f"pass_{d}"] = not _is_ice(d)
+    if col2.button("Clear All", use_container_width=True):
+        for d in all_pass_dates:
+            st.session_state[f"pass_{d}"] = False
+
+    # Recent passes
+    recent_dates = all_pass_dates[:RECENT_COUNT]
+    older_dates = all_pass_dates[RECENT_COUNT:]
+
+    st.caption("Recent passes:")
+    for d in recent_dates:
+        label = d.strftime("%b %d, %Y")
+        if _is_ice(d):
+            label += " ❄️ ice"
+        st.checkbox(label, key=f"pass_{d}")
+
+    # Older passes in expander
+    if older_dates:
+        with st.expander(f"Older passes ({len(older_dates)} more)"):
+            for d in older_dates:
+                label = d.strftime("%b %d, %Y")
+                if _is_ice(d):
+                    label += " ❄️ ice"
+                st.checkbox(label, key=f"pass_{d}")
+
+
+def render_welcome(all_pass_dates):
+    """Render the welcome/configuration page."""
+
+    # Banner image with overlaid title
+    st.markdown("""
+    <div style="position: relative; width: 100%; margin-bottom: 1rem;">
+        <img src="app/static/rivers_overhead.jpg" style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px; filter: brightness(0.7);">
+        <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; width: 100%;">
+            <h1 style="color: white; margin: 0; text-shadow: 2px 2px 8px rgba(0,0,0,0.7); font-size: 2.5rem;">Welcome to the SWOT Dashboard</h1>
+            <p style="color: rgba(255,255,255,0.9); margin: 0.3rem 0 0 0; text-shadow: 1px 1px 4px rgba(0,0,0,0.7); font-size: 1.1rem;">Kanektok River & Uyak Creek — Satellite River Monitoring</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    This tool uses a NASA satellite called **SWOT** to watch the **Kanektok River** and
+    **Uyak Creek** from space. Every time the satellite flies over, it measures the height
+    of the water along each river. By comparing these measurements over time, we can see
+    how the rivers are changing and whether one river might be shifting its path toward
+    the other.
+    """)
+
+    st.divider()
+
+    # Quick Start — hero button
+    if st.button("Quick Start — View Latest Data", type="primary", use_container_width=True):
+        _select_passes(all_pass_dates, n=4)
+        st.session_state.page = "dashboard"
+        st.rerun()
+    st.caption("Loads the 4 most recent satellite passes and opens the dashboard.")
+
+    st.divider()
+
+    # Configure Passes — secondary option below
+    with st.expander("Choose Specific Dates"):
+        st.caption("Pick exactly which satellite passes to include in your analysis.")
+        render_pass_checklist(all_pass_dates)
+
+        selected = [d for d in all_pass_dates if st.session_state.get(f"pass_{d}", False)]
+        st.caption(f"{len(selected)} passes selected")
+
+        if st.button("Launch Dashboard", type="primary"):
+            if not selected:
+                st.warning("Please select at least one pass.")
+            else:
+                st.session_state.page = "dashboard"
+                st.rerun()
+
+    with st.expander("How does the satellite work?"):
+        st.markdown("""
+        - **SWOT** (Surface Water and Ocean Topography) orbits Earth and measures the
+          height of rivers, lakes, and oceans using radar. It can see both rivers at once.
+        - Each **pass** is one flyover. The satellite measures water height at thousands of
+          points along the river, giving us a detailed picture of the water surface.
+        - During **winter** (Dec-Mar), river ice can fool the satellite into reading the top
+          of the ice instead of the water underneath. These dates are marked with ❄️ so you
+          know to be careful with that data.
+        """)
+
+
+def render_dashboard(con, all_pass_dates, available_reaches):
+    """Render the main dashboard with all charts and analysis."""
+    # --- Top bar ---
+    top_left, top_right = st.columns([4, 1])
+    with top_left:
+        st.title(PAGE_TITLE)
+    with top_right:
+        if st.button("Return to Homepage"):
+            # Clear cached dataframes but preserve pass selection
+            for key in ["viz_df", "stats_df", "count", "where_clause",
+                        "selected_pass_dates", "selected_reaches", "detrend_method",
+                        "metrics_calculated", "temporal_df", "temporal_where",
+                        "heatmap_df", "heatmap_where",
+                        "dist_evolution_df", "elev_diff_df"]:
+                st.session_state.pop(key, None)
+            st.session_state.page = "welcome"
+            st.rerun()
+
+    # Always include both rivers
+    selected_reaches = available_reaches
+
+    # Read pass selection from session state
+    selected_pass_dates = sorted(
+        d for d in all_pass_dates if st.session_state.get(f"pass_{d}", False)
+    )
+
+    if not selected_pass_dates:
+        st.warning("No passes selected. Please return to the homepage to select passes.")
         st.stop()
 
-    st.sidebar.title("🌊 Analysis Controls")
-
-    # 1. Get Metadata (with loading indicator for large datasets)
-    try:
-        with st.spinner("Loading data metadata..."):
-            date_range = con.execute("SELECT MIN(Pass_Date), MAX(Pass_Date) FROM river_data").fetchone()
-            if date_range is None or date_range[0] is None:
-                st.error("❌ No data found in parquet files. Please run SWOT_Pull.py first to generate data.")
-                st.stop()
-
-            min_date = pd.to_datetime(date_range[0])
-            max_date = pd.to_datetime(date_range[1])
-            available_reaches = con.execute("SELECT DISTINCT Reach_Name FROM river_data").fetchdf()['Reach_Name'].tolist()
-    except Exception as e:
-        st.error(f"❌ Could not read metadata: {e}")
-        st.info("💡 If running locally, run `python SWOT_Pull.py` to generate data. If on Streamlit Cloud, check GitHub Release data.")
-        st.stop()
-        
-    # --- FORM CONTROLS ---
-    with st.sidebar.form("analysis_form"):
-        st.write("### 1. Select Time & Rivers")
-
-        start_date, end_date = st.slider(
-            "Time Frame:",
-            min_value=min_date.date(),
-            max_value=max_date.date(),
-            value=(min_date.date(), max_date.date())
-        )
-
-        exclude_ice = st.checkbox(
-            "Exclude ice season (Dec-Mar)",
-            value=True,
-            help="Smooth river ice passes SWOT Class 3-4 filters during Dec-Mar, producing elevated WSE readings (0.5-2+ m above true water surface)."
-        )
-
-        selected_reaches = st.multiselect(
-            "Select Rivers:",
-            available_reaches,
-            default=available_reaches
-        )
-
-        submitted = st.form_submit_button("🔄 Update Analysis")
+    # Show selected date range below title
+    first_date = min(selected_pass_dates).strftime("%b %d, %Y")
+    last_date = max(selected_pass_dates).strftime("%b %d, %Y")
+    n_passes = len(selected_pass_dates)
+    if n_passes == 1:
+        date_label = f"Viewing 1 pass: {first_date}"
+    elif first_date == last_date:
+        date_label = f"Viewing {n_passes} passes: {first_date}"
+    else:
+        date_label = f"Viewing {n_passes} passes: {first_date} — {last_date}"
+    st.markdown(f"**{date_label}**")
 
     # Hardcoded detrending method
     detrend_method = "Polynomial (2nd order)"
@@ -389,37 +480,29 @@ def main():
     # Display theme (light mode default)
     plotly_template = "plotly_white"
 
-
     # --- DATA LOADING WITH CACHING ---
-    # Only reload data when form is submitted OR when data is not yet loaded
-    if submitted or "viz_df" not in st.session_state:
-        if not selected_reaches:
-            st.warning("Please select at least one river.")
-            st.stop()
-
-        # 3. FILTER DATA
+    if "viz_df" not in st.session_state:
+        # FILTER DATA
         rivers_sql = "'" + "','".join(selected_reaches) + "'"
+        dates_sql = ",".join(f"CAST('{d}' AS DATE)" for d in selected_pass_dates)
 
         # Base conditions (explicit CAST needed for DuckDB httpfs DATE filtering)
         where_clause = f"""
             WHERE Reach_Name IN ({rivers_sql})
-            AND CAST(Pass_Date AS DATE) >= CAST('{start_date}' AS DATE)
-            AND CAST(Pass_Date AS DATE) <= CAST('{end_date}' AS DATE)
+            AND CAST(Pass_Date AS DATE) IN ({dates_sql})
         """
 
-        # Ice season filtering (Dec-Mar: smooth ice passes Class 3-4 filters)
-        if exclude_ice:
-            where_clause += "\n            AND MONTH(CAST(Pass_Date AS DATE)) NOT IN (12, 1, 2, 3)"
-        else:
-            severity, season_labels = get_ice_warning(str(start_date), str(end_date))
-            if severity:
-                st.warning(
-                    "**Ice season data included.** Your date range spans "
-                    f"{season_labels}. Smooth river ice passes SWOT Class 3-4 filters, "
-                    "producing WSE readings 0.5-2+ m above the true water surface. "
-                    "Uyak Creek is most affected (narrow channel freezes completely). "
-                    "Use caution when interpreting winter data."
-                )
+        # Warn if any selected passes are in ice season
+        ice_selected = [d for d in selected_pass_dates if d.month in (12, 1, 2, 3)]
+        if ice_selected:
+            ice_labels = ", ".join(d.strftime("%b %d, %Y") for d in ice_selected)
+            st.warning(
+                f"**Ice season data included** ({ice_labels}). "
+                "Smooth river ice passes SWOT Class 3-4 filters, "
+                "producing WSE readings 0.5-2+ m above the true water surface. "
+                "Uyak Creek is most affected (narrow channel freezes completely). "
+                "Use caution when interpreting winter data."
+            )
 
         # Check total count first (with timeout protection)
         try:
@@ -430,14 +513,13 @@ def main():
             st.stop()
 
         if count == 0:
-            st.warning("⚠️ No data matches your selection.")
+            st.warning("No data matches your selection.")
             st.stop()
 
         # --- SCIENTIFIC DOWNSAMPLING ---
         if count > MAX_PLOT_POINTS:
             step_size = int(count / MAX_PLOT_POINTS)
 
-            # SCIENTIFIC QUERY: Sort by Location/Time, then take every Nth row
             query_viz = f"""
                 SELECT * FROM (
                     SELECT *, row_number() OVER (ORDER BY Reach_Name, dist_km, Pass_Date) as rn
@@ -447,9 +529,7 @@ def main():
             """
 
             viz_df = con.execute(query_viz).fetchdf()
-
-            if submitted:
-                st.toast(f"ℹ️ Systematic Sampling: Showing 1 out of every {step_size} points.", icon="📉")
+            st.toast(f"Systematic Sampling: Showing 1 out of every {step_size} points.", icon="📉")
         else:
             query_viz = f"SELECT * FROM river_data {where_clause} ORDER BY Reach_Name, dist_km"
             viz_df = con.execute(query_viz).fetchdf()
@@ -464,68 +544,27 @@ def main():
         """
         stats_df = con.execute(stats_query).fetchdf()
 
-        # Store in session state for reuse when map settings change
+        # Store in session state for reuse
         st.session_state.viz_df = viz_df
         st.session_state.stats_df = stats_df
         st.session_state.count = count
         st.session_state.selected_reaches = selected_reaches
-        st.session_state.start_date = start_date
-        st.session_state.end_date = end_date
+        st.session_state.selected_pass_dates = selected_pass_dates
         st.session_state.detrend_method = detrend_method
         st.session_state.where_clause = where_clause
-        st.session_state.exclude_ice = exclude_ice
     else:
         # Use cached data (instant - no database query!)
         viz_df = st.session_state.viz_df
         stats_df = st.session_state.stats_df
         count = st.session_state.count
         selected_reaches = st.session_state.selected_reaches
-        start_date = st.session_state.start_date
-        end_date = st.session_state.end_date
+        selected_pass_dates = st.session_state.selected_pass_dates
         detrend_method = st.session_state.detrend_method
         where_clause = st.session_state.where_clause
 
-    # --- MAIN PAGE ---
-    st.title(PAGE_TITLE)
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Passes Analyzed", viz_df['Pass_Date'].nunique())
-    col2.metric("Total Data Points", f"{count:,}")
-    col3.metric("Visualization Sample", f"{len(viz_df):,}") 
-
-    # --- SUMMARY STATS TABLE ---
-    st.subheader("Summary Stats (Calculated on 100% of Data)")
-
-    # Clean up the slope presentation (absolute value for readability)
-    display_stats = stats_df.copy()
-    display_stats['avg_slope'] = display_stats['avg_slope'].abs()
-
-    display_stats = display_stats.rename(columns={
-        "Reach_Name": "River Name",
-        "avg_wse": "Avg WSE (m)",
-        "avg_slope": "Avg Gradient (cm/km)"
-    })
-
-    st.dataframe(
-        display_stats.style.format({"Avg WSE (m)": "{:.2f}", "Avg Gradient (cm/km)": "{:.2f}"}),
-        width='stretch',
-        hide_index=True
-    )
-
-    # Display data quality information
-    st.info("""
-    **Data Quality Filtering Applied:**
-    - **Classification:** SWOT Classes 3-4 (high-quality water pixels)
-    - **Outlier Removal:** MAD-based filtering (Modified Z-score threshold 3.5)
-    - **Applied:** Per-reach during data ingestion
-    - **Purpose:** Remove plateau artifacts and anomalous measurements
-
-    See `SCIENTIFIC_METHODOLOGY.md` for complete methodology.
-    """)
-
     # --- CALCULATE ADVANCED METRICS FOR MAP VISUALIZATION ---
     # Only calculate when data is reloaded (not when just changing map display settings)
-    if submitted or "metrics_calculated" not in st.session_state or st.session_state.metrics_calculated != detrend_method:
+    if "metrics_calculated" not in st.session_state or st.session_state.metrics_calculated != detrend_method:
         # 1. Calculate Detrended Residuals (using cached function for performance)
         baseline_pred, _, _ = calculate_detrending(
             viz_df['dist_km'].tolist(),
@@ -560,7 +599,7 @@ def main():
     ])
 
     with tab1:
-        st.subheader(f"River Profile ({start_date} to {end_date})")
+        st.subheader("River Profile")
         
         fig = go.Figure()
 
@@ -621,27 +660,27 @@ def main():
         st.plotly_chart(fig, width="stretch", theme=None)
 
         # Add interpretation guide
-        st.info("""
-        **How to Read This Graph:**
-        - **X-axis (reversed)**: Distance from confluence anchor point
-          - Left (high values): Coast/River mouth (~70 km)
-          - Right (0 km): Confluence where rivers meet
-        - **Y-axis**: Water surface elevation above EGM2008 geoid (meters)
-        - **Points**: Individual SWOT measurements (semi-transparent)
-        - **Dashed lines**: Linear regression trendlines showing average gradient
-        - **Gradient values**: Shown in legend as cm/km (steepness)
+        with st.expander("How to Read This Graph"):
+            st.markdown("""
+            - **X-axis (reversed)**: Distance from confluence anchor point
+              - Left (high values): Coast/River mouth (~70 km)
+              - Right (0 km): Confluence where rivers meet
+            - **Y-axis**: Water surface elevation above EGM2008 geoid (meters)
+            - **Points**: Individual SWOT measurements (semi-transparent)
+            - **Dashed lines**: Linear regression trendlines showing average gradient
+            - **Gradient values**: Shown in legend as cm/km (steepness)
 
-        **What to look for:**
-        - **Steeper gradient** (higher cm/km) = Faster elevation drop = More hydraulic energy
-        - **River comparison**: If one river is consistently higher, it has hydraulic advantage
-        - **Scatter width**: Natural variation from different satellite passes and water levels
-        - **Trend line slope**: Overall average gradient - steeper = greater avulsion risk
+            **What to look for:**
+            - **Steeper gradient** (higher cm/km) = Faster elevation drop = More hydraulic energy
+            - **River comparison**: If one river is consistently higher, it has hydraulic advantage
+            - **Scatter width**: Natural variation from different satellite passes and water levels
+            - **Trend line slope**: Overall average gradient - steeper = greater avulsion risk
 
-        💡 **Tip**: Use the other tabs for detailed comparisons!
-        - "Elevation Difference" shows which river is higher at each distance
-        - "Detrended Profile" removes overall slope to highlight subtle differences
-        - "Slope Profile" shows how steepness varies along the river
-        """)
+            **Tip**: Use the other tabs for detailed comparisons!
+            - "Elevation Difference" shows which river is higher at each distance
+            - "Detrended Profile" removes overall slope to highlight subtle differences
+            - "Slope Profile" shows how steepness varies along the river
+            """)
 
     with tab_pocketed:
         tab2, tab4, tab6, tab7, tab8, tab9 = st.tabs([
@@ -650,7 +689,7 @@ def main():
         ])
 
     with tab2:
-        st.subheader(f"Elevation Difference: Kanektok - Uyak ({start_date} to {end_date})")
+        st.subheader("Elevation Difference: Kanektok - Uyak")
 
         # Check if both rivers are selected
         if len(selected_reaches) != 2:
@@ -742,13 +781,13 @@ def main():
                     st.plotly_chart(fig_diff, width="stretch", theme=None)
 
                     # Add interpretation guide
-                    st.info("""
-                    **How to Read This Graph:**
-                    - **Positive values** (above zero): Kanektok River has higher water surface elevation
-                    - **Negative values** (below zero): Uyak Creek has higher water surface elevation
-                    - **Zero line**: Rivers have equal elevation
-                    - Data is binned every 100 meters and averaged for clarity
-                    """)
+                    with st.expander("How to Read This Graph"):
+                        st.markdown("""
+                        - **Positive values** (above zero): Kanektok River has higher water surface elevation
+                        - **Negative values** (below zero): Uyak Creek has higher water surface elevation
+                        - **Zero line**: Rivers have equal elevation
+                        - Data is binned every 100 meters and averaged for clarity
+                        """)
 
                     # Show summary statistics
                     max_abs_idx = diff_df['elevation_diff'].abs().idxmax()
@@ -769,7 +808,7 @@ def main():
                 st.error(f"Error calculating elevation difference: {e}")
 
     with tab3:
-        st.subheader(f"Detrended Elevation Profile ({start_date} to {end_date})")
+        st.subheader("Detrended Elevation Profile")
 
         # Helper function for LOESS smoothing
         def loess_smooth(x, y, frac=0.1):
@@ -939,24 +978,24 @@ def main():
                     """)
 
                 # Add interpretation guide
-                st.info(f"""
-                **How to Read This Graph (Relative Elevation Model):**
-                - **Baseline**: {method_name} fitted through all data points from selected river(s)
-                - **Y-axis = 0**: Points exactly on the baseline trend
-                - **Positive values**: Water surface elevation is HIGHER than the baseline
-                - **Negative values**: Water surface elevation is LOWER than the baseline
-                - **Purpose**: Removes the large-scale elevation drop, revealing subtle differences between rivers
+                with st.expander("How to Read This Graph"):
+                    st.markdown(f"""
+                    - **Baseline**: {method_name} fitted through all data points from selected river(s)
+                    - **Y-axis = 0**: Points exactly on the baseline trend
+                    - **Positive values**: Water surface elevation is HIGHER than the baseline
+                    - **Negative values**: Water surface elevation is LOWER than the baseline
+                    - **Purpose**: Removes the large-scale elevation drop, revealing subtle differences between rivers
 
-                **Expected pattern if detrending is working correctly:**
-                - Residuals should **scatter around zero** with no systematic slope
-                - Overall mean residual should be close to 0.000m
-                - If you still see a clear upward or downward trend, the baseline method doesn't fit your data well
+                    **Expected pattern if detrending is working correctly:**
+                    - Residuals should **scatter around zero** with no systematic slope
+                    - Overall mean residual should be close to 0.000m
+                    - If you still see a clear upward or downward trend, the baseline method doesn't fit your data well
 
-                **What to look for (when properly detrended):**
-                - Consistent separation between rivers indicates systematic elevation differences
-                - River consistently above baseline = higher gradient/steeper than average
-                - River consistently below baseline = lower gradient/gentler than average
-                """)
+                    **What to look for (when properly detrended):**
+                    - Consistent separation between rivers indicates systematic elevation differences
+                    - River consistently above baseline = higher gradient/steeper than average
+                    - River consistently below baseline = lower gradient/gentler than average
+                    """)
 
                 # Method-specific guidance
                 method_guidance = {
@@ -1069,7 +1108,7 @@ def main():
             st.code(traceback.format_exc())
 
     with tab4:
-        st.subheader(f"Slope Profile ({start_date} to {end_date})")
+        st.subheader("Slope Profile")
 
         # Query raw data per river
         slope_query = f"""
@@ -1136,14 +1175,14 @@ def main():
 
                 st.plotly_chart(fig_slopes, width="stretch", theme=None)
 
-                st.info("""
-                **How to Read This Graph:**
-                - Shows how river steepness varies along its length
-                - Raw WSE data is binned (100m medians) then smoothed with a 2km Gaussian window
-                - Slope is the derivative of the smoothed elevation profile
-                - **Higher values** = Steeper gradient (more hydraulic energy)
-                - Compare rivers to identify where one is significantly steeper
-                """)
+                with st.expander("How to Read This Graph"):
+                    st.markdown("""
+                    - Shows how river steepness varies along its length
+                    - Raw WSE data is binned (100m medians) then smoothed with a 2km Gaussian window
+                    - Slope is the derivative of the smoothed elevation profile
+                    - **Higher values** = Steeper gradient (more hydraulic energy)
+                    - Compare rivers to identify where one is significantly steeper
+                    """)
 
                 if slope_stats:
                     st.subheader("Slope Profile Statistics")
@@ -1432,7 +1471,7 @@ def main():
         )
 
     with tab7:
-        st.subheader(f"⏳ Temporal Evolution Analysis ({start_date} to {end_date})")
+        st.subheader("⏳ Temporal Evolution Analysis")
 
         st.info("""
         **Purpose:** Track how river metrics evolve over time to identify trends, seasonal patterns, and anomalies.
@@ -1465,7 +1504,7 @@ def main():
         )
 
         # Check session state cache
-        if submitted or "temporal_df" not in st.session_state or st.session_state.get("temporal_where") != where_clause:
+        if "temporal_df" not in st.session_state or st.session_state.get("temporal_where") != where_clause:
             with st.spinner("Computing temporal metrics..."):
                 # Query for monthly aggregated metrics
                 monthly_query = f"""
@@ -1980,12 +2019,12 @@ def main():
             width='stretch'
         )
 
-        st.info("""
-        **Interpretation Guide:**
-        - **WSE Trend:** Positive = water level increasing, Negative = water level decreasing
-        - **R²:** Closer to 1.0 = stronger linear trend, Closer to 0 = more variability
-        - **Gradient Trend:** Change in river steepness over time
-        """)
+        with st.expander("Interpretation Guide"):
+            st.markdown("""
+            - **WSE Trend:** Positive = water level increasing, Negative = water level decreasing
+            - **R²:** Closer to 1.0 = stronger linear trend, Closer to 0 = more variability
+            - **Gradient Trend:** Change in river steepness over time
+            """)
 
     # === TAB 8: SEASONAL COMPARISON ===
     with tab8:
@@ -2381,6 +2420,67 @@ June-August 2026 data. Re-run `SWOT_Pull.py` after June 2026 to populate this se
                 st.warning("No post-storm data available for Oct-Dec 2025.")
             else:
                 st.warning("Insufficient data for immediate before/after comparison.")
+
+    # --- SUMMARY STATS & DATA INFO (bottom of page) ---
+    st.divider()
+    st.subheader("Summary Statistics")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Passes Analyzed", viz_df['Pass_Date'].nunique())
+    col2.metric("Total Data Points", f"{count:,}")
+    col3.metric("Visualization Sample", f"{len(viz_df):,}")
+
+    display_stats = stats_df.copy()
+    display_stats['avg_slope'] = display_stats['avg_slope'].abs()
+    display_stats = display_stats.rename(columns={
+        "Reach_Name": "River Name",
+        "avg_wse": "Avg WSE (m)",
+        "avg_slope": "Avg Gradient (cm/km)"
+    })
+    st.dataframe(
+        display_stats.style.format({"Avg WSE (m)": "{:.2f}", "Avg Gradient (cm/km)": "{:.2f}"}),
+        width='stretch',
+        hide_index=True
+    )
+
+    with st.expander("Data Quality Information"):
+        st.markdown("""
+        **Data Quality Filtering Applied:**
+        - **Classification:** SWOT Classes 3-4 (high-quality water pixels)
+        - **Outlier Removal:** MAD-based filtering (Modified Z-score threshold 3.5)
+        - **Applied:** Per-reach during data ingestion
+        - **Purpose:** Remove plateau artifacts and anomalous measurements
+
+        See `SCIENTIFIC_METHODOLOGY.md` for complete methodology.
+        """)
+
+
+def main():
+    con = get_database_connection()
+    if not con:
+        st.error("Failed to initialize database connection.")
+        st.stop()
+
+    # Load metadata (cached)
+    try:
+        with st.spinner("Loading data metadata..."):
+            all_pass_dates, available_reaches = load_metadata(con)
+            if all_pass_dates is None:
+                st.error("No data found. Please run SWOT_Pull.py first to generate data.")
+                st.stop()
+    except Exception as e:
+        st.error(f"Could not read metadata: {e}")
+        st.stop()
+
+    # Page router
+    if "page" not in st.session_state:
+        st.session_state.page = "welcome"
+
+    if st.session_state.page == "welcome":
+        render_welcome(all_pass_dates)
+    else:
+        render_dashboard(con, all_pass_dates, available_reaches)
+
 
 if __name__ == "__main__":
     main()
