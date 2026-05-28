@@ -971,9 +971,9 @@ Use this checklist to verify our processing against the SWOT handbook:
 If you have questions about our methodology, here are resources:
 
 1. **Code Implementation:** See `SWOT_Pull.py` with line numbers referenced above
-2. **Technical Details:** See `Claude/Claude_notes.md` for development history
-3. **SWOT Handbook:** See `Claude/SWOT_Handbook.pdf` (JPL D-109532)
-4. **Verification Summary:** See `Claude/Verification_Summary.md`
+2. **Technical Details:** See `docs/development_notes.md` for development history
+3. **SWOT Handbook:** See `docs/SWOT_Handbook.pdf` (JPL D-109532)
+4. **Verification Summary:** See `docs/Verification_Summary.md`
 5. **Field Calibration:** See calibration data in `Quinhagak SWOT Calibration Readings Nov 2025/`
 
 ### Common Questions Anticipated

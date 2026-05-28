@@ -441,8 +441,8 @@ SWOT/
 │   ├── data/                  # Daily CSV files (checkpoints)
 │   ├── master_all_data.csv    # Combined CSV
 │   └── master_all_data_part_*.parquet  # Optimized partitions for dashboard
-└── Claude/
-    ├── Claude_notes.md        # Development history & technical notes
+└── docs/
+    ├── development_notes.md   # Development history & technical notes
     └── SWOT_Handbook.pdf      # NASA reference document
 ```
 
