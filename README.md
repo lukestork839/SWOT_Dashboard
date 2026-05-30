@@ -126,17 +126,30 @@ The dashboard organizes analysis into top-level tabs and nested "More Tabs":
 | **Gradient Profile** | WSE vs. distance scatter plot with linear regression trendlines. Shows overall river steepness in cm/km. |
 | **Detrended Profile** | Removes the large-scale elevation trend (Relative Elevation Model). Reveals subtle systematic differences between rivers. Supports Linear, Polynomial (2nd/3rd order), and LOESS baselines. |
 | **Map View** | Interactive Folium map with multiple basemaps (satellite, terrain, etc.), measuring tools for distance/area, and color-by options (river name, WSE, classification, detrended residual, interval slope). |
+**DEM Data tab** (with subtabs):
 
-**Nested under "More Tabs":**
+| Tab | What It Shows |
+|-----|---------------|
+| **Terrain Profile** | Median ArcticDEM elevation along each river corridor with linear regression trendlines (cm/km, R²). |
+| **Elevation Difference** | Kanektok minus Uyak terrain elevation per 0.5 km bin -- analogous to alluvial ridge height (Slingerland & Smith, 1998). |
+| **Terrain Slope** | Local terrain gradient along each corridor (Gaussian-smoothed numerical derivative). |
+| **Detrended Profile** | Removes regional downstream gradient (2nd-order polynomial) to reveal where each corridor sits above or below the trend. |
+| **Map View** | Interactive Folium map of DEM elevation points. Color by river name or elevation (viridis). Basemap toggle, measurement tools. |
+
+See [DEM Elevation Comparison](#dem-elevation-comparison) for methodology.
+
+**SWOT nested tabs:**
 
 | Tab | What It Shows |
 |-----|---------------|
 | **Elevation Difference** | Direct Kanektok minus Uyak WSE comparison in 100m distance bins. Shows which river is higher at each point. |
 | **Slope Profile** | How steepness varies along each river. Uses Gaussian-smoothed binned medians with numerical derivative. |
 | **Raw Data** | Table view of the data with CSV export. |
-| **Temporal Evolution** | Time series of monthly WSE averages and gradients. Includes moving average trendlines, WSE at fixed distances, anomaly detection, and heatmaps. |
-| **Seasonal Comparison** | Year-over-year comparison: high flow (May) vs. low flow (Jul-Aug) for 2023-2025. |
-| **Typhoon Impact** | Before/after analysis of Typhoon Halong (Oct 12-14, 2025). Immediate impact and same-season comparison. |
+| **Temporal Evolution** | Time series of monthly WSE averages and gradients. Includes moving average trendlines, WSE at fixed distances, anomaly detection, and heatmaps. *(Local only)* |
+| **Seasonal Comparison** | Year-over-year comparison: high flow (May) vs. low flow (Jul-Aug) for 2023-2025. *(Local only)* |
+| **Typhoon Impact** | Before/after analysis of Typhoon Halong (Oct 12-14, 2025). Immediate impact and same-season comparison. *(Local only)* |
+
+*Local only tabs require the full dataset from `SWOT_Pull.py` and are hidden on the deployed Streamlit Cloud dashboard.*
 
 ### Sidebar Controls
 
@@ -198,6 +211,16 @@ At ~59.8N, peak ice contamination occurs December through March. Analysis of 170
 - Data is preserved in full (not deleted) for potential ice studies
 - Uyak Creek (narrow, shallow) freezes more completely than Kanektok River (wider, deeper)
 
+### DEM Elevation Comparison
+
+The dashboard includes a DEM comparison tab that overlays ArcticDEM V4 terrain elevation with SWOT water surface measurements. This provides an independent elevation reference and enables analysis of channel geometry (bank height, floodplain relief).
+
+**Data source:** ArcticDEM V4 2m mosaic ([UMN/PGC](https://www.pgc.umn.edu/data/arcticdem/)), exported via Google Earth Engine and sampled at 10m resolution within the river polygons. The extraction script is `DEM_Pull.py`.
+
+**Vertical datum alignment:** ArcticDEM reports elevations as WGS84 ellipsoidal heights, while SWOT WSE is orthometric (referenced to the EGM2008 geoid). The raw offset between the two datums is approximately 13.2-13.8m across the study area. `DEM_Pull.py` corrects for this by subtracting the EGM2008 geoid undulation from each DEM pixel, using a spatially-varying geoid surface interpolated from the per-pixel geoid values in the SWOT data (the same EGM2008 values used in the SWOT WSE calculation). This places both datasets on the same vertical datum.
+
+**Validation:** The ArcticDEM V4 was independently validated against NOAA 2024 QL1 LiDAR (11 pts/m, 0.05m vertical RMSE) for the Quinhagak area, achieving 0.50m RMSE on vegetated pixels -- confirming near bare-earth accuracy in this low-stature tundra/shrub environment. See the companion ArcticDEM project for full validation methodology.
+
 For the complete scientific documentation, see:
 - [`SCIENTIFIC_METHODOLOGY.md`](SCIENTIFIC_METHODOLOGY.md) -- verification, quality flag reference, calibration results
 - [`SWOT_Processing_Documentation.md`](SWOT_Processing_Documentation.md) -- detailed technical processing documentation
@@ -211,7 +234,8 @@ SWOT_Dashboard/
 ├── setup.bat                        # One-command setup for Windows
 ├── setup.sh                         # One-command setup for Linux/Mac
 ├── SWOT_Pull.py                     # Data ingestion: NASA download + processing pipeline
-├── dashboard_swot.py                # Visualization: Streamlit dashboard (~2400 lines)
+├── DEM_Pull.py                      # ArcticDEM extraction: GEE download + geoid correction
+├── dashboard_swot.py                # Visualization: Streamlit dashboard (~2500 lines)
 ├── rebuild_master.py                # Utility: rebuild master parquets from daily CSVs
 ├── requirements.txt                 # Dashboard dependencies (used by Streamlit Cloud)
 ├── requirements-full.txt            # Full dependencies including ingestion pipeline
@@ -220,7 +244,9 @@ SWOT_Dashboard/
 │   ├── data/                        #   Daily CSV checkpoints (YYYY-MM-DD_data.csv)
 │   ├── master_all_data.csv          #   Combined dataset, all columns
 │   ├── master_all_data.parquet      #   Single optimized parquet
-│   └── master_all_data_part_*.parquet  # Partitioned for dashboard performance
+│   ├── master_all_data_part_*.parquet  # Partitioned for dashboard performance
+│   ├── arcticdem_rivers.tif         #   ArcticDEM V4 clipped to study area (from DEM_Pull.py)
+│   └── dem_river_elevations.parquet #   DEM elevations within river polygons (geoid-corrected)
 ├── .streamlit/
 │   └── config.toml                  # Streamlit server/theme configuration
 ├── SCIENTIFIC_METHODOLOGY.md        # Complete scientific verification document

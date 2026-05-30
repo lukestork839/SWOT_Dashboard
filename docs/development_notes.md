@@ -1,6 +1,6 @@
 # SWOT River Dynamics Project - Technical Notes
 
-**Last Updated**: 2026-05-26
+**Last Updated**: 2026-05-28
 **Status**: Active Development — Online dashboard live at https://swotdashboard.streamlit.app/
 **Primary Workflow**: SWOT_Pull.py → dashboard_swot.py (optimization now integrated!)
 **GitHub Repository**: https://github.com/lukestork839/SWOT_Dashboard
@@ -142,6 +142,22 @@ Outlier if |Modified Z-score| > 3.5
 - **Per-reach:** Independent filtering for Kanektok and Uyak
 - **Reference:** Iglewicz & Hoaglin (1993)
 - **Edge cases:** Skip if N<10, preserve minimum 5 points
+
+### DEM Elevation Profiles
+**Added:** 2026-05-28
+
+**Purpose:** Compare ArcticDEM V4 terrain elevation with SWOT water surface elevation within the river polygons, providing an independent elevation reference for the river corridors.
+
+**Pipeline (`DEM_Pull.py`):**
+1. Export ArcticDEM V4 2m mosaic from Google Earth Engine (resampled to 10m, clipped to polygon extent)
+2. Sample elevations within each river polygon using rasterio
+3. Apply geoid correction: subtract EGM2008 undulation (interpolated from SWOT CSV geoid values) to align with SWOT's orthometric datum
+4. Calculate distance from confluence anchor (same Haversine as SWOT_Pull.py)
+5. Output: `batch_outputs/dem_river_elevations.parquet`
+
+**Datum alignment detail:** ArcticDEM = WGS84 ellipsoidal heights; SWOT WSE = EGM2008 orthometric heights. The geoid undulation at the study site is ~13.2–13.8m (varies ~0.6m over 35 km). Without correction, DEM appears ~13.5m higher than SWOT. The geoid surface is interpolated from SWOT's per-pixel EGM2008 values rather than using a constant, to preserve the spatial gradient.
+
+**Validation:** ArcticDEM V4 validated against NOAA 2024 QL1 LiDAR — 0.50m RMSE on vegetated pixels (low-stature tundra/shrub). Near bare-earth accuracy, no vegetation correction needed.
 
 ---
 
