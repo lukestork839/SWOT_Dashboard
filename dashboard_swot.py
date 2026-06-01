@@ -30,6 +30,12 @@ MAX_PLOT_POINTS = 15000  # Reduced for large datasets (was 25000)
 MAX_BASELINE_POINTS = 30000  # Reduced for Streamlit Cloud (was 50000)
 MAX_MAP_POINTS = 5000  # Strict limit for map rendering
 
+# --- BIFURCATION POINT ---
+# Where Kanektok River and Uyak Creek diverge (59°49'43.99"N, 161°22'40.00"W)
+BIFURCATION_LAT = 59.828886
+BIFURCATION_LON = -161.377778
+BIFURCATION_DIST_KM = 2.493  # Haversine distance from confluence anchor point
+
 # FIXED COLORS
 COLOR_MAP = {
     "Kanektok_River": "firebrick",
@@ -67,6 +73,36 @@ TYPHOON_PERIODS = {
 ICE_AFFECTED_MONTHS = {12, 1, 2, 3}  # Dec-Mar (data-validated peak ice contamination)
 OPEN_WATER_MONTHS = {4, 5, 6, 7, 8, 9, 10, 11}  # Apr-Nov (reliable for WSE analysis)
 
+
+def add_bifurcation_line(fig, axis="x"):
+    """Add a dashed line marking the bifurcation point on a plotly figure."""
+    if axis == "x":
+        fig.add_vline(
+            x=BIFURCATION_DIST_KM, line_dash="dash", line_color="gray", line_width=1.5,
+            annotation_text="Bifurcation", annotation_position="top",
+            annotation_font_size=11, annotation_font_color="gray",
+        )
+    else:  # horizontal line (e.g. heatmap with distance on y-axis)
+        fig.add_hline(
+            y=BIFURCATION_DIST_KM, line_dash="dash", line_color="gray", line_width=1.5,
+            annotation_text="Bifurcation", annotation_position="right",
+            annotation_font_size=11, annotation_font_color="gray",
+        )
+
+def add_bifurcation_marker(m):
+    """Add a marker for the bifurcation point on a folium map."""
+    folium.Marker(
+        location=[BIFURCATION_LAT, BIFURCATION_LON],
+        popup=folium.Popup(
+            f"<b>Bifurcation Point</b><br>"
+            f"Lat: {BIFURCATION_LAT:.6f}<br>"
+            f"Lon: {BIFURCATION_LON:.6f}<br>"
+            f"Distance from anchor: {BIFURCATION_DIST_KM:.2f} km",
+            max_width=250,
+        ),
+        tooltip="Bifurcation Point",
+        icon=folium.Icon(color="green", icon="info-sign"),
+    ).add_to(m)
 
 st.set_page_config(page_title=PAGE_TITLE, layout="wide", page_icon="🌊")
 
@@ -730,6 +766,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         fig.update_xaxes(autorange="reversed")
 
         fig.update_layout(height=600, template=plotly_template)
+        add_bifurcation_line(fig)
         st.plotly_chart(fig, width="stretch", theme=None)
 
         # Add interpretation guide
@@ -813,6 +850,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     height=600, template=plotly_template,
                 )
                 fig_dem.update_xaxes(autorange="reversed")
+                add_bifurcation_line(fig_dem)
                 st.plotly_chart(fig_dem, use_container_width=True, theme=None)
 
                 with st.expander("How to Read This Graph"):
@@ -852,6 +890,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         height=500, template=plotly_template,
                     )
                     fig_diff.update_xaxes(autorange="reversed")
+                    add_bifurcation_line(fig_diff)
                     st.plotly_chart(fig_diff, use_container_width=True, theme=None)
 
                     with st.expander("How to Read This Graph"):
@@ -890,6 +929,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     height=500, template=plotly_template,
                 )
                 fig_slope.update_xaxes(autorange="reversed")
+                add_bifurcation_line(fig_slope)
                 st.plotly_chart(fig_slope, use_container_width=True, theme=None)
 
                 with st.expander("How to Read This Graph"):
@@ -929,6 +969,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     height=500, template=plotly_template,
                 )
                 fig_detrend.update_xaxes(autorange="reversed")
+                add_bifurcation_line(fig_detrend)
                 st.plotly_chart(fig_detrend, use_container_width=True, theme=None)
 
                 with st.expander("How to Read This Graph"):
@@ -1060,6 +1101,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                             vmin=vmin, vmax=vmax,
                         ).add_to(m)
 
+                    add_bifurcation_marker(m)
                     folium.LayerControl().add_to(m)
                     st_folium(m, width=1400, height=600, key="dem_river_map", returned_objects=[])
 
@@ -1204,6 +1246,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
                     # Reverse x-axis to match other plots (Coast on left, Confluence on right)
                     fig_diff.update_xaxes(autorange="reversed")
+                    add_bifurcation_line(fig_diff)
 
                     st.plotly_chart(fig_diff, width="stretch", theme=None)
 
@@ -1376,6 +1419,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
                 # Reverse x-axis to match other plots
                 fig_detrend.update_xaxes(autorange="reversed")
+                add_bifurcation_line(fig_detrend)
 
                 st.plotly_chart(fig_detrend, width="stretch", theme=None)
 
@@ -1527,6 +1571,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     )
 
                     fig_baseline.update_xaxes(autorange="reversed")
+                    add_bifurcation_line(fig_baseline)
                     st.plotly_chart(fig_baseline, width="stretch", theme=None)
 
         except Exception as e:
@@ -1599,6 +1644,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     showlegend=True
                 )
                 fig_slopes.update_xaxes(autorange="reversed")
+                add_bifurcation_line(fig_slopes)
 
                 st.plotly_chart(fig_slopes, width="stretch", theme=None)
 
@@ -1848,6 +1894,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 ).add_to(m)
 
             # Add layer control (toggle layers on/off)
+            add_bifurcation_marker(m)
             folium.LayerControl().add_to(m)
 
             st_folium(
@@ -2409,6 +2456,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
                 # Reverse Y-axis (coast at top, confluence at bottom)
                 fig_heat.update_yaxes(autorange="reversed")
+                add_bifurcation_line(fig_heat, axis="y")
 
                 st.plotly_chart(fig_heat, width='stretch', theme=None)
 
@@ -2547,6 +2595,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             height=800, template=plotly_template,
             title_text="Seasonal WSE Profiles: High Flow (May) vs Low Flow (Jul-Aug)"
         )
+        add_bifurcation_line(fig_seasonal)
         st.plotly_chart(fig_seasonal, width='stretch', theme=None)
 
         # Summary statistics table
@@ -2626,6 +2675,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
             fig_season.update_layout(height=500, template=plotly_template,
                                      title_text="Same-Season Comparison: Summer 2025 vs Summer 2026")
+            add_bifurcation_line(fig_season)
             st.plotly_chart(fig_season, width='stretch', theme=None)
 
             # Slope change metrics
@@ -2673,6 +2723,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         yaxis_title="WSE Change (m)", xaxis_title="Distance from Anchor Point (km)",
                         title_text="Summer 2026 minus Summer 2025 WSE"
                     )
+                    add_bifurcation_line(fig_change)
                     st.plotly_chart(fig_change, width='stretch', theme=None)
                     st.caption("Positive = WSE increased post-storm. Negative = WSE decreased. 500m bins, min 3 points per bin. Same-season comparison eliminates ice artifacts.")
                 else:
@@ -2767,6 +2818,7 @@ June-August 2026 data. Re-run `SWOT_Pull.py` after June 2026 to populate this se
 
                         fig_interim.update_layout(height=500, template=plotly_template,
                                                   title_text=f"Same-Month Comparison: {month_name} 2025 vs {month_name} 2026")
+                        add_bifurcation_line(fig_interim)
                         st.plotly_chart(fig_interim, width='stretch', theme=None)
 
                         # Slope change metrics
@@ -2836,6 +2888,7 @@ June-August 2026 data. Re-run `SWOT_Pull.py` after June 2026 to populate this se
                     fig_imm.update_xaxes(autorange="reversed", row=1, col=panel_idx)
 
                 fig_imm.update_layout(height=500, template=plotly_template)
+                add_bifurcation_line(fig_imm)
                 st.plotly_chart(fig_imm, width='stretch', theme=None)
 
                 # Slope change metrics
