@@ -9,6 +9,7 @@ from scipy.ndimage import gaussian_filter1d
 import numpy as np
 import duckdb
 import os
+import glob
 import gc  # Memory management
 import folium
 from folium import plugins
@@ -24,6 +25,7 @@ from jinja2 import Template as JinjaTemplate
 PAGE_TITLE = "SWOT River Dynamics: Kanektok & Uyak"
 DATA_DIR = "batch_outputs"
 REMOTE_PARQUET_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/dashboard_data.parquet"
+REMOTE_DEM_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/dem_river_elevations.parquet"
 MAX_PLOT_POINTS = 15000  # Reduced for large datasets (was 25000)
 MAX_BASELINE_POINTS = 30000  # Reduced for Streamlit Cloud (was 50000)
 MAX_MAP_POINTS = 5000  # Strict limit for map rendering
@@ -293,6 +295,14 @@ def get_database_connection(_url_version=REMOTE_PARQUET_URL):
             con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{REMOTE_PARQUET_URL}')")
             st.info("🌐 Loading data from GitHub Releases. First query may take 10-30 seconds.")
 
+        # Load DEM data if available (same local-first / remote-fallback pattern)
+        dem_local = os.path.join(DATA_DIR, "dem_river_elevations.parquet")
+        if os.path.exists(dem_local):
+            con.execute(f"CREATE OR REPLACE VIEW dem_data AS SELECT * FROM read_parquet('{dem_local}')")
+        elif not partition_files:
+            # httpfs already loaded for remote SWOT — use it for DEM too
+            con.execute(f"CREATE OR REPLACE VIEW dem_data AS SELECT * FROM read_parquet('{REMOTE_DEM_URL}')")
+
         # Memory optimization: Set DuckDB memory limit (recommended for Streamlit Cloud)
         con.execute("SET memory_limit='600MB'")
 
@@ -304,6 +314,40 @@ def get_database_connection(_url_version=REMOTE_PARQUET_URL):
         import traceback
         st.code(traceback.format_exc())
         return None
+
+@st.cache_data(ttl=3600)
+def load_dem_profile(_con):
+    """Compute exact DEM bin profile from full dataset via DuckDB.
+    Returns DataFrame with columns: Reach_Name, dist_bin, wse_median, wse_p10, wse_p25, wse_p75, wse_p90
+    """
+    try:
+        return _con.execute("""
+            SELECT Reach_Name,
+                   ROUND(dist_km / 0.5) * 0.5 AS dist_bin,
+                   MEDIAN(wse) AS wse_median,
+                   PERCENTILE_CONT(0.10) WITHIN GROUP (ORDER BY wse) AS wse_p10,
+                   PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY wse) AS wse_p25,
+                   PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY wse) AS wse_p75,
+                   PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY wse) AS wse_p90
+            FROM dem_data
+            GROUP BY Reach_Name, ROUND(dist_km / 0.5) * 0.5
+            ORDER BY Reach_Name, dist_bin
+        """).fetchdf()
+    except Exception:
+        return None
+
+@st.cache_data(ttl=3600)
+def load_dem_points(_con):
+    """Load sampled DEM points for map visualization via DuckDB."""
+    try:
+        return _con.execute("""
+            SELECT Reach_Name, dist_km, wse, latitude, longitude
+            FROM dem_data
+            USING SAMPLE 15000
+        """).fetchdf()
+    except Exception:
+        return None
+
 
 @st.cache_data(ttl=3600)
 def load_metadata(_con):
@@ -535,11 +579,21 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             viz_df = con.execute(query_viz).fetchdf()
 
         # --- STATISTICS (ALWAYS USE FULL DATA) ---
+        # Distance-weighted avg: bin by 1km, take median per bin, then average bins.
+        # This prevents uneven spatial sampling from biasing the mean WSE.
         stats_query = f"""
+            WITH binned AS (
+                SELECT Reach_Name,
+                       ROUND(dist_km) AS dist_bin,
+                       MEDIAN(wse) AS bin_wse,
+                       MEDIAN(slope_calc) AS bin_slope
+                FROM river_data {where_clause}
+                GROUP BY Reach_Name, ROUND(dist_km)
+            )
             SELECT Reach_Name,
-                   AVG(wse) as avg_wse,
-                   AVG(slope_calc) as avg_slope
-            FROM river_data {where_clause}
+                   AVG(bin_wse) AS avg_wse,
+                   AVG(bin_slope) AS avg_slope
+            FROM binned
             GROUP BY Reach_Name
         """
         stats_df = con.execute(stats_query).fetchdf()
@@ -594,9 +648,28 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         st.session_state.metrics_calculated = detrend_method
 
     # --- TABS ---
-    tab1, tab3, tab5, tab_pocketed = st.tabs([
-        "📈 Gradient Profile", "🎯 Detrended Profile", "🗺️ Map View", "📂 More Tabs"
-    ])
+    # Load DEM data via DuckDB (cached, exact statistics from full dataset)
+    dem_profile = load_dem_profile(con)
+    dem_points = load_dem_points(con)
+
+    main_swot, main_dem = st.tabs(["📡 SWOT Data", "🏔️ DEM Data"])
+
+    # Local-only tabs: Temporal Evolution, Seasonal Comparison, Typhoon Impact
+    # These require the full local dataset and are hidden on Streamlit Cloud
+    is_local = bool(glob.glob(os.path.join(DATA_DIR, "master_all_data_part_*.parquet")))
+
+    with main_swot:
+        swot_tab_names = [
+            "📈 Gradient Profile", "🎯 Detrended Profile", "🗺️ Map View",
+            "🔀 Elevation Difference", "📐 Slope Profile", "📄 Raw Data",
+        ]
+        if is_local:
+            swot_tab_names += ["⏳ Temporal Evolution", "📊 Seasonal Comparison", "🌊 Typhoon Impact"]
+
+        swot_tabs = st.tabs(swot_tab_names)
+        tab1, tab3, tab5, tab2, tab4, tab6 = swot_tabs[:6]
+        if is_local:
+            tab7, tab8, tab9 = swot_tabs[6:]
 
     with tab1:
         st.subheader("River Profile")
@@ -682,11 +755,365 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             - "Slope Profile" shows how steepness varies along the river
             """)
 
-    with tab_pocketed:
-        tab2, tab4, tab6, tab7, tab8, tab9 = st.tabs([
-            "🔀 Elevation Difference", "📐 Slope Profile", "📄 Raw Data",
-            "⏳ Temporal Evolution", "📊 Seasonal Comparison", "🌊 Typhoon Impact"
-        ])
+    with main_dem:
+        if dem_profile is None:
+            st.warning("No DEM data available. If running locally, run `DEM_Pull.py` first.")
+        else:
+            dem_tab1, dem_tab2, dem_tab3, dem_tab4, dem_tab5 = st.tabs([
+                "📈 Terrain Profile", "🔀 Elevation Difference",
+                "📐 Terrain Slope", "🎯 Detrended Profile", "🗺️ Map View"
+            ])
+
+            plot_order = sorted(selected_reaches, key=lambda r: r == "Uyak_Creek")
+
+            with dem_tab1:
+                st.subheader("ArcticDEM Terrain Profile")
+                fig_dem = go.Figure()
+
+                for reach in plot_order:
+                    line_color = COLOR_MAP.get(reach, "black")
+                    dem_reach = dem_profile[dem_profile["Reach_Name"] == reach].sort_values("dist_bin")
+                    if len(dem_reach) == 0:
+                        continue
+
+                    fig_dem.add_trace(go.Scatter(
+                        x=dem_reach["dist_bin"],
+                        y=dem_reach["wse_median"],
+                        mode="lines",
+                        name=reach,
+                        line=dict(color=line_color, width=3),
+                        legendgroup=reach,
+                        hovertemplate=(
+                            f"<b>{reach}</b><br>"
+                            "Distance: %{x:.1f} km<br>"
+                            "Median Elevation: %{y:.1f} m<br>"
+                            "<extra></extra>"
+                        ),
+                    ))
+
+                    if len(dem_reach) >= 5:
+                        slope_val, intercept_val, r_val, _, _ = stats.linregress(
+                            dem_reach["dist_bin"], dem_reach["wse_median"]
+                        )
+                        slope_cm = abs(slope_val * 100)
+                        r_sq = r_val ** 2
+                        x_range = np.linspace(dem_reach["dist_bin"].min(), dem_reach["dist_bin"].max(), 100)
+                        fig_dem.add_trace(go.Scatter(
+                            x=x_range,
+                            y=intercept_val + slope_val * x_range,
+                            mode="lines",
+                            name=f"{reach} Trend: {slope_cm:.1f} cm/km (R\u00b2={r_sq:.3f})",
+                            line=dict(color=line_color, width=3, dash="dash"),
+                            legendgroup=reach,
+                        ))
+
+                fig_dem.update_layout(
+                    xaxis_title="Distance from Confluence Anchor (km)",
+                    yaxis_title="Terrain Elevation (m, EGM2008)",
+                    height=600, template=plotly_template,
+                )
+                fig_dem.update_xaxes(autorange="reversed")
+                st.plotly_chart(fig_dem, use_container_width=True, theme=None)
+
+                with st.expander("How to Read This Graph"):
+                    st.markdown("""
+                    - **Solid lines**: Median ArcticDEM V4 terrain elevation within the river polygons (0.5 km bins)
+                    - **Dashed lines**: Linear regression trendlines with overall gradient (cm/km) and R\u00b2 goodness-of-fit
+                    - R\u00b2 near 1.0 = linear fit captures the profile well; lower values suggest concavity (Hack, 1957; Flint, 1974)
+
+                    **Data source:** ArcticDEM V4 (2m mosaic, 10m export). EGM2008 orthometric heights. LiDAR-validated (RMSE 0.50 m).
+                    """)
+
+            with dem_tab2:
+                st.subheader("Terrain Elevation Difference: Kanektok \u2212 Uyak")
+
+                if "Kanektok_River" not in dem_profile["Reach_Name"].values or "Uyak_Creek" not in dem_profile["Reach_Name"].values:
+                    st.warning("Both rivers are required for this analysis.")
+                else:
+                    kan_dem = dem_profile[dem_profile["Reach_Name"] == "Kanektok_River"][["dist_bin", "wse_median"]].rename(
+                        columns={"wse_median": "kan_median"})
+                    uyak_dem = dem_profile[dem_profile["Reach_Name"] == "Uyak_Creek"][["dist_bin", "wse_median"]].rename(
+                        columns={"wse_median": "uyak_median"})
+                    diff_dem = kan_dem.merge(uyak_dem, on="dist_bin", how="inner")
+                    diff_dem["diff"] = diff_dem["kan_median"] - diff_dem["uyak_median"]
+
+                    fig_diff = go.Figure()
+                    fig_diff.add_trace(go.Scatter(
+                        x=diff_dem["dist_bin"], y=diff_dem["diff"],
+                        mode="lines+markers", name="Kanektok \u2212 Uyak",
+                        line=dict(color="mediumpurple", width=2), marker=dict(size=4),
+                        fill="tozeroy", fillcolor="rgba(147,112,219,0.15)",
+                        hovertemplate="Distance: %{x:.1f} km<br>Difference: %{y:.1f} m<br><extra></extra>",
+                    ))
+                    fig_diff.add_hline(y=0, line_dash="dot", line_color="gray")
+                    fig_diff.update_layout(
+                        xaxis_title="Distance from Confluence Anchor (km)",
+                        yaxis_title="Elevation Difference (m)",
+                        height=500, template=plotly_template,
+                    )
+                    fig_diff.update_xaxes(autorange="reversed")
+                    st.plotly_chart(fig_diff, use_container_width=True, theme=None)
+
+                    with st.expander("How to Read This Graph"):
+                        st.markdown("""
+                        - Median terrain elevation difference between the two river corridors at each 0.5 km bin
+                        - Analogous to the *alluvial ridge height* (Slingerland & Smith, 1998): when one corridor sits higher,
+                          water has a gravitational incentive to shift toward the lower path
+                        - Gearon et al. (2024, *Nature*) used similar metrics to predict avulsion likelihood globally
+                        - **Positive**: Kanektok corridor sits higher \u2014 **Negative**: Uyak corridor sits higher
+                        """)
+
+            with dem_tab3:
+                st.subheader("Terrain Slope Profile")
+                fig_slope = go.Figure()
+
+                for reach in plot_order:
+                    dem_reach = dem_profile[dem_profile["Reach_Name"] == reach].sort_values("dist_bin")
+                    if len(dem_reach) < 3:
+                        continue
+                    line_color = COLOR_MAP.get(reach, "black")
+                    dist_vals = dem_reach["dist_bin"].values
+                    elev_vals = dem_reach["wse_median"].values
+                    raw_slope = np.gradient(elev_vals, dist_vals) * 100
+                    smoothed_slope = gaussian_filter1d(raw_slope, sigma=3)
+
+                    fig_slope.add_trace(go.Scatter(
+                        x=dist_vals, y=np.abs(smoothed_slope),
+                        mode="lines", name=reach,
+                        line=dict(color=line_color, width=2.5),
+                        hovertemplate=f"<b>{reach}</b><br>Distance: %{{x:.1f}} km<br>Slope: %{{y:.1f}} cm/km<br><extra></extra>",
+                    ))
+
+                fig_slope.update_layout(
+                    xaxis_title="Distance from Confluence Anchor (km)",
+                    yaxis_title="Terrain Slope (cm/km)",
+                    height=500, template=plotly_template,
+                )
+                fig_slope.update_xaxes(autorange="reversed")
+                st.plotly_chart(fig_slope, use_container_width=True, theme=None)
+
+                with st.expander("How to Read This Graph"):
+                    st.markdown("""
+                    - Local terrain gradient computed as the numerical derivative (central differences) of binned
+                      median elevation, smoothed with a Gaussian filter (1.5 km window)
+                    - Steeper slopes = greater gravitational energy available for flow
+                    - Slope differences between rivers indicate differences in channel stability and avulsion susceptibility
+                    """)
+
+            with dem_tab4:
+                st.subheader("Detrended Terrain Profile")
+
+                all_dist = dem_profile["dist_bin"].values
+                all_elev = dem_profile["wse_median"].values
+                poly_baseline = np.polynomial.Polynomial.fit(all_dist, all_elev, 2)
+
+                fig_detrend = go.Figure()
+                for reach in plot_order:
+                    dem_reach = dem_profile[dem_profile["Reach_Name"] == reach].sort_values("dist_bin")
+                    if len(dem_reach) == 0:
+                        continue
+                    line_color = COLOR_MAP.get(reach, "black")
+                    residuals = dem_reach["wse_median"].values - poly_baseline(dem_reach["dist_bin"].values)
+
+                    fig_detrend.add_trace(go.Scatter(
+                        x=dem_reach["dist_bin"], y=residuals,
+                        mode="lines", name=reach,
+                        line=dict(color=line_color, width=2.5),
+                        hovertemplate=f"<b>{reach}</b><br>Distance: %{{x:.1f}} km<br>Residual: %{{y:.2f}} m<br><extra></extra>",
+                    ))
+
+                fig_detrend.add_hline(y=0, line_dash="dot", line_color="gray")
+                fig_detrend.update_layout(
+                    xaxis_title="Distance from Confluence Anchor (km)",
+                    yaxis_title="Detrended Elevation (m)",
+                    height=500, template=plotly_template,
+                )
+                fig_detrend.update_xaxes(autorange="reversed")
+                st.plotly_chart(fig_detrend, use_container_width=True, theme=None)
+
+                with st.expander("How to Read This Graph"):
+                    st.markdown("""
+                    - Removes the regional downstream gradient (2nd-order polynomial fit to both rivers combined)
+                    - Quadratic baseline captures the expected concave-up profile shape (Flint, 1974)
+                    - Residuals show where each corridor sits higher or lower than the regional trend
+                    - A river consistently above the baseline may indicate a *perched* channel \u2014 a key
+                      precondition for avulsion (Slingerland & Smith, 1998)
+                    """)
+
+            with dem_tab5:
+                @st.fragment
+                def render_dem_map():
+                    st.subheader("DEM Elevation Point Map")
+
+                    ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 2])
+                    with ctrl1:
+                        dem_color_by = st.selectbox(
+                            "Color by:", options=["River Name", "Elevation (m)"],
+                            key="dem_map_color_by"
+                        )
+                    with ctrl2:
+                        dem_basemap = st.selectbox(
+                            "Basemap:", options=["OpenStreetMap", "Satellite (ESRI)"],
+                            index=1, key="dem_basemap_style"
+                        )
+                    with ctrl3:
+                        dem_opacity = st.slider(
+                            "Point Opacity:", min_value=0.1, max_value=1.0,
+                            value=0.7, step=0.1, key="dem_point_opacity"
+                        )
+
+                    if dem_points is None:
+                        st.warning("DEM point data not available for map.")
+                        return
+                    map_df = dem_points[dem_points["Reach_Name"].isin(selected_reaches)]
+
+                    center_lat = map_df["latitude"].mean()
+                    center_lon = map_df["longitude"].mean()
+
+                    basemap_tiles = {"OpenStreetMap": "OpenStreetMap", "Satellite (ESRI)": "Esri WorldImagery"}
+                    m = folium.Map(
+                        location=[center_lat, center_lon],
+                        zoom_start=10, tiles=basemap_tiles.get(dem_basemap, "Esri WorldImagery"),
+                        control_scale=True
+                    )
+                    plugins.MeasureControl(
+                        position="topleft",
+                        primary_length_unit="kilometers", secondary_length_unit="meters",
+                        primary_area_unit="sqkilometers", secondary_area_unit="acres"
+                    ).add_to(m)
+
+                    if dem_color_by == "River Name":
+                        for reach_name, color in COLOR_MAP.items():
+                            reach_data = map_df[map_df["Reach_Name"] == reach_name]
+                            if len(reach_data) == 0:
+                                continue
+
+                            features = [
+                                {
+                                    "type": "Feature",
+                                    "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
+                                    "properties": {
+                                        "River": reach_name,
+                                        "Elevation": f"{wse:.2f} m",
+                                        "Distance": f"{dist:.1f} km",
+                                    }
+                                }
+                                for lon, lat, wse, dist in zip(
+                                    reach_data["longitude"], reach_data["latitude"],
+                                    reach_data["wse"], reach_data["dist_km"]
+                                )
+                            ]
+
+                            folium.GeoJson(
+                                {"type": "FeatureCollection", "features": features},
+                                name=reach_name,
+                                marker=folium.CircleMarker(radius=3, weight=0, fill=True, fill_opacity=dem_opacity),
+                                style_function=lambda x, c=color: {"fillColor": c, "color": c},
+                                popup=folium.GeoJsonPopup(
+                                    fields=["River", "Elevation", "Distance"],
+                                    aliases=["River", "Elevation", "Distance"],
+                                ),
+                            ).add_to(m)
+
+                    else:  # Elevation (m)
+                        vmin = float(map_df["wse"].min())
+                        vmax = float(map_df["wse"].max())
+                        colormap_fn = cm.get_cmap("viridis")
+                        norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+
+                        rgba_array = colormap_fn(norm(map_df["wse"].values))
+                        hex_colors = [mcolors.rgb2hex(rgba[:3]) for rgba in rgba_array]
+
+                        features = [
+                            {
+                                "type": "Feature",
+                                "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
+                                "properties": {
+                                    "color": color, "River": reach,
+                                    "Elevation": f"{wse:.2f} m",
+                                    "Distance": f"{dist:.1f} km",
+                                }
+                            }
+                            for lon, lat, color, reach, wse, dist in zip(
+                                map_df["longitude"], map_df["latitude"], hex_colors,
+                                map_df["Reach_Name"], map_df["wse"], map_df["dist_km"]
+                            )
+                        ]
+
+                        folium.GeoJson(
+                            {"type": "FeatureCollection", "features": features},
+                            name="DEM Elevation",
+                            marker=folium.CircleMarker(radius=3, weight=0, fill=True, fill_opacity=dem_opacity),
+                            style_function=lambda x: {
+                                "fillColor": x["properties"]["color"],
+                                "color": x["properties"]["color"],
+                            },
+                            popup=folium.GeoJsonPopup(
+                                fields=["River", "Elevation", "Distance"],
+                                aliases=["River", "Elevation", "Distance"],
+                            ),
+                        ).add_to(m)
+
+                        VerticalColorbar(
+                            caption="Elevation (m)",
+                            colors=["#440154", "#31688e", "#35b779", "#fde725"],
+                            vmin=vmin, vmax=vmax,
+                        ).add_to(m)
+
+                    folium.LayerControl().add_to(m)
+                    st_folium(m, width=1400, height=600, key="dem_river_map", returned_objects=[])
+
+                    with st.expander("How to Read This Map"):
+                        st.markdown("""
+                        - Each point represents a 10m DEM pixel within the river polygons
+                        - **River Name coloring**: Kanektok River (red) vs Uyak Creek (blue)
+                        - **Elevation coloring**: Viridis colormap from low (purple) to high (yellow)
+                        - Click any point for elevation and distance details
+                        - Use the measurement tool (top-left) to measure distances and areas
+
+                        **Data source:** ArcticDEM V4 (2m mosaic, 10m export). EGM2008 orthometric heights.
+                        """)
+
+                render_dem_map()
+
+            # --- DEM SUMMARY STATISTICS ---
+            st.divider()
+            st.subheader("DEM Summary Statistics")
+
+            dem_summary = []
+            for reach in selected_reaches:
+                rp = dem_profile[dem_profile["Reach_Name"] == reach]
+                slope_val = np.nan
+                if len(rp) >= 5:
+                    slope_val, _, _, _, _ = stats.linregress(rp["dist_bin"], rp["wse_median"])
+                dem_summary.append({
+                    "River Name": reach,
+                    "Avg Elevation (m)": rp["wse_median"].mean(),
+                    "Avg Gradient (cm/km)": abs(slope_val) * 100,
+                })
+
+            summary_df = pd.DataFrame(dem_summary)
+            st.dataframe(
+                summary_df.style.format({
+                    "Avg Elevation (m)": "{:.2f}",
+                    "Avg Gradient (cm/km)": "{:.2f}",
+                }),
+                width="stretch", hide_index=True
+            )
+
+            with st.expander("Data Quality Information"):
+                st.markdown("""
+                **Data Source:** ArcticDEM V4 2m mosaic (Polar Geospatial Center), exported at 10m resolution via Google Earth Engine.
+
+                **Vertical Datum:** EGM2008 orthometric heights. Geoid correction applied using spatially-interpolated
+                undulation values (~13.2\u201313.8 m at study site), matching the SWOT vertical datum.
+
+                **Statistics:** Profile statistics computed from all ~2.5M pixels via DuckDB (exact bin medians and percentiles).
+                Map points are a random sample of 15,000 for rendering performance.
+                Summary statistics use distance-weighted averaging (0.5 km bin medians) for consistency with SWOT methodology.
+
+                **Validation:** ArcticDEM V4 independently validated against NOAA QL1 LiDAR (RMSE 0.50 m).
+                """)
 
     with tab2:
         st.subheader("Elevation Difference: Kanektok - Uyak")
@@ -1470,7 +1897,12 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             key='download-csv'
         )
 
-    with tab7:
+    # === LOCAL-ONLY TABS (Temporal, Seasonal, Typhoon) ===
+    # These tabs only appear when running locally (is_local=True).
+    # When remote, we skip these blocks entirely.
+    if is_local:
+
+     with tab7:
         st.subheader("⏳ Temporal Evolution Analysis")
 
         st.info("""
@@ -2026,8 +2458,8 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             - **Gradient Trend:** Change in river steepness over time
             """)
 
-    # === TAB 8: SEASONAL COMPARISON ===
-    with tab8:
+     # === TAB 8: SEASONAL COMPARISON ===
+     with tab8:
         st.subheader("Seasonal Comparison: High Flow vs Low Flow (2023-2025)")
         st.caption("Top row: High flow (May). Bottom row: Low flow (July-August). Each panel compares both rivers.")
 
@@ -2134,8 +2566,8 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         surfaces during break-up may still pass. July-August panels (bottom row) are fully within
         the open-water season and are the most reliable for gradient comparison.""")
 
-    # === TAB 9: TYPHOON IMPACT ===
-    with tab9:
+     # === TAB 9: TYPHOON IMPACT ===
+     with tab9:
         st.subheader("Typhoon Halong Impact Analysis (October 12-14, 2025)")
         st.caption("Compare river profiles before and after Typhoon Halong struck Quinhagak, Alaska, eroding ~60 feet of shoreline.")
 
@@ -2421,38 +2853,45 @@ June-August 2026 data. Re-run `SWOT_Pull.py` after June 2026 to populate this se
             else:
                 st.warning("Insufficient data for immediate before/after comparison.")
 
-    # --- SUMMARY STATS & DATA INFO (bottom of page) ---
-    st.divider()
-    st.subheader("Summary Statistics")
+    # --- SUMMARY STATS & DATA INFO (inside SWOT tab) ---
+    with main_swot:
+        st.divider()
+        st.subheader("Summary Statistics")
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Passes Analyzed", viz_df['Pass_Date'].nunique())
-    col2.metric("Total Data Points", f"{count:,}")
-    col3.metric("Visualization Sample", f"{len(viz_df):,}")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Passes Analyzed", viz_df['Pass_Date'].nunique())
+        col2.metric("Total Data Points", f"{count:,}")
+        col3.metric("Visualization Sample", f"{len(viz_df):,}")
 
-    display_stats = stats_df.copy()
-    display_stats['avg_slope'] = display_stats['avg_slope'].abs()
-    display_stats = display_stats.rename(columns={
-        "Reach_Name": "River Name",
-        "avg_wse": "Avg WSE (m)",
-        "avg_slope": "Avg Gradient (cm/km)"
-    })
-    st.dataframe(
-        display_stats.style.format({"Avg WSE (m)": "{:.2f}", "Avg Gradient (cm/km)": "{:.2f}"}),
-        width='stretch',
-        hide_index=True
-    )
+        display_stats = stats_df.copy()
+        display_stats['avg_slope'] = display_stats['avg_slope'].abs()
+        display_stats = display_stats.rename(columns={
+            "Reach_Name": "River Name",
+            "avg_wse": "Avg WSE (m)",
+            "avg_slope": "Avg Gradient (cm/km)"
+        })
+        st.dataframe(
+            display_stats.style.format({"Avg WSE (m)": "{:.2f}", "Avg Gradient (cm/km)": "{:.2f}"}),
+            width='stretch',
+            hide_index=True
+        )
 
-    with st.expander("Data Quality Information"):
-        st.markdown("""
-        **Data Quality Filtering Applied:**
-        - **Classification:** SWOT Classes 3-4 (high-quality water pixels)
-        - **Outlier Removal:** MAD-based filtering (Modified Z-score threshold 3.5)
-        - **Applied:** Per-reach during data ingestion
-        - **Purpose:** Remove plateau artifacts and anomalous measurements
+        with st.expander("Data Quality Information"):
+            st.markdown("""
+            **Summary Statistics Method:**
+            - **Avg WSE** and **Avg Gradient** use distance-weighted averaging: data is binned into 1 km intervals,
+              the median is taken per bin, then bins are averaged with equal weight. This prevents uneven spatial
+              point density along the river (due to swath geometry, river width, and classification rates) from biasing the mean.
+              Without this correction, rivers with more points concentrated at one end of their reach produce misleading averages.
 
-        See `SCIENTIFIC_METHODOLOGY.md` for complete methodology.
-        """)
+            **Data Quality Filtering Applied:**
+            - **Classification:** SWOT Classes 3-4 (high-quality water pixels)
+            - **Outlier Removal:** MAD-based filtering (Modified Z-score threshold 3.5)
+            - **Applied:** Per-reach during data ingestion
+            - **Purpose:** Remove plateau artifacts and anomalous measurements
+
+            See `SCIENTIFIC_METHODOLOGY.md` for complete methodology.
+            """)
 
 
 def main():

@@ -1,6 +1,6 @@
 # SWOT River Dynamics Project - Technical Notes
 
-**Last Updated**: 2026-05-26
+**Last Updated**: 2026-05-28
 **Status**: Active Development — Online dashboard live at https://swotdashboard.streamlit.app/
 **Primary Workflow**: SWOT_Pull.py → dashboard_swot.py (optimization now integrated!)
 **GitHub Repository**: https://github.com/lukestork839/SWOT_Dashboard
@@ -143,6 +143,22 @@ Outlier if |Modified Z-score| > 3.5
 - **Reference:** Iglewicz & Hoaglin (1993)
 - **Edge cases:** Skip if N<10, preserve minimum 5 points
 
+### DEM Elevation Profiles
+**Added:** 2026-05-28
+
+**Purpose:** Compare ArcticDEM V4 terrain elevation with SWOT water surface elevation within the river polygons, providing an independent elevation reference for the river corridors.
+
+**Pipeline (`DEM_Pull.py`):**
+1. Export ArcticDEM V4 2m mosaic from Google Earth Engine (resampled to 10m, clipped to polygon extent)
+2. Sample elevations within each river polygon using rasterio
+3. Apply geoid correction: subtract EGM2008 undulation (interpolated from SWOT CSV geoid values) to align with SWOT's orthometric datum
+4. Calculate distance from confluence anchor (same Haversine as SWOT_Pull.py)
+5. Output: `batch_outputs/dem_river_elevations.parquet`
+
+**Datum alignment detail:** ArcticDEM = WGS84 ellipsoidal heights; SWOT WSE = EGM2008 orthometric heights. The geoid undulation at the study site is ~13.2–13.8m (varies ~0.6m over 35 km). Without correction, DEM appears ~13.5m higher than SWOT. The geoid surface is interpolated from SWOT's per-pixel EGM2008 values rather than using a constant, to preserve the spatial gradient.
+
+**Validation:** ArcticDEM V4 validated against NOAA 2024 QL1 LiDAR — 0.50m RMSE on vegetated pixels (low-stature tundra/shrub). Near bare-earth accuracy, no vegetation correction needed.
+
 ---
 
 ## 3. Current Architecture & Workflow
@@ -161,8 +177,8 @@ SWOT/
 │   ├── master_all_data.csv     # Combined dataset (CSV format)
 │   ├── master_all_data.parquet # Optimized single parquet file
 │   └── master_all_data_part_*.parquet  # Optimized partitions for dashboard
-├── Claude/                     # Project documentation
-│   └── Claude_notes.md         # This file
+├── docs/                     # Project documentation
+│   └── development_notes.md         # This file
 ├── old_stuff/                  # Archive of deprecated code
 │   ├── 2025/                   # Old 2025 versions
 │   ├── optimize.py             # Now integrated into SWOT_Pull.py (2026-02-10)
@@ -461,7 +477,7 @@ NAME_MAPPING = {
 - 1 data directory (`batch_outputs/`)
 - 1 configuration file (`.swot_cli_config.json`)
 - 1 polygon boundary file (`river_poly.zip`)
-- 1 documentation folder (`Claude/`)
+- 1 documentation folder (`docs/`)
 - 1 archive folder (`old_stuff/`)
 
 ### 2026-02-10: Resumable Download Implementation
@@ -475,7 +491,7 @@ NAME_MAPPING = {
 2. ✅ Added `is_date_already_processed()`: Checks for existing daily CSVs
 3. ✅ Added `rebuild_master_from_daily_csvs()`: Aggregates all daily CSVs into master files
 4. ✅ Modified main loop: Skips already-processed dates, shows progress
-5. ✅ Updated documentation in Claude notes
+5. ✅ Updated documentation in development notes
 
 **Benefits:**
 - **Fault-tolerant**: Survives internet interruptions and crashes
@@ -570,8 +586,8 @@ NAME_MAPPING = {
 - Core scripts: `SWOT_Pull.py`, `dashboard_swot.py`
 - Dependencies: `requirements.txt`
 - Configuration: `river_poly.zip`, `.swot_cli_config.json`, `.gitignore`
-- Documentation: `README.md`, `SWOT_Processing_Documentation.md`, `Claude/` folder
-- Reference: `Claude/SWOT_Handbook.pdf`
+- Documentation: `README.md`, `SWOT_Processing_Documentation.md`, `docs/` folder
+- Reference: `docs/SWOT_Handbook.pdf`
 
 ### 2026-02-11: Map Styling Options & Classification Column Support
 **Problem Addressed:**
@@ -715,7 +731,7 @@ NAME_MAPPING = {
 5. ✅ Added comprehensive interpretation guide
 6. ✅ Implemented statistics table showing residual metrics per river
 7. ✅ Added expandable section showing original data with baseline curve overlay
-8. ✅ Updated documentation in Claude notes
+8. ✅ Updated documentation in development notes
 
 **Benefits:**
 - **Removes large-scale trend**: Centers data around zero to reveal small differences
@@ -835,7 +851,7 @@ wse_navd88 = wse_swot + DATUM_OFFSET
 
 **Files Modified:**
 - `SWOT_Pull.py`: Added diagnostic columns to KEEP_COLUMNS and cols_export
-- `Claude/Claude_notes.md`: This documentation
+- `docs/development_notes.md`: This documentation
 - `README.md`: Added Calibration & Validation section
 
 **Data Generated:**
@@ -1042,7 +1058,7 @@ With properly working detrended profiles, we can now see that:
 
 **Files Modified:**
 - `dashboard_swot.py`: Complete overhaul of detrending methods, interval slope filtering, map styling, opacity control
-- `Claude/Claude_notes.md`: This documentation
+- `docs/development_notes.md`: This documentation
 
 ### 2026-02-25: Streamlit Cloud Deployment Fix - Git LFS Workaround
 **Problem Addressed:**
@@ -1129,7 +1145,7 @@ Watch Streamlit Cloud logs for:
 **Files Modified:**
 - `dashboard_swot.py`: Added `download_data_if_needed()`, modified `get_database_connection()`, fixed deprecation warnings
 - `.gitattributes`: Git LFS configuration (already existed)
-- `Claude/Claude_notes.md`: This documentation
+- `docs/development_notes.md`: This documentation
 
 **GitHub Release Details:**
 - Tag: `v1.0-data`
@@ -1155,7 +1171,7 @@ Watch Streamlit Cloud logs for:
 2. ✅ Implemented Modified Z-Score with MAD (Iglewicz & Hoaglin, 1993)
 3. ✅ Applied per-reach filtering (threshold 3.5)
 4. ✅ Added edge case handling (minimum counts, MAD=0)
-5. ✅ Updated all documentation (SCIENTIFIC_METHODOLOGY.md, README.md, Claude notes)
+5. ✅ Updated all documentation (SCIENTIFIC_METHODOLOGY.md, README.md, development notes)
 
 **Benefits:**
 - **Removes anomalies:** Filters plateau artifacts and bad measurements
@@ -1230,7 +1246,7 @@ Watch Streamlit Cloud logs for:
 
 **Actions Taken:**
 1. Removed Version C search from `SWOT_Pull.py` — now searches `SWOT_L2_HR_PIXC_D` only
-2. Updated all documentation (Claude_notes, SCIENTIFIC_METHODOLOGY, SWOT_Processing_Documentation)
+2. Updated all documentation (development_notes, SCIENTIFIC_METHODOLOGY, SWOT_Processing_Documentation)
 
 #### Part 3: Full Data Reprocessing (2026-03-07)
 - Reprocessed July 2023 – December 2025 (295 granules, 133 new, 103 skipped)
@@ -1295,7 +1311,7 @@ Watch Streamlit Cloud logs for:
 2. Added `height_cor_xover_qual` extraction from NetCDF (backup/validation variable)
 3. Added crossover calibration filter step after cross-track filter, before classification
 4. Updated filter chain comment to reflect new order
-5. Updated documentation (Claude_notes.md, SCIENTIFIC_METHODOLOGY.md)
+5. Updated documentation (development_notes.md, SCIENTIFIC_METHODOLOGY.md)
 
 **Filter Strategy:**
 - **Exclude only `xovercal_missing` (bit 23)** — pixels with NO crossover correction applied
@@ -1354,7 +1370,7 @@ Existing daily CSVs won't reflect the new filter. A full reprocess (deleting exi
    - Seasonal Comparison tab (break-up caveat for May panels)
    - Typhoon Impact tab (dynamic per-period warnings via `get_ice_warning()`)
    - Temporal Evolution tab (general ice season note in header)
-4. Updated Claude_notes.md with Ice Handling section in Quality Filtering
+4. Updated development_notes.md with Ice Handling section in Quality Filtering
 5. **No changes to SWOT_Pull.py** — data preserved for potential ice studies; warnings at analysis level
 
 **Decision rationale:** Dashboard-level warnings preferred over ingestion-level date filtering because:
@@ -1474,7 +1490,7 @@ Instead of downloading or bundling data, the dashboard now uses DuckDB's `httpfs
 **Files Modified:**
 - `dashboard_swot.py`: Lines 63-76 (constants), ~342 (checkbox), ~481 (WHERE clause + warning)
 - `README.md`: Ice Season Awareness section
-- `Claude/Claude_notes.md`: This documentation
+- `docs/development_notes.md`: This documentation
 
 ### 2026-05-26: Dashboard Simplification & Map Performance Overhaul
 **Goal:** Streamline dashboard UI and fix map rendering performance/legend issues.
@@ -1544,7 +1560,7 @@ Instead of downloading or bundling data, the dashboard now uses DuckDB's `httpfs
 - **Remote Data**: GitHub Release `v2.0-data` → `dashboard_data.parquet` (stable filename, no code change needed to swap data)
 - **Backup (strict filters)**: `batch_outputs/backup_strict_filters/` (data with geolocation_qual==0)
 - **Temp Downloads**: `temp_swot_batch/` (gitignored, auto-created/deleted)
-- **Documentation**: `Claude/` folder
+- **Documentation**: `docs/` folder
 - **Quality Flag Reference**: `SCIENTIFIC_METHODOLOGY.md` (PIXC Quality Flag Reference section)
 - **Archive**: `old_stuff/` folder (not tracked in git)
 - **Utility Scripts**: `rebuild_master.py` (quick master file regeneration)

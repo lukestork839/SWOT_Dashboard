@@ -254,6 +254,49 @@ for reach_name in ['Uyak_Creek', 'Kanektok_River']:
 
 ---
 
+## 6.5 DEM Elevation Comparison
+
+### Data Source & Extraction
+
+ArcticDEM V4 2m mosaic (Polar Geospatial Center, University of Minnesota) is used as an independent terrain elevation reference. The extraction pipeline (`DEM_Pull.py`):
+
+1. **Export:** Downloads a GeoTIFF from Google Earth Engine, clipped to the river polygon bounding box with a ~500m buffer, resampled to 10m resolution
+2. **Sample:** Uses rasterio to mask the GeoTIFF to each river polygon, extracting elevation and coordinates for every pixel within the polygon boundaries
+3. **Geoid correction:** Converts WGS84 ellipsoidal heights to EGM2008 orthometric heights (see below)
+4. **Distance:** Calculates Haversine distance from the confluence anchor (same function as `SWOT_Pull.py`)
+5. **Output:** `batch_outputs/dem_river_elevations.parquet` with columns matching the SWOT schema (`Reach_Name`, `dist_km`, `wse`, `latitude`, `longitude`)
+
+### Vertical Datum Alignment
+
+ArcticDEM native heights are WGS84 ellipsoidal. SWOT WSE is orthometric (EGM2008 geoid-referenced). The geoid-ellipsoid separation at the study site is ~13.2–13.8m, varying spatially over the 35 km river extent.
+
+The correction uses the EGM2008 geoid values already stored in the SWOT daily CSVs (the same values subtracted during WSE calculation). These are binned to a ~0.005° grid and interpolated with `scipy.interpolate.LinearNDInterpolator` to create a continuous geoid surface. Each DEM pixel is corrected:
+
+```
+dem_orthometric = dem_ellipsoidal − geoid_undulation(lat, lon)
+```
+
+This ensures the DEM and SWOT datasets are on identical vertical datums.
+
+### Dashboard Analyses
+
+The DEM Data tab contains five subtabs plus a summary statistics section:
+
+| Analysis | Method | Scientific Basis |
+|----------|--------|-----------------|
+| **Terrain Profile** | Median elevation per 0.5 km bin + linear regression (with R²) | Standard longitudinal profile analysis |
+| **Elevation Difference** | Per-bin Kanektok median − Uyak median | Alluvial ridge height (Slingerland & Smith, 1998) |
+| **Terrain Slope** | Central-difference numerical gradient, Gaussian-smoothed (σ = 1.5 km) | Local gradient analysis |
+| **Detrended Profile** | Residuals from 2nd-order polynomial fit to both rivers | Concave-up profile assumption (Hack, 1957; Flint, 1974) |
+| **Map View** | Folium map with elevation or river-name coloring | Spatial data exploration |
+| **Summary Stats** | Distance-weighted bin medians averaged per river | Same methodology as SWOT summary stats |
+
+### Interpretation
+
+The DEM captures terrain surface elevation within the river polygons — this includes channel banks, exposed bars, and near-channel floodplain, not just the water surface. The analyses are designed around the Slingerland & Smith (1998) avulsion framework, where cross-corridor elevation differences and slope ratios are first-order controls on channel switching. Gearon et al. (2024) validated this approach globally, showing topographic metrics alone can predict avulsion likelihood.
+
+---
+
 ## 7. Visualization & Analysis
 
 ### Dashboard: Streamlit + DuckDB + Plotly
@@ -441,8 +484,8 @@ SWOT/
 │   ├── data/                  # Daily CSV files (checkpoints)
 │   ├── master_all_data.csv    # Combined CSV
 │   └── master_all_data_part_*.parquet  # Optimized partitions for dashboard
-└── Claude/
-    ├── Claude_notes.md        # Development history & technical notes
+└── docs/
+    ├── development_notes.md   # Development history & technical notes
     └── SWOT_Handbook.pdf      # NASA reference document
 ```
 
@@ -498,11 +541,13 @@ SWOT/
 - **User Handbook:** JPL D-109532 (SWOT Science Data Products User Handbook, May 2, 2024)
 - **Cookbook:** https://podaac.github.io/tutorials/quarto_text/SWOT.html
 - **earthaccess Docs:** https://earthaccess.readthedocs.io/
+- **ArcticDEM V4:** Porter et al., ArcticDEM V4, Harvard Dataverse, 2023. https://doi.org/10.7910/DVN/3VDC4T
+- **Google Earth Engine:** Gorelick et al., "Google Earth Engine: Planetary-scale geospatial analysis for everyone," *Remote Sensing of Environment*, 2017.
 
 ---
 
-**Document Version:** 3.0
-**Last Updated:** 2026-03-07
+**Document Version:** 3.1
+**Last Updated:** 2026-05-28
 **Author:** Luke (University SWOT Project)
 **Verification Status:** ✅ All core processing steps verified against official SWOT User Handbook (JPL D-109532)
 **Reviewer:** [Pending - SWOT Expert Review]
