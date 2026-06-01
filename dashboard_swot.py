@@ -25,6 +25,7 @@ from jinja2 import Template as JinjaTemplate
 PAGE_TITLE = "SWOT River Dynamics: Kanektok & Uyak"
 DATA_DIR = "batch_outputs"
 REMOTE_PARQUET_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/dashboard_data.parquet"
+REMOTE_DEM_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/dem_river_elevations.parquet"
 MAX_PLOT_POINTS = 15000  # Reduced for large datasets (was 25000)
 MAX_BASELINE_POINTS = 30000  # Reduced for Streamlit Cloud (was 50000)
 MAX_MAP_POINTS = 5000  # Strict limit for map rendering
@@ -294,6 +295,14 @@ def get_database_connection(_url_version=REMOTE_PARQUET_URL):
             con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{REMOTE_PARQUET_URL}')")
             st.info("🌐 Loading data from GitHub Releases. First query may take 10-30 seconds.")
 
+        # Load DEM data if available (same local-first / remote-fallback pattern)
+        dem_local = os.path.join(DATA_DIR, "dem_river_elevations.parquet")
+        if os.path.exists(dem_local):
+            con.execute(f"CREATE OR REPLACE VIEW dem_data AS SELECT * FROM read_parquet('{dem_local}')")
+        elif not partition_files:
+            # httpfs already loaded for remote SWOT — use it for DEM too
+            con.execute(f"CREATE OR REPLACE VIEW dem_data AS SELECT * FROM read_parquet('{REMOTE_DEM_URL}')")
+
         # Memory optimization: Set DuckDB memory limit (recommended for Streamlit Cloud)
         con.execute("SET memory_limit='600MB'")
 
@@ -306,19 +315,38 @@ def get_database_connection(_url_version=REMOTE_PARQUET_URL):
         st.code(traceback.format_exc())
         return None
 
-DEM_PARQUET_LOCAL = os.path.join(DATA_DIR, "dem_river_elevations.parquet")
-DEM_MAX_PLOT_POINTS = 15000
+@st.cache_data(ttl=3600)
+def load_dem_profile(_con):
+    """Compute exact DEM bin profile from full dataset via DuckDB.
+    Returns DataFrame with columns: Reach_Name, dist_bin, wse_median, wse_p10, wse_p25, wse_p75, wse_p90
+    """
+    try:
+        return _con.execute("""
+            SELECT Reach_Name,
+                   ROUND(dist_km / 0.5) * 0.5 AS dist_bin,
+                   MEDIAN(wse) AS wse_median,
+                   PERCENTILE_CONT(0.10) WITHIN GROUP (ORDER BY wse) AS wse_p10,
+                   PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY wse) AS wse_p25,
+                   PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY wse) AS wse_p75,
+                   PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY wse) AS wse_p90
+            FROM dem_data
+            GROUP BY Reach_Name, ROUND(dist_km / 0.5) * 0.5
+            ORDER BY Reach_Name, dist_bin
+        """).fetchdf()
+    except Exception:
+        return None
 
 @st.cache_data(ttl=3600)
-def load_dem_data():
-    """Load ArcticDEM river elevation data if available."""
-    if os.path.exists(DEM_PARQUET_LOCAL):
-        df = pd.read_parquet(DEM_PARQUET_LOCAL)
-        if len(df) > DEM_MAX_PLOT_POINTS:
-            step = max(1, len(df) // DEM_MAX_PLOT_POINTS)
-            df = df.iloc[::step].reset_index(drop=True)
-        return df
-    return None
+def load_dem_points(_con):
+    """Load sampled DEM points for map visualization via DuckDB."""
+    try:
+        return _con.execute("""
+            SELECT Reach_Name, dist_km, wse, latitude, longitude
+            FROM dem_data
+            USING SAMPLE 15000
+        """).fetchdf()
+    except Exception:
+        return None
 
 
 @st.cache_data(ttl=3600)
@@ -620,8 +648,9 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         st.session_state.metrics_calculated = detrend_method
 
     # --- TABS ---
-    # Load DEM data (cached)
-    dem_df = load_dem_data()
+    # Load DEM data via DuckDB (cached, exact statistics from full dataset)
+    dem_profile = load_dem_profile(con)
+    dem_points = load_dem_points(con)
 
     main_swot, main_dem = st.tabs(["📡 SWOT Data", "🏔️ DEM Data"])
 
@@ -727,21 +756,9 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             """)
 
     with main_dem:
-        if dem_df is None:
-            st.warning("No DEM data found. Run `DEM_Pull.py` to generate `batch_outputs/dem_river_elevations.parquet`.")
+        if dem_profile is None:
+            st.warning("No DEM data available. If running locally, run `DEM_Pull.py` first.")
         else:
-            # Shared DEM binning (used by all DEM subtabs)
-            dem_bin_size = 0.5  # km
-            dem_binned = dem_df.copy()
-            dem_binned["dist_bin"] = (dem_binned["dist_km"] / dem_bin_size).round() * dem_bin_size
-            dem_profile = dem_binned.groupby(["Reach_Name", "dist_bin"]).agg(
-                wse_median=("wse", "median"),
-                wse_p10=("wse", lambda x: np.percentile(x, 10)),
-                wse_p25=("wse", lambda x: np.percentile(x, 25)),
-                wse_p75=("wse", lambda x: np.percentile(x, 75)),
-                wse_p90=("wse", lambda x: np.percentile(x, 90)),
-            ).reset_index()
-
             dem_tab1, dem_tab2, dem_tab3, dem_tab4, dem_tab5 = st.tabs([
                 "📈 Terrain Profile", "🔀 Elevation Difference",
                 "📐 Terrain Slope", "🎯 Detrended Profile", "🗺️ Map View"
@@ -945,7 +962,10 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                             value=0.7, step=0.1, key="dem_point_opacity"
                         )
 
-                    map_df = dem_df[dem_df["Reach_Name"].isin(selected_reaches)]
+                    if dem_points is None:
+                        st.warning("DEM point data not available for map.")
+                        return
+                    map_df = dem_points[dem_points["Reach_Name"].isin(selected_reaches)]
 
                     center_lat = map_df["latitude"].mean()
                     center_lon = map_df["longitude"].mean()
@@ -1088,7 +1108,8 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 **Vertical Datum:** EGM2008 orthometric heights. Geoid correction applied using spatially-interpolated
                 undulation values (~13.2\u201313.8 m at study site), matching the SWOT vertical datum.
 
-                **Sampling:** Original ~2.5M pixels downsampled via stride sampling for dashboard performance.
+                **Statistics:** Profile statistics computed from all ~2.5M pixels via DuckDB (exact bin medians and percentiles).
+                Map points are a random sample of 15,000 for rendering performance.
                 Summary statistics use distance-weighted averaging (0.5 km bin medians) for consistency with SWOT methodology.
 
                 **Validation:** ArcticDEM V4 independently validated against NOAA QL1 LiDAR (RMSE 0.50 m).
