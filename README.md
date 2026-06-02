@@ -55,10 +55,15 @@ You only need step 2 to explore the dashboard. Step 1 is for downloading your ow
 
 The dashboard looks for data in this order:
 
+**SWOT Data:**
 1. **Full dataset** -- `batch_outputs/master_all_data_part_*.parquet` (created by `SWOT_Pull.py`, local development)
 2. **Remote parquet** -- Read directly from GitHub Releases via DuckDB `httpfs` (Streamlit Cloud deployment)
 
-When running locally with `SWOT_Pull.py` data, the dashboard uses local files. On Streamlit Cloud, DuckDB reads the parquet file remotely from GitHub Releases, fetching only the data chunks needed per query.
+**DEM Data:**
+1. **Full DEM dataset** -- `batch_outputs/dem_river_elevations.parquet` (created by `DEM_Pull.py`, local development)
+2. **Remote DEM parquet** -- Read from GitHub Releases via DuckDB `httpfs` (Streamlit Cloud deployment)
+
+Both datasets use the same DuckDB httpfs pattern: locally, DuckDB reads from disk; on Streamlit Cloud, it reads remotely from GitHub Releases. DEM profile statistics (medians, percentiles) are computed exactly from all 2.5M points via SQL; map points use `SAMPLE 15000` for rendering performance.
 
 ---
 
@@ -296,10 +301,14 @@ All configurable constants are at the top of `SWOT_Pull.py`:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `DATA_DIR` | `batch_outputs` | Directory for full dataset (local dev) |
-| `REMOTE_PARQUET_URL` | GitHub Release URL | Remote parquet for Streamlit Cloud |
+| `REMOTE_PARQUET_URL` | GitHub Release URL | Remote SWOT parquet for Streamlit Cloud |
+| `REMOTE_DEM_URL` | GitHub Release URL | Remote DEM parquet for Streamlit Cloud |
 | `MAX_PLOT_POINTS` | 15,000 | Max points rendered in scatter plots |
 | `MAX_BASELINE_POINTS` | 30,000 | Max points for detrending baseline fit |
 | `MAX_MAP_POINTS` | 5,000 | Max points rendered on Folium map |
+| `BIFURCATION_LAT` | 59.828886 | Latitude of river bifurcation point |
+| `BIFURCATION_LON` | -161.377778 | Longitude of river bifurcation point |
+| `BIFURCATION_DIST_KM` | 2.493 | Distance from confluence anchor to bifurcation |
 
 ---
 
