@@ -278,6 +278,18 @@ dem_orthometric = dem_ellipsoidal − geoid_undulation(lat, lon)
 
 This ensures the DEM and SWOT datasets are on identical vertical datums.
 
+### Dashboard Data Loading
+
+The dashboard loads DEM data via DuckDB queries, using the same httpfs pattern as the SWOT data:
+
+- **Local development:** DuckDB reads `batch_outputs/dem_river_elevations.parquet` from disk
+- **Streamlit Cloud:** DuckDB reads the same file remotely from GitHub Release `v2.0-data` via httpfs
+
+Two cached query functions provide the data:
+
+1. **`load_dem_profile()`** — SQL aggregation computing exact MEDIAN and PERCENTILE_CONT (p10/p25/p75/p90) per 0.5 km bin from all ~2.5M rows. Returns 142 rows used by profile subtabs (1–4) and summary statistics. Zero sampling error.
+2. **`load_dem_points()`** — SQL `USING SAMPLE 15000` for the map view. Provides spatially representative point coverage for rendering.
+
 ### Dashboard Analyses
 
 The DEM Data tab contains five subtabs plus a summary statistics section:
@@ -290,6 +302,8 @@ The DEM Data tab contains five subtabs plus a summary statistics section:
 | **Detrended Profile** | Residuals from 2nd-order polynomial fit to both rivers | Concave-up profile assumption (Hack, 1957; Flint, 1974) |
 | **Map View** | Folium map with elevation or river-name coloring | Spatial data exploration |
 | **Summary Stats** | Distance-weighted bin medians averaged per river | Same methodology as SWOT summary stats |
+
+All profile charts include a dashed vertical line at 2.493 km marking the **bifurcation point** — where Uyak Creek diverges from Kanektok River (59°49'43.99"N, 161°22'40.00"W). Both map views display a green marker pin at this location.
 
 ### Interpretation
 
