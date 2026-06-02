@@ -948,6 +948,17 @@ The DEM Data tab contains five subtabs:
 
 **Summary Statistics:** Below the subtabs, a per-river summary table displays Avg Elevation (m) and Avg Gradient (cm/km), both computed using the same distance-weighted binned median methodology as the SWOT summary statistics (see [Summary Statistics: Distance-Weighted Averaging](#summary-statistics-distance-weighted-averaging)).
 
+**Bifurcation Point Marker:** All profile charts include a dashed vertical line at 2.493 km marking the bifurcation point where Uyak Creek diverges from Kanektok River (59°49'43.99"N, 161°22'40.00"W). Both map views include a green marker pin at this location. The bifurcation distance was computed using the same Haversine method as all other distance calculations.
+
+### Data Loading: DuckDB Query Approach
+
+DEM data is loaded via DuckDB, consistent with the SWOT data pipeline. The full DEM parquet (~2.5M rows, 47 MB) is hosted on GitHub Release `v2.0-data` and accessed via DuckDB `httpfs` on Streamlit Cloud, or read from local disk during development.
+
+- **`load_dem_profile()`** — Computes exact bin statistics (MEDIAN, PERCENTILE_CONT at p10/p25/p75/p90) from the full 2.5M-row dataset via SQL GROUP BY. This produces the 142-row profile used by subtabs 1–4 and summary statistics with zero sampling error.
+- **`load_dem_points()`** — Samples 15,000 points via DuckDB `USING SAMPLE` for map visualization. This provides spatially representative coverage for rendering without loading the full dataset into Python memory.
+
+This approach replaced an earlier pandas-based pipeline that stride-downsampled to 15K rows before computing bin statistics. The DuckDB approach provides exact statistics (tested: 0.000 m error vs full-data computation) while keeping memory usage minimal on Streamlit Cloud (~1.4 MB steady-state vs the previous ~233 MB peak).
+
 ### Scientific Basis & Methodological Justification
 
 The DEM analyses are grounded in the following theoretical and empirical framework:
@@ -1000,7 +1011,10 @@ The DEM analyses are grounded in the following theoretical and empirical framewo
 | **DEM Export (GEE)** | `DEM_Pull.py` | 56-84 | `export_dem_from_gee()` — ArcticDEM V4 via `getDownloadURL()` |
 | **DEM Polygon Sampling** | `DEM_Pull.py` | 87-127 | `sample_dem_within_polygons()` — rasterio mask per river |
 | **Geoid Correction** | `DEM_Pull.py` | 130-170 | `build_geoid_interpolator()` — EGM2008 from SWOT CSVs |
-| **DEM Dashboard Tab** | `dashboard_swot.py` | 706-840 | DEM comparison with overlay and offset graphs |
+| **DEM Profile Query** | `dashboard_swot.py` | 315-337 | `load_dem_profile()` — DuckDB SQL computes exact bin medians/percentiles from full 2.5M rows |
+| **DEM Map Points** | `dashboard_swot.py` | 339-349 | `load_dem_points()` — DuckDB `SAMPLE 15000` for map visualization |
+| **DEM Remote URL** | `dashboard_swot.py` | 28 | `REMOTE_DEM_URL` — GitHub Release v2.0-data, loaded via DuckDB httpfs |
+| **Bifurcation Marker** | `dashboard_swot.py` | 35-37, 77-105 | `BIFURCATION_LAT/LON/DIST_KM` — dashed line on profiles, pin on maps |
 
 ### Data Flow Diagram
 
