@@ -41,6 +41,26 @@ KEEP_COLUMNS = [
 ]
 ROWS_PER_CHUNK = 100000  # Safe chunk size for dashboard loading
 
+# --- REFERENCE GRADIENT (per-pass robust slope) ---
+# Authoritative reach gradient. See SCIENTIFIC_METHODOLOGY.md ->
+# "Reference Gradient (Per-Pass Robust Regression)". Computed at the end of every
+# pull into reference_gradient_per_pass.parquet; the dashboard's Hydraulic Gradient
+# tab reads it. Headline value = MEDIAN of per-pass Theil-Sen slopes over gated
+# open-water passes, per river.
+REFGRAD_NODE_KM = 1.0        # node bin size (pixels -> nodes), removes density bias
+REFGRAD_MIN_NODES = 8        # need >= this many nodes to fit a per-pass slope
+# Full-coverage gate: the rivers are concave (steep near the confluence, gentle toward
+# the mouth), so a pass's slope depends on WHICH reach it images. To compare rivers
+# fairly we keep only passes that image the full river: a long span AND a downstream
+# start (so the steep near-confluence reach is always included). A pass that clips the
+# steep end reports an artificially gentle slope. See SCIENTIFIC_METHODOLOGY.md.
+REFGRAD_MIN_SPAN_KM = 30.0   # coverage gate: pass must span >= this (near the full ~35-36 km)
+REFGRAD_MAX_START_KM = 3.0   # coverage gate: pass must start <= this (includes steep downstream reach)
+REFGRAD_OPEN_WATER_MONTHS = {4, 5, 6, 7, 8, 9, 10, 11}  # Apr-Nov (exclude Dec-Mar ice)
+REFGRAD_HIGH_FLOW_MONTHS = {5}     # May freshet
+REFGRAD_LOW_FLOW_MONTHS = {7, 8}   # Jul-Aug baseflow
+REFGRAD_OUTPUT = os.path.join(OUTPUT_BASE, "reference_gradient_per_pass.parquet")
+
 # --- 📍 THE CONFLUENCE ANCHOR ---
 # 59.82463509° N, 161.33397834° W
 # All distances will be measured as a straight line from this point.
@@ -329,6 +349,97 @@ def process_granule(granule_result, gdf_polygons):
         if 'local_path' in locals() and os.path.exists(local_path):
             os.remove(local_path)
 
+def _refgrad_season(month):
+    """Season label for a pass month."""
+    if month in REFGRAD_HIGH_FLOW_MONTHS:
+        return "high_flow"
+    if month in REFGRAD_LOW_FLOW_MONTHS:
+        return "low_flow"
+    if month in REFGRAD_OPEN_WATER_MONTHS:
+        return "open_other"
+    return "ice"
+
+
+def compute_reference_gradient(df=None):
+    """Compute the per-pass robust (Theil-Sen) reach gradient and write the artifact.
+
+    Method (see SCIENTIFIC_METHODOLOGY.md):
+      1. Per (Reach_Name, Pass_Date): aggregate WSE to REFGRAD_NODE_KM nodes
+         (median WSE per node) -- the pixels->nodes step, removes density bias.
+      2. Fit one reach slope per pass with the Theil-Sen estimator (cm/km). OLS is
+         also stored for the decomposition/comparison view.
+      3. Emit one row per pass with >= REFGRAD_MIN_NODES nodes, tagged with coverage
+         (span_km, lo_km, gated) and season. `gated` marks full-river passes only
+         (span >= REFGRAD_MIN_SPAN_KM AND lo_km <= REFGRAD_MAX_START_KM), so every
+         pass images the same full concave profile. The dashboard filters to gated
+         open-water passes and reports the MEDIAN per-pass slope as the headline gradient.
+
+    Args:
+        df: optional in-memory dataframe (the rebuilt master). If None, reads the
+            master parquet (or partitions) from disk -- lets this run standalone.
+    """
+    if df is None:
+        master = os.path.join(OUTPUT_BASE, "master_all_data.parquet")
+        if os.path.exists(master):
+            df = pd.read_parquet(master, columns=["Reach_Name", "Pass_Date", "dist_km", "wse"])
+        else:
+            parts = sorted(glob.glob(os.path.join(OUTPUT_BASE, "master_all_data_part_*.parquet")))
+            if not parts:
+                print("   ⚠️ No master parquet found; cannot compute reference gradient.")
+                return None
+            df = pd.concat(
+                [pd.read_parquet(p, columns=["Reach_Name", "Pass_Date", "dist_km", "wse"]) for p in parts],
+                ignore_index=True,
+            )
+
+    df = df[["Reach_Name", "Pass_Date", "dist_km", "wse"]].copy()
+    df["Pass_Date"] = pd.to_datetime(df["Pass_Date"])
+    df["month"] = df["Pass_Date"].dt.month
+
+    rows = []
+    for (reach, pdate), g in df.groupby(["Reach_Name", "Pass_Date"], observed=True):
+        # pixels -> nodes: median WSE per REFGRAD_NODE_KM bin
+        node = np.round(g["dist_km"].to_numpy() / REFGRAD_NODE_KM) * REFGRAD_NODE_KM
+        nodes = pd.DataFrame({"node": node, "wse": g["wse"].to_numpy()}).groupby("node")["wse"].median()
+        if len(nodes) < REFGRAD_MIN_NODES:
+            continue
+        x = nodes.index.to_numpy(dtype=float)
+        y = nodes.to_numpy(dtype=float)
+        span = float(x.max() - x.min())
+        ts = stats.theilslopes(y, x)          # (slope, intercept, lo, hi) in m/km
+        ols = stats.linregress(x, y)
+        month = int(g["month"].iloc[0])
+        rows.append({
+            "Reach_Name": str(reach),
+            "Pass_Date": pd.Timestamp(pdate).date(),
+            "month": month,
+            "season": _refgrad_season(month),
+            "open_water": month in REFGRAD_OPEN_WATER_MONTHS,
+            "n_nodes": int(len(x)),
+            "n_pix": int(len(g)),
+            "lo_km": float(x.min()),
+            "hi_km": float(x.max()),
+            "span_km": span,
+            "theilsen_cm_km": float(ts[0] * 100.0),
+            "ols_cm_km": float(ols.slope * 100.0),
+            "ols_r2": float(ols.rvalue ** 2),
+            "gated": span >= REFGRAD_MIN_SPAN_KM and float(x.min()) <= REFGRAD_MAX_START_KM,
+        })
+
+    if not rows:
+        print("   ⚠️ No passes met the minimum-node requirement for reference gradient.")
+        return None
+
+    out = pd.DataFrame(rows)
+    out.to_parquet(REFGRAD_OUTPUT, index=False)
+    print(f"\n📏 Reference gradient artifact: {REFGRAD_OUTPUT} ({len(out)} passes)")
+    ow = out[out["open_water"] & out["gated"]]
+    for reach, grp in ow.groupby("Reach_Name", observed=True):
+        med = grp["theilsen_cm_km"].abs().median()
+        print(f"   {reach}: {med:.1f} cm/km (median of {len(grp)} full-coverage open-water passes)")
+    return out
+
+
 def rebuild_master_from_daily_csvs():
     """Rebuild master CSV/Parquet from all daily CSV files in batch_outputs/data/
     Includes automatic optimization: column pruning, dtype optimization, compression, and partitioning.
@@ -413,6 +524,9 @@ def rebuild_master_from_daily_csvs():
         print(f"   ✅ Created optimized partition: {part_path}")
 
     print(f"   🎉 Optimization complete! Dashboard-ready files created.")
+
+    # --- Reference gradient artifact (per-pass robust slope) ---
+    compute_reference_gradient(final_df)
 
 def main():
     print("\n🌊 --- SWOT BATCH: CONFLUENCE ANCHOR (RESUMABLE) --- 🌊")

@@ -2,7 +2,7 @@
 
 **Document Purpose:** This document provides a complete scientific verification of our SWOT data processing pipeline, with references to the official NASA SWOT handbook and specific code implementations.
 
-**Last Updated:** April 1, 2026
+**Last Updated:** June 24, 2026
 **Reference Document:** SWOT Science Data Products User Handbook (JPL D-109532, May 2024)
 **Study Area:** Kanektok River and Uyak Creek, Alaska
 
@@ -25,6 +25,7 @@
 | **Load Tide (FES2014)** | ✅ Verified | ~-0.001 m magnitude, appropriate for inland location |
 | **Spatial Filtering** | ✅ Verified | Two-stage filtering (bounding box + exact geometry) |
 | **Distance Calculation** | ✅ Verified | Haversine formula appropriate for <100 km scale |
+| **Reference Gradient** | ✅ Verified | Per-pass Theil–Sen on 1 km nodes, median across passes; density-bias decomposition + season/coverage sensitivity (`gradient_prototype.py`) |
 | **Field Calibration** | ✅ **SUCCESSFULLY VERIFIED** | RTK GPS (±1 cm precision), agreement within 1 m after datum correction |
 | **Code Implementation** | ✅ Verified | All critical steps documented with file:line references |
 | **Ice Season Handling** | ✅ Documented | Dashboard warnings for Oct-May; Classes 3-4 exclude most ice; no PIXC ice flag available |
@@ -44,7 +45,7 @@
 4. [Water Surface Elevation Calculation](#water-surface-elevation-calculation)
 5. [Spatial Filtering](#spatial-filtering)
 6. [Distance Calculation](#distance-calculation)
-7. [Gradient Analysis](#gradient-analysis)
+7. [Gradient Analysis](#gradient-analysis) — incl. [Reference Gradient (per-pass robust regression)](#reference-gradient-per-pass-robust-regression)
 8. [Field Calibration & Validation](#field-calibration--validation)
 9. [DEM Elevation Comparison](#dem-elevation-comparison)
 10. [Code Implementation Reference](#code-implementation-reference)
@@ -601,12 +602,18 @@ dist_km = haversine_vectorized(lat, lon, ANCHOR_LAT, ANCHOR_LON)
 
 **Purpose:** Quantify river steepness (hydraulic gradient)
 
-**Implementation:** `SWOT_Pull.py`, lines 183-184
+> **For the authoritative reach gradient, see [Reference Gradient](#reference-gradient-per-pass-robust-regression).**
+> The `slope_calc` field documented here is the *legacy per-pass OLS slope* stored at ingestion.
+> It is retained for the per-pass time series, but the headline reach gradient now uses the
+> verified per-pass robust method (`slope_calc` is OLS and density-biased when pooled).
+
+**Implementation:** `SWOT_Pull.py`, lines 309-313 (computed per granule/pass, per reach, then
+broadcast to every pixel of that pass)
 
 ```python
-# Linear regression: WSE vs. distance
-slope, intercept, r_value, p_value, std_err = stats.linregress(dist_km, wse)
-slope_calc = slope * 100  # Convert to cm/km for scientific comparison
+# Linear regression: WSE vs. distance (per pass, per reach)
+slope, _, _, _, _ = stats.linregress(subset['dist_km'], subset['wse'])
+full_df.loc[subset.index, 'slope_calc'] = slope * 100  # cm/km
 ```
 
 **Method:** Ordinary least squares linear regression
@@ -645,9 +652,138 @@ WITH binned AS (
 SELECT Reach_Name, AVG(bin_wse) AS avg_wse FROM binned GROUP BY Reach_Name
 ```
 
-**Validation:** This produces results consistent with the visual trendlines (which use linear regression — already immune to point density bias since the fit minimizes residuals across the full distance range).
+**Validation:** This produces results consistent with the visual trendlines for **WSE**.
+
+> **Correction (June 2026):** An earlier version of this note claimed the visual linear
+> trendlines were "immune to point density bias because the fit minimizes residuals across
+> the full distance range." **This is incorrect and has been verified false** — see
+> [Reference Gradient](#reference-gradient-per-pass-robust-regression) below. An ordinary
+> least-squares fit on *raw pixels* is weighted by point count, so densely-sampled distance
+> intervals (typically the gentle downstream reach) pull the slope flatter. For Kanektok the
+> raw-pixel slope (181.9 cm/km) understates the density-unbiased slope (190.6 cm/km) by ~9
+> cm/km. Density bias is removed only by aggregating to nodes *before* fitting.
 
 **Note:** Individual analysis tabs (elevation difference, slope profile, temporal evolution) already operate on binned data or per-pass averages, so they are not affected by this point density issue.
+
+---
+
+### Reference Gradient (Per-Pass Robust Regression)
+
+**Status:** ✅ Verified and justified (June 2026). Standalone diagnostic: `gradient_prototype.py`.
+
+**Motivation.** The dashboard historically displayed *two* gradient numbers that disagreed by
+1–2 % (e.g. Kanektok 182.3 cm/km on the profile trendline vs 179.8 cm/km in the summary table).
+Investigation showed they were not two estimates of the same quantity but two *different*
+quantities computed by *different* methods, and that **both were biased**. This section defines
+a single, defensible "reference gradient" we treat as ground truth, and documents the
+verification behind it.
+
+**Why the two old numbers disagreed and were both flawed:**
+
+| Old number | What it actually computed | Flaw |
+|---|---|---|
+| Profile trendline (`dashboard_swot.py` tab 1) | OLS slope of WSE vs distance over **all passes pooled**, on **raw pixels**, from a downsampled subset | Point-density-biased (dense downstream pixels flatten the slope); mixes passes at different river stages |
+| Summary table (`stats_df`) | `AVG` over 1 km bins of `MEDIAN(slope_calc)`, where `slope_calc` is the whole-reach OLS slope of one pass **broadcast to every pixel** (`SWOT_Pull.py:309-313`) | The bin-median of a per-pass constant is meaningless spatially; reduces to an oddly pass-weighted average of per-pass OLS slopes |
+
+**Chosen method — per-pass robust regression, then median across passes.** This follows the
+SWOT/SWORD convention (pixels → ~200 m *nodes* → reach-scale slope by regression) and the
+robust-estimator practice used in SWORD and in SWOT superelevation studies:
+
+1. **Per pass, per reach** (`Pass_Date` = one overpass): aggregate WSE to **1 km nodes**
+   (median WSE per node). This is the pixels→nodes step; it removes along-stream point-density
+   bias *within* a pass.
+2. Fit one reach slope per pass with the **Theil–Sen estimator** (median of all pairwise
+   slopes), in cm/km. Theil–Sen is robust to outliers (breakdown point ≈ 29 %), unlike OLS.
+3. **Full-coverage gate:** keep only passes that image the **full river** — ≥ 8 nodes, an
+   along-stream span **≥ 30 km**, *and* a downstream start **≤ 3 km** from the confluence. Both
+   rivers are strongly **concave** (steep near the confluence, ~210–240 cm/km in the first 6 km;
+   gentle toward the mouth, ~80 cm/km in the last 6 km), so a per-pass slope depends entirely on
+   *which* reach the pass imaged. SWOT swath geometry causes a substantial fraction of passes —
+   ~46 % for Uyak vs ~0 % for Kanektok — to clip the steep downstream reach; those partial passes
+   report an artificially gentle slope. Requiring full coverage ensures every pass measures the
+   same profile, making the two rivers directly comparable (see Verification 3).
+4. **Open-water only** (Apr–Nov). Dec–Mar are excluded: smooth river ice passes the Class 3–4
+   filter and inflates WSE by 0.5–2+ m (see [Filter 7](#filter-7-classification-water-type)).
+5. **Aggregate across passes by the median** (not the mean) of the per-pass slopes — robust to
+   a minority of noisy passes (matters for Uyak, see below).
+
+**Reference gradient values** (1 km nodes, Theil–Sen, full-coverage gate, median across passes):
+
+| River | All open-water | High flow (May) | Low flow (Jul–Aug) | Pass-to-pass std | n passes |
+|---|---|---|---|---|---|
+| **Kanektok River** | **195.5 cm/km** | 195.7 | 195.2 | 3.3 | 88 |
+| **Uyak Creek** | **192.4 cm/km** | 193.0 | 190.5 | 8.2 | 48 |
+
+**Verification 1 — the estimate is decomposable and each step is justified.** Building up from
+the old trendline to the proposed method, isolating one effect at a time (open-water data):
+
+| Step | Kanektok | Uyak | Effect added |
+|---|---|---|---|
+| [A] pooled OLS, raw pixels *(old trendline)* | 185.2 | 173.7 | — (density-biased baseline) |
+| [B] pooled OLS, global 1 km nodes | 191.0 | 187.6 | **removes density bias** (dominant correction) |
+| [C] per-pass OLS on nodes, mean | 191.4 | 188.7 | per-pass averaging (stage-robust) |
+| [D] per-pass Theil–Sen, mean | 195.9 | 192.8 | robustness to outliers |
+| **[D′] per-pass Theil–Sen, median ← reference** | **195.5** | **192.4** | robust cross-pass aggregation |
+
+The largest, most defensible correction is **[A]→[B]**: removing point-density bias (the SWOT
+node step) raises both rivers ~6–14 cm/km (the effect is larger for Uyak, whose raw pixels are
+more heavily concentrated at the gentle downstream end). Per-pass averaging and robust estimation
+are smaller refinements on top.
+
+**Verification 2 — season invariance.** High-flow (May) and low-flow (Jul–Aug) reference values
+differ by only 0.5 cm/km (Kanektok) and 2.5 cm/km (Uyak) — well within pass-to-pass scatter.
+Water-surface slope is therefore approximately stage-invariant here, so a single all-open-water
+number is well justified; the seasonal split is reported but adds little.
+
+**Verification 3 — coverage gate sensitivity (the dominant control on Uyak scatter).** The
+per-pass slope correlates **−0.94** with where a Uyak pass *starts* (`lo_km`) and **+0.90** with
+its span: partial passes that clip the steep downstream reach report gentle slopes (~148 cm/km),
+forming a long low tail. Season does *not* explain it (slope-vs-month correlation −0.14), and it
+is not measurement noise (the OLS R² is ≈ 1.0 for both the low- and high-slope passes — they fit
+clean lines, just through different reaches). Tightening from the old ≥ 20 km gate to the
+full-coverage gate (≥ 30 km span *and* start ≤ 3 km) collapses Uyak's scatter from **std 20.1 →
+8.2 cm/km** and shifts its median 189.0 → 192.4, toward the full-river slope; Kanektok is
+essentially unchanged (90 → 88 passes; ~100 % of its passes already image the full river). This
+is the clearest justification for the gate: the wide raw Uyak distribution was a *coverage
+artifact on a concave profile*, not real hydraulic variability.
+
+**Verification 4 — precision.** Standard error of the per-pass mean is 0.35 cm/km (Kanektok)
+and 1.18 cm/km (Uyak), far below the ~6–14 cm/km systematic corrections above, so the reference
+values are tightly determined. SWOT's design slope accuracy is 1.7 cm/km over a 10 km reach
+(Biancamaria et al., 2016), consistent with our reach-scale (~35 km) precision.
+
+**Scientific consequence.** The old pooled-OLS numbers made the two rivers look nearly identical
+(~182 cm/km each), masking a real difference. The de-biased, full-coverage reference gradient
+shows **Kanektok is consistently steeper than Uyak** (195.5 vs 192.4 cm/km, ≈ 3 cm/km), across
+every season — a genuine hydraulic-gradient signal relevant to avulsion susceptibility (a steeper
+competing path is more able to capture flow; Slingerland & Smith, 1998).
+
+**Caveats.**
+- Even after the full-coverage gate, Uyak Creek retains ~2.5× the pass-to-pass scatter of
+  Kanektok (std 8.2 vs 3.3 cm/km), reflecting its narrower channel and noisier WSE. The median
+  is reported as the robust headline; mean and median agree to within 0.4 cm/km once partial
+  passes are removed.
+- The reference gradient is a **whole-reach** quantity. Local steepening/flattening along the
+  profile is a separate analysis (Slope Profile tab) and is not below SWOT's ~10 km slope-
+  resolution scale only when computed over long baselines — sub-kilometre slopes are at or below
+  the noise floor and should not be over-interpreted.
+
+**Method parameters** (in `SWOT_Pull.py`, mirrored in `gradient_prototype.py`): `NODE_KM = 1.0`,
+`MIN_NODES = 8`, `MIN_SPAN_KM = 30.0`, `MAX_START_KM = 3.0` (full-coverage gate),
+`OPEN_WATER_MONTHS = {4..11}`, high flow = May, low flow = Jul–Aug.
+
+**Key references:**
+- Altenau et al. (2021), *SWORD: A Global River Network for SWOT* — node (200 m) → reach (~10 km) regression slope. WRR, doi:10.1029/2021WR030054.
+- SWORD robust slope processing / IRIS dataset — Theil–Sen + MAD outlier rejection; median slope std-error 0.47 cm/km. Nat. Sci. Data, doi:10.1038/s41597-023-02215-x.
+- Meem et al. (2026), *Detecting Water-Surface Superelevation in Meandering Rivers Using SWOT* — Theil–Sen lateral/longitudinal WSS from SWOT. GRL, doi:10.1029/2025GL119167.
+- Biancamaria et al. (2016), *The SWOT Mission and Its Capabilities for Land Hydrology* — 1.7 cm/km slope accuracy over 10 km reaches.
+- Gearon et al. (2025), *River Avulsion Precursors Encoded in Alluvial Ridge Geometry*. GRL, doi:10.1029/2024GL114047.
+
+> **Note on dashboard provenance:** the reference gradient is a per-pass-averaged quantity, **not**
+> the slope of any single curve drawn on the profile chart. When surfaced in the dashboard it must
+> be labelled as such (e.g. "reference gradient, median of per-pass robust fits"), and must not be
+> printed next to the regression/poly trendlines in a way that implies it came from that line.
+> Integration approach is tracked separately; this section defines the number, not its display.
 
 ---
 
