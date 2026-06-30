@@ -23,6 +23,12 @@ ENV/
 
 # Project-specific: Large data files
 batch_outputs/
+# Deployment data lives on the GitHub Release (v2.0-data), not in git
+/dashboard_data.parquet
+/swot_apr_jul_2025_2026.parquet
+/river_poly_old.zip
+*.tif
+*.tif.aux.xml
 
 # Ignore temp directories
 temp_swot_batch/

@@ -26,6 +26,7 @@ PAGE_TITLE = "SWOT River Dynamics: Kanektok & Uyak"
 DATA_DIR = "batch_outputs"
 REMOTE_PARQUET_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/dashboard_data.parquet"
 REMOTE_DEM_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/dem_river_elevations.parquet"
+REMOTE_REFGRAD_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/reference_gradient_per_pass.parquet"
 MAX_PLOT_POINTS = 15000  # Reduced for large datasets (was 25000)
 MAX_BASELINE_POINTS = 30000  # Reduced for Streamlit Cloud (was 50000)
 MAX_MAP_POINTS = 5000  # Strict limit for map rendering
@@ -339,6 +340,13 @@ def get_database_connection(_url_version=REMOTE_PARQUET_URL):
             # httpfs already loaded for remote SWOT — use it for DEM too
             con.execute(f"CREATE OR REPLACE VIEW dem_data AS SELECT * FROM read_parquet('{REMOTE_DEM_URL}')")
 
+        # Load reference-gradient artifact (per-pass robust slope; same pattern)
+        refgrad_local = os.path.join(DATA_DIR, "reference_gradient_per_pass.parquet")
+        if os.path.exists(refgrad_local):
+            con.execute(f"CREATE OR REPLACE VIEW ref_gradient AS SELECT * FROM read_parquet('{refgrad_local}')")
+        elif not partition_files:
+            con.execute(f"CREATE OR REPLACE VIEW ref_gradient AS SELECT * FROM read_parquet('{REMOTE_REFGRAD_URL}')")
+
         # Memory optimization: Set DuckDB memory limit (recommended for Streamlit Cloud)
         con.execute("SET memory_limit='600MB'")
 
@@ -381,6 +389,50 @@ def load_dem_points(_con):
             FROM dem_data
             USING SAMPLE 15000
         """).fetchdf()
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600)
+def load_reference_gradient(_con):
+    """Load the per-pass reference-gradient artifact (one row per reach x pass).
+
+    Columns: Reach_Name, Pass_Date, month, season, open_water, n_nodes, n_pix,
+    lo_km, hi_km, span_km, theilsen_cm_km, ols_cm_km, ols_r2, gated.
+    Returns None if the artifact is not available.
+    """
+    try:
+        return _con.execute("SELECT * FROM ref_gradient").fetchdf()
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600)
+def load_refgrad_decomposition(_con):
+    """Pooled-OLS gradient (open-water) on raw pixels [A] vs on 1km nodes [B].
+
+    Computed server-side via DuckDB regr_slope (no data pulled to python). Used by
+    the decomposition expander to show that removing point-density bias is the
+    dominant correction over the old trendline. Returns None on failure.
+    """
+    try:
+        a = _con.execute("""
+            SELECT Reach_Name, ABS(regr_slope(wse, dist_km)) * 100 AS pooled_raw
+            FROM river_data
+            WHERE EXTRACT(MONTH FROM CAST(Pass_Date AS DATE)) IN (4,5,6,7,8,9,10,11)
+            GROUP BY Reach_Name
+        """).fetchdf()
+        b = _con.execute("""
+            WITH nodes AS (
+                SELECT Reach_Name, ROUND(dist_km / 1.0) * 1.0 AS node, MEDIAN(wse) AS wse
+                FROM river_data
+                WHERE EXTRACT(MONTH FROM CAST(Pass_Date AS DATE)) IN (4,5,6,7,8,9,10,11)
+                GROUP BY Reach_Name, node
+            )
+            SELECT Reach_Name, ABS(regr_slope(wse, node)) * 100 AS pooled_nodes
+            FROM nodes GROUP BY Reach_Name
+        """).fetchdf()
+        return a.merge(b, on="Reach_Name")
     except Exception:
         return None
 
@@ -696,16 +748,16 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
     with main_swot:
         swot_tab_names = [
-            "📈 Gradient Profile", "🎯 Detrended Profile", "🗺️ Map View",
+            "📈 Gradient Profile", "📏 Hydraulic Gradient", "🎯 Detrended Profile", "🗺️ Map View",
             "🔀 Elevation Difference", "📐 Slope Profile", "📄 Raw Data",
         ]
         if is_local:
             swot_tab_names += ["⏳ Temporal Evolution", "📊 Seasonal Comparison", "🌊 Typhoon Impact"]
 
         swot_tabs = st.tabs(swot_tab_names)
-        tab1, tab3, tab5, tab2, tab4, tab6 = swot_tabs[:6]
+        tab1, tab_grad, tab3, tab5, tab2, tab4, tab6 = swot_tabs[:7]
         if is_local:
-            tab7, tab8, tab9 = swot_tabs[6:]
+            tab7, tab8, tab9 = swot_tabs[7:]
 
     with tab1:
         st.subheader("River Profile")
@@ -742,7 +794,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                               '<extra></extra>'
             ))
 
-            # Trendline
+            # Trendlines: linear (existing) + 2nd-order polynomial (test overlay)
             if len(reach_data) >= 5:
                 slope, intercept, r, _, _ = stats.linregress(reach_data['dist_km'], reach_data['wse'])
                 slope_cm = abs(slope * 100)
@@ -753,8 +805,18 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     x=x_range,
                     y=y_range,
                     mode='lines',
-                    name=f"{reach} Trend: {slope_cm:.1f} cm/km",
+                    name=f"{reach} Linear Trend: {slope_cm:.1f} cm/km",
                     line=dict(color=line_color, width=4, dash='dash')
+                ))
+
+                # 2nd-order polynomial fit (same curve shape as the Detrended tab baseline)
+                poly = np.polynomial.Polynomial.fit(reach_data['dist_km'], reach_data['wse'], 2)
+                fig.add_trace(go.Scatter(
+                    x=x_range,
+                    y=poly(x_range),
+                    mode='lines',
+                    name=f"{reach} Poly Trend (2nd order)",
+                    line=dict(color=line_color, width=3, dash='dot')
                 ))
 
         fig.update_layout(
@@ -770,27 +832,164 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         st.plotly_chart(fig, width="stretch", theme=None)
 
         # Add interpretation guide
-        with st.expander("How to Read This Graph"):
+        with st.expander("How to read this graph"):
             st.markdown("""
-            - **X-axis (reversed)**: Distance from confluence anchor point
-              - Left (high values): Coast/River mouth (~70 km)
-              - Right (0 km): Confluence where rivers meet
-            - **Y-axis**: Water surface elevation above EGM2008 geoid (meters)
-            - **Points**: Individual SWOT measurements (semi-transparent)
-            - **Dashed lines**: Linear regression trendlines showing average gradient
-            - **Gradient values**: Shown in legend as cm/km (steepness)
+            **What this shows:** the height of the water surface along each river — from
+            the coast on the left, back to where the two rivers meet on the right.
+
+            - **Left–right**: how far up the river you are, in kilometers. The coast/river
+              mouth is on the left (~70 km); the point where the rivers meet is on the right (0 km).
+            - **Up–down**: how high the water sits above sea level, in meters.
+            - **Dots**: individual measurements from the satellite.
+            - **Dashed line**: the river's average slope — how steeply the water drops as it
+              flows downhill, shown as centimeters of drop per kilometer (cm/km).
 
             **What to look for:**
-            - **Steeper gradient** (higher cm/km) = Faster elevation drop = More hydraulic energy
-            - **River comparison**: If one river is consistently higher, it has hydraulic advantage
-            - **Scatter width**: Natural variation from different satellite passes and water levels
-            - **Trend line slope**: Overall average gradient - steeper = greater avulsion risk
+            - A **steeper slope** (bigger cm/km) means the water drops faster and flows with more force.
+            - If one river sits **higher** than the other along the same stretch, it has more
+              potential to spill over and shift its path toward the lower one.
+            - The **spread of the dots** shows natural differences between satellite passes and water levels.
 
-            **Tip**: Use the other tabs for detailed comparisons!
-            - "Elevation Difference" shows which river is higher at each distance
-            - "Detrended Profile" removes overall slope to highlight subtle differences
-            - "Slope Profile" shows how steepness varies along the river
+            **Tip:** the other tabs go deeper —
+            - *Hydraulic Gradient* gives each river's single best average slope.
+            - *Elevation Difference* shows which river is higher at each point.
+            - *Detrended Profile* removes the overall downhill slope to reveal subtle differences.
+            - *Slope Profile* shows how the steepness changes along the river.
+
+            ― Technical details ―
+            Heights are orthometric, relative to the EGM2008 geoid. The dashed line is an
+            ordinary least-squares (OLS) linear fit; its slope is shown in the legend in cm/km.
+            For the density-de-biased, robust characteristic slope, see the Hydraulic Gradient tab.
             """)
+
+    with tab_grad:
+        st.subheader("Reference Hydraulic Gradient")
+        ref_df = load_reference_gradient(con)
+
+        if ref_df is None or len(ref_df) == 0:
+            st.info(
+                "Reference gradient data not available. If running locally, run `SWOT_Pull.py` "
+                "(it writes `reference_gradient_per_pass.parquet` automatically at the end of a pull)."
+            )
+        else:
+            ow = ref_df[(ref_df["open_water"]) & (ref_df["gated"])].copy()
+            ow["abs_slope"] = ow["theilsen_cm_km"].abs()
+
+            st.markdown(
+                "**Median of per-pass robust (Theil–Sen) slopes over the full open-water record (Apr–Nov).** "
+                "This is a characteristic property of each river: it is computed from *all* qualifying open-water "
+                "passes and does **not** change with the pass selection above — nor is it the slope of any single "
+                "line drawn on the Gradient Profile chart."
+            )
+
+            grad_order = sorted(selected_reaches, key=lambda r: r == "Uyak_Creek")
+
+            # --- Headline metrics (one per river) ---
+            mcols = st.columns(len(grad_order))
+            for i, reach in enumerate(grad_order):
+                d = ow[ow["Reach_Name"] == reach]
+                if len(d) == 0:
+                    mcols[i].metric(reach.replace("_", " "), "—")
+                    continue
+                mcols[i].metric(
+                    reach.replace("_", " "),
+                    f"{d['abs_slope'].median():.1f} cm/km",
+                    help=(f"Median of {len(d)} full-coverage open-water passes · "
+                          f"IQR {d['abs_slope'].quantile(0.25):.1f}–{d['abs_slope'].quantile(0.75):.1f} cm/km"),
+                )
+
+            # --- Per-pass distribution: every pass as a jittered dot, with a bold
+            #     median line and a shaded middle-50% (IQR) band. Clearer than a box
+            #     plot here — Kanektok's IQR is so small a box collapses to a line. ---
+            fig_g = go.Figure()
+            rng = np.random.default_rng(42)  # fixed seed -> jitter is stable across reruns
+            xpos = {}
+            for xi, reach in enumerate(grad_order):
+                d = ow[ow["Reach_Name"] == reach]
+                if len(d) == 0:
+                    continue
+                xpos[reach] = xi
+                color = COLOR_MAP.get(reach, "black")
+                vals = d["abs_slope"].to_numpy()
+                q25, med, q75 = np.percentile(vals, [25, 50, 75])
+
+                # shaded middle-50% (IQR) band
+                fig_g.add_shape(type="rect", x0=xi - 0.30, x1=xi + 0.30, y0=q25, y1=q75,
+                                fillcolor=color, opacity=0.12, line_width=0, layer="below")
+                # bold median line = the headline value
+                fig_g.add_shape(type="line", x0=xi - 0.36, x1=xi + 0.36, y0=med, y1=med,
+                                line=dict(color=color, width=3))
+                # every pass as a jittered dot
+                jitter = rng.uniform(-0.16, 0.16, size=len(vals))
+                fig_g.add_trace(go.Scatter(
+                    x=xi + jitter, y=vals, mode="markers",
+                    marker=dict(color=color, size=5, opacity=0.45),
+                    name=reach.replace("_", " "),
+                    hovertemplate="%{y:.1f} cm/km<extra></extra>",
+                ))
+            fig_g.update_layout(
+                yaxis_title="Per-pass gradient (cm/km)",
+                height=520, template=plotly_template, showlegend=False,
+                title="Distribution of per-pass robust slopes (each dot = one satellite pass)",
+                xaxis=dict(tickmode="array", tickvals=list(xpos.values()),
+                           ticktext=[r.replace("_", " ") for r in xpos],
+                           range=[-0.6, len(xpos) - 0.4]),
+            )
+            st.plotly_chart(fig_g, use_container_width=True, theme=None)
+            st.caption("Each dot is one satellite pass. The **line** marks the typical value (median); "
+                       "the **shaded band** covers the middle 50% of passes. A tighter band means a more "
+                       "consistent river.")
+
+            # --- Methodology ---
+            with st.expander("How this number is calculated"):
+                st.markdown("""
+                For **each satellite pass**:
+                1. Water-surface elevations are aggregated to **1 km nodes** (median WSE per node).
+                   This removes along-stream point-density bias before fitting.
+                2. A single reach slope is fit with the **Theil–Sen estimator** (median of all
+                   pairwise slopes) — robust to outliers, unlike ordinary least squares.
+
+                We keep only passes that image the **full river** — at least **8 nodes**, a span of
+                **≥ 30 km**, and a start within **3 km of the confluence**. This matters because both
+                rivers are steep near the confluence and gentle toward the mouth, so a pass that only
+                catches part of the river reports a misleadingly different slope. Only the
+                **open-water season (Apr–Nov)** is used — winter ice inflates WSE by 0.5–2+ m.
+
+                The headline value is the **median of those per-pass slopes** across all qualifying
+                passes. See `SCIENTIFIC_METHODOLOGY.md` → *Reference Gradient (Per-Pass Robust
+                Regression)* for the full verification.
+                """)
+
+            # --- Optional decomposition: why this differs from the visual trendline ---
+            with st.expander("Why this differs from the Gradient Profile trendline"):
+                decomp = load_refgrad_decomposition(con)
+                if decomp is None:
+                    st.caption("Decomposition unavailable for the current data source.")
+                else:
+                    rows = []
+                    for reach in grad_order:
+                        d = ow[ow["Reach_Name"] == reach]
+                        dd = decomp[decomp["Reach_Name"] == reach]
+                        if len(d) == 0 or len(dd) == 0:
+                            continue
+                        rows.append({
+                            "River": reach.replace("_", " "),
+                            "[A] pooled OLS, raw pixels": dd["pooled_raw"].iloc[0],
+                            "[B] pooled OLS, 1km nodes": dd["pooled_nodes"].iloc[0],
+                            "[C] per-pass OLS, mean": d["ols_cm_km"].abs().mean(),
+                            "[D] per-pass Theil–Sen, mean": d["abs_slope"].mean(),
+                            "[D′] Theil–Sen, median (reference)": d["abs_slope"].median(),
+                        })
+                    if rows:
+                        st.dataframe(
+                            pd.DataFrame(rows).style.format({c: "{:.1f}" for c in rows[0] if c != "River"}),
+                            width="stretch", hide_index=True,
+                        )
+                    st.caption(
+                        "[A] is the old Gradient Profile trendline (density-biased — dense downstream "
+                        "pixels flatten it). [A]→[B] removing that bias is the dominant correction; "
+                        "per-pass averaging and the robust estimator are smaller refinements."
+                    )
 
     with main_dem:
         if dem_profile is None:
@@ -839,8 +1038,25 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                             x=x_range,
                             y=intercept_val + slope_val * x_range,
                             mode="lines",
-                            name=f"{reach} Trend: {slope_cm:.1f} cm/km (R\u00b2={r_sq:.3f})",
+                            name=f"{reach} Linear Trend: {slope_cm:.1f} cm/km (R\u00b2={r_sq:.3f})",
                             line=dict(color=line_color, width=3, dash="dash"),
+                            legendgroup=reach,
+                        ))
+
+                        # 2nd-order polynomial fit (same curve shape as the Detrended tab baseline)
+                        poly = np.polynomial.Polynomial.fit(
+                            dem_reach["dist_bin"], dem_reach["wse_median"], 2
+                        )
+                        poly_pred = poly(dem_reach["dist_bin"].values)
+                        ss_res = np.sum((dem_reach["wse_median"].values - poly_pred) ** 2)
+                        ss_tot = np.sum((dem_reach["wse_median"].values - dem_reach["wse_median"].mean()) ** 2)
+                        poly_r2 = 1 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+                        fig_dem.add_trace(go.Scatter(
+                            x=x_range,
+                            y=poly(x_range),
+                            mode="lines",
+                            name=f"{reach} Poly Trend (2nd order, R\u00b2={poly_r2:.3f})",
+                            line=dict(color=line_color, width=3, dash="dot"),
                             legendgroup=reach,
                         ))
 
@@ -853,13 +1069,23 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 add_bifurcation_line(fig_dem)
                 st.plotly_chart(fig_dem, use_container_width=True, theme=None)
 
-                with st.expander("How to Read This Graph"):
+                with st.expander("How to read this graph"):
                     st.markdown("""
-                    - **Solid lines**: Median ArcticDEM V4 terrain elevation within the river polygons (0.5 km bins)
-                    - **Dashed lines**: Linear regression trendlines with overall gradient (cm/km) and R\u00b2 goodness-of-fit
-                    - R\u00b2 near 1.0 = linear fit captures the profile well; lower values suggest concavity (Hack, 1957; Flint, 1974)
+                    **What this shows:** the shape of the *land* along each river \u2014 the
+                    elevation of the river valley floor, measured from satellite imagery
+                    rather than from the water.
 
-                    **Data source:** ArcticDEM V4 (2m mosaic, 10m export). EGM2008 orthometric heights. LiDAR-validated (RMSE 0.50 m).
+                    - **Solid lines**: the ground elevation along each river (averaged in 0.5 km steps).
+                    - **Dashed lines**: each river's average land slope, in cm of drop per km.
+                    - The **R\u00b2** number (0 to 1) says how straight the slope is. Close to 1
+                      means the river drops at a steady rate; lower means it curves \u2014 usually
+                      steeper near the top and gentler near the coast.
+
+                    \u2015 Technical details \u2015
+                    Terrain is the median ArcticDEM V4 (2 m mosaic, 10 m export) elevation within
+                    the river polygons, in EGM2008 orthometric heights, LiDAR-validated (RMSE 0.50 m).
+                    Dashed line is an OLS linear fit; lower R\u00b2 reflects profile concavity
+                    (Hack, 1957; Flint, 1974).
                     """)
 
             with dem_tab2:
@@ -893,13 +1119,21 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     add_bifurcation_line(fig_diff)
                     st.plotly_chart(fig_diff, use_container_width=True, theme=None)
 
-                    with st.expander("How to Read This Graph"):
+                    with st.expander("How to read this graph"):
                         st.markdown("""
-                        - Median terrain elevation difference between the two river corridors at each 0.5 km bin
-                        - Analogous to the *alluvial ridge height* (Slingerland & Smith, 1998): when one corridor sits higher,
-                          water has a gravitational incentive to shift toward the lower path
-                        - Gearon et al. (2024, *Nature*) used similar metrics to predict avulsion likelihood globally
-                        - **Positive**: Kanektok corridor sits higher \u2014 **Negative**: Uyak corridor sits higher
+                        **What this shows:** how much higher one river valley sits than the
+                        other at each point along their length.
+
+                        - **Above zero**: the Kanektok valley floor is higher here.
+                        - **Below zero**: the Uyak valley floor is higher here.
+                        - When one river sits higher than its neighbor, gravity gives its water
+                          a reason to spill over and shift toward the lower one \u2014 a key warning
+                          sign for a river changing its path.
+
+                        \u2015 Technical details \u2015
+                        Difference of median terrain elevation between the two river corridors per
+                        0.5 km bin. Analogous to *alluvial ridge height* (Slingerland & Smith, 1998);
+                        Gearon et al. (2024, *Nature*) use similar metrics to predict avulsion likelihood.
                         """)
 
             with dem_tab3:
@@ -932,12 +1166,18 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 add_bifurcation_line(fig_slope)
                 st.plotly_chart(fig_slope, use_container_width=True, theme=None)
 
-                with st.expander("How to Read This Graph"):
+                with st.expander("How to read this graph"):
                     st.markdown("""
-                    - Local terrain gradient computed as the numerical derivative (central differences) of binned
-                      median elevation, smoothed with a Gaussian filter (1.5 km window)
-                    - Steeper slopes = greater gravitational energy available for flow
-                    - Slope differences between rivers indicate differences in channel stability and avulsion susceptibility
+                    **What this shows:** how steep the land is at each point along the river,
+                    instead of one average slope for the whole river.
+
+                    - **Higher line** = steeper ground there = faster, more forceful flow.
+                    - Where the two rivers differ in steepness tells you which one is more
+                      likely to erode and shift its path.
+
+                    ― Technical details ―
+                    Local terrain gradient = numerical derivative (central differences) of the
+                    binned median elevation, smoothed with a Gaussian filter (1.5 km window).
                     """)
 
             with dem_tab4:
@@ -972,13 +1212,22 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 add_bifurcation_line(fig_detrend)
                 st.plotly_chart(fig_detrend, use_container_width=True, theme=None)
 
-                with st.expander("How to Read This Graph"):
+                with st.expander("How to read this graph"):
                     st.markdown("""
-                    - Removes the regional downstream gradient (2nd-order polynomial fit to both rivers combined)
-                    - Quadratic baseline captures the expected concave-up profile shape (Flint, 1974)
-                    - Residuals show where each corridor sits higher or lower than the regional trend
-                    - A river consistently above the baseline may indicate a *perched* channel \u2014 a key
-                      precondition for avulsion (Slingerland & Smith, 1998)
+                    **What this shows:** the same terrain, but with the overall downhill slope
+                    removed \u2014 like tilting the whole picture flat so small bumps stand out.
+
+                    - The flat zero line is the expected smooth downhill shape both rivers share.
+                    - **Above the line**: this river's valley sits higher than expected here.
+                    - **Below the line**: it sits lower than expected.
+                    - A river that stays **above** the line is riding high on its own built-up
+                      bed (a "perched" channel) \u2014 one of the main conditions that lets a river
+                      jump to a new path.
+
+                    \u2015 Technical details \u2015
+                    Baseline is a 2nd-order polynomial fit to both rivers combined, capturing the
+                    expected concave-up profile (Flint, 1974). Residuals = terrain minus baseline.
+                    Perched channels are a known avulsion precondition (Slingerland & Smith, 1998).
                     """)
 
             with dem_tab5:
@@ -1105,15 +1354,19 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     folium.LayerControl().add_to(m)
                     st_folium(m, width=1400, height=600, key="dem_river_map", returned_objects=[])
 
-                    with st.expander("How to Read This Map"):
+                    with st.expander("How to read this map"):
                         st.markdown("""
-                        - Each point represents a 10m DEM pixel within the river polygons
-                        - **River Name coloring**: Kanektok River (red) vs Uyak Creek (blue)
-                        - **Elevation coloring**: Viridis colormap from low (purple) to high (yellow)
-                        - Click any point for elevation and distance details
-                        - Use the measurement tool (top-left) to measure distances and areas
+                        **What this shows:** every patch of land along the rivers, placed on a
+                        real map and colored by how high it is.
 
-                        **Data source:** ArcticDEM V4 (2m mosaic, 10m export). EGM2008 orthometric heights.
+                        - **By river**: Kanektok (red) vs Uyak (blue).
+                        - **By elevation**: purple is low ground, yellow is high ground.
+                        - **Click any point** to see its exact height and distance.
+                        - Use the ruler tool (top-left) to measure distances and areas.
+
+                        ― Technical details ―
+                        Each point is a 10 m ArcticDEM V4 pixel within the river polygons,
+                        in EGM2008 orthometric heights.
                         """)
 
                 render_dem_map()
@@ -1143,18 +1396,21 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 width="stretch", hide_index=True
             )
 
-            with st.expander("Data Quality Information"):
+            with st.expander("Where this data comes from"):
                 st.markdown("""
-                **Data Source:** ArcticDEM V4 2m mosaic (Polar Geospatial Center), exported at 10m resolution via Google Earth Engine.
+                The land-elevation data is a high-detail terrain map of the Arctic built from
+                satellite photos (ArcticDEM). We line its heights up with the same sea-level
+                reference the SWOT water data uses, so the two can be compared directly. It has
+                been checked against aircraft laser surveys and is accurate to about half a meter.
 
-                **Vertical Datum:** EGM2008 orthometric heights. Geoid correction applied using spatially-interpolated
-                undulation values (~13.2\u201313.8 m at study site), matching the SWOT vertical datum.
-
-                **Statistics:** Profile statistics computed from all ~2.5M pixels via DuckDB (exact bin medians and percentiles).
-                Map points are a random sample of 15,000 for rendering performance.
-                Summary statistics use distance-weighted averaging (0.5 km bin medians) for consistency with SWOT methodology.
-
-                **Validation:** ArcticDEM V4 independently validated against NOAA QL1 LiDAR (RMSE 0.50 m).
+                \u2015 Technical details \u2015
+                - **Source:** ArcticDEM V4 2 m mosaic (Polar Geospatial Center), exported at 10 m via Google Earth Engine.
+                - **Vertical datum:** EGM2008 orthometric heights; geoid correction applied using
+                  spatially-interpolated undulation values (~13.2\u201313.8 m at the study site) to match the SWOT datum.
+                - **Statistics:** profile stats computed from all ~2.5M pixels via DuckDB (exact bin
+                  medians/percentiles). Map shows a random sample of 15,000 points for performance.
+                  Summary stats use distance-weighted averaging (0.5 km bin medians).
+                - **Validation:** independently validated against NOAA QL1 LiDAR (RMSE 0.50 m).
                 """)
 
     with tab2:
@@ -1251,12 +1507,17 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     st.plotly_chart(fig_diff, width="stretch", theme=None)
 
                     # Add interpretation guide
-                    with st.expander("How to Read This Graph"):
+                    with st.expander("How to read this graph"):
                         st.markdown("""
-                        - **Positive values** (above zero): Kanektok River has higher water surface elevation
-                        - **Negative values** (below zero): Uyak Creek has higher water surface elevation
-                        - **Zero line**: Rivers have equal elevation
-                        - Data is binned every 100 meters and averaged for clarity
+                        **What this shows:** which river's *water* sits higher at each point
+                        along the way.
+
+                        - **Above zero**: Kanektok's water is higher here.
+                        - **Below zero**: Uyak's water is higher here.
+                        - **On the zero line**: the two are at the same height.
+
+                        ― Technical details ―
+                        Water heights are averaged in 100 m bins, then differenced (Kanektok − Uyak).
                         """)
 
                     # Show summary statistics
@@ -1449,23 +1710,27 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     """)
 
                 # Add interpretation guide
-                with st.expander("How to Read This Graph"):
+                with st.expander("How to read this graph"):
                     st.markdown(f"""
-                    - **Baseline**: {method_name} fitted through all data points from selected river(s)
-                    - **Y-axis = 0**: Points exactly on the baseline trend
-                    - **Positive values**: Water surface elevation is HIGHER than the baseline
-                    - **Negative values**: Water surface elevation is LOWER than the baseline
-                    - **Purpose**: Removes the large-scale elevation drop, revealing subtle differences between rivers
+                    **What this shows:** the water profile with its overall downhill slope
+                    removed — like flattening the picture so small ups and downs stand out.
 
-                    **Expected pattern if detrending is working correctly:**
-                    - Residuals should **scatter around zero** with no systematic slope
-                    - Overall mean residual should be close to 0.000m
-                    - If you still see a clear upward or downward trend, the baseline method doesn't fit your data well
+                    - The flat zero line is the river's expected smooth trend.
+                    - **Above the line**: the water is higher than expected here.
+                    - **Below the line**: it's lower than expected.
+                    - This makes subtle differences between the two rivers easy to see.
 
-                    **What to look for (when properly detrended):**
-                    - Consistent separation between rivers indicates systematic elevation differences
-                    - River consistently above baseline = higher gradient/steeper than average
-                    - River consistently below baseline = lower gradient/gentler than average
+                    **What to look for:**
+                    - A steady gap between the two rivers means one consistently sits higher than the other.
+                    - A river that stays above the line is steeper than average; below the line, gentler.
+
+                    **Is it working?** The dots should scatter evenly around zero with no leftover
+                    tilt. If you still see a clear up- or down-slope, the chosen baseline shape
+                    doesn't fit this data well — try a different one below.
+
+                    ― Technical details ―
+                    Baseline = {method_name} fit through all points of the selected river(s);
+                    the plot shows the residuals (data minus baseline). Mean residual ≈ 0 when the fit is appropriate.
                     """)
 
                 # Method-specific guidance
@@ -1648,13 +1913,17 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
                 st.plotly_chart(fig_slopes, width="stretch", theme=None)
 
-                with st.expander("How to Read This Graph"):
+                with st.expander("How to read this graph"):
                     st.markdown("""
-                    - Shows how river steepness varies along its length
-                    - Raw WSE data is binned (100m medians) then smoothed with a 2km Gaussian window
-                    - Slope is the derivative of the smoothed elevation profile
-                    - **Higher values** = Steeper gradient (more hydraulic energy)
-                    - Compare rivers to identify where one is significantly steeper
+                    **What this shows:** how the *water's* steepness changes along the river,
+                    instead of one average slope for the whole thing.
+
+                    - **Higher line** = steeper water surface there = faster, more forceful flow.
+                    - Compare the two rivers to spot where one is clearly steeper than the other.
+
+                    ― Technical details ―
+                    WSE binned to 100 m medians, smoothed with a 2 km Gaussian window; slope is
+                    the derivative of the smoothed elevation profile (cm/km).
                     """)
 
                 if slope_stats:
@@ -2327,10 +2596,15 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         # === ANOMALY DETECTION ===
         with st.expander("🚨 Anomaly Detection", expanded=False):
             st.markdown("""
-            **Method:** Modified Z-Score with MAD (Median Absolute Deviation)
-            - **Threshold:** 3.5 (matches data pipeline filtering)
-            - **Detection:** Flags passes where WSE or gradient deviate significantly from typical values
-            - **Purpose:** Identify potential measurement errors or extreme hydrologic events
+            **What this does:** automatically flags satellite passes that look unusual — where
+            the water height or slope is far from what's typical. An odd pass can mean either a
+            measurement glitch or a real, dramatic event (like a flood). It's a way to catch
+            dates worth a closer look.
+
+            ― Technical details ―
+            Modified Z-score using MAD (median absolute deviation), threshold 3.5 (matches the
+            data-pipeline filtering). Flags passes where monthly-average WSE or gradient deviate
+            significantly from the typical value.
             """)
 
             # Detect anomalies for each river and metric
@@ -2385,11 +2659,14 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         # === HEATMAP SECTION ===
         with st.expander("📊 Heatmap: Distance × Time Evolution", expanded=False):
             st.markdown("""
-            **Visualization:** 2D color plot showing WSE across both space (distance) and time (months)
-            - **X-axis:** Month
-            - **Y-axis:** Distance from confluence (km)
-            - **Color:** Average WSE (m)
-            - **Use:** Identify spatial-temporal patterns (e.g., upstream vs downstream changes over time)
+            **What this shows:** the whole river over the whole time period in one picture.
+            Each column is a month, each row is a spot along the river, and the **color** is the
+            water height there. It lets you spot patterns — for example, whether the upstream
+            end rises and falls differently from the coast over the seasons.
+
+            - **Left–right:** month.
+            - **Up–down:** distance along the river (km from where the rivers meet).
+            - **Color:** average water height (m).
             """)
 
             # Query for heatmap (only run when section expanded)
@@ -2499,11 +2776,12 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             width='stretch'
         )
 
-        with st.expander("Interpretation Guide"):
+        with st.expander("How to read these numbers"):
             st.markdown("""
-            - **WSE Trend:** Positive = water level increasing, Negative = water level decreasing
-            - **R²:** Closer to 1.0 = stronger linear trend, Closer to 0 = more variability
-            - **Gradient Trend:** Change in river steepness over time
+            - **Water-level trend:** positive means the water is rising over time; negative means it's dropping.
+            - **Slope trend:** whether the river is getting steeper or gentler over time.
+            - **R²** (0 to 1): how clear the trend is. Close to 1 is a steady, reliable trend;
+              close to 0 means the values jump around a lot.
             """)
 
      # === TAB 8: SEASONAL COMPARISON ===
@@ -2623,10 +2901,10 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         # Build rivers_sql for this tab scope
         rivers_sql_tab9 = ", ".join([f"'{r}'" for r in selected_reaches])
 
-        st.info("""**Methodology:** To isolate geomorphic changes caused by the typhoon from seasonal WSE
-        variation, this analysis compares the **same season** before and after the storm (Summer 2025 vs
-        Summer 2026). Comparing open-water months to freeze-up months would introduce a 0.5-2+ m ice
-        artifact — SWOT measures ice surface elevation, not water beneath the ice.""")
+        st.info("""**How we do this fairly:** rivers naturally rise and fall with the seasons, so to
+        see what the *storm* actually changed we compare the **same season** in two different years —
+        Summer 2025 (before) vs Summer 2026 (after). Comparing summer to winter would be misleading,
+        because in winter the satellite reads the ice surface and the heights look 0.5–2+ m too high.""")
 
         # --- Section A: Same-Season Comparison (PRIMARY) ---
         st.markdown("### Same-Season Comparison (Summer 2025 vs Summer 2026)")
@@ -2725,7 +3003,8 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     )
                     add_bifurcation_line(fig_change)
                     st.plotly_chart(fig_change, width='stretch', theme=None)
-                    st.caption("Positive = WSE increased post-storm. Negative = WSE decreased. 500m bins, min 3 points per bin. Same-season comparison eliminates ice artifacts.")
+                    st.caption("Above zero = water height rose after the storm; below zero = it dropped. "
+                               "Measured in 500 m steps (min. 3 points each); comparing the same season avoids ice errors.")
                 else:
                     st.info("Not enough overlapping distance bins between pre- and post-storm seasons.")
             except Exception as e:
@@ -2838,11 +3117,11 @@ June-August 2026 data. Re-run `SWOT_Pull.py` after June 2026 to populate this se
         # --- Section B: Immediate Before/After (ice-contaminated, for reference only) ---
         st.markdown("---")
         with st.expander("Immediate Before/After (Aug-Sep vs Oct-Dec 2025) — ice-contaminated, use with caution"):
-            st.error("""**Ice Contamination Warning:** This comparison is between open-water (Aug-Sep) and
-            freeze-up/frozen (Oct-Dec) periods. Post-storm WSE values are likely **artificially elevated
-            by 0.5-2+ meters** because SWOT measures ice surface, not water beneath it. The PIXC
-            classification filter (Classes 3-4) excludes most ice but partially frozen surfaces may
-            still pass. **Do not use these slope changes to draw conclusions about storm impact.**
+            st.error("""**Warning — river ice makes this comparison unreliable.** It puts open-water
+            months (Aug–Sep) next to freeze-up months (Oct–Dec). When the river is frozen, the
+            satellite reads the **top of the ice, not the water below**, so the later heights are
+            likely **too high by 0.5–2+ meters**. Our filters remove most ice, but partly-frozen
+            surfaces can slip through. **Do not use these slope changes to judge storm impact.**
             Use the same-season comparison above instead.""")
 
             pre = TYPHOON_PERIODS["pre_immediate"]
@@ -2916,34 +3195,45 @@ June-August 2026 data. Re-run `SWOT_Pull.py` after June 2026 to populate this se
         col2.metric("Total Data Points", f"{count:,}")
         col3.metric("Visualization Sample", f"{len(viz_df):,}")
 
-        display_stats = stats_df.copy()
-        display_stats['avg_slope'] = display_stats['avg_slope'].abs()
+        # Gradient is intentionally NOT shown here: a per-selection average is
+        # density-biased and conflates passes at different stages. The authoritative
+        # gradient lives in the "Hydraulic Gradient" tab (per-pass robust, full record).
+        display_stats = stats_df[["Reach_Name", "avg_wse"]].copy()
         display_stats = display_stats.rename(columns={
             "Reach_Name": "River Name",
             "avg_wse": "Avg WSE (m)",
-            "avg_slope": "Avg Gradient (cm/km)"
         })
         st.dataframe(
-            display_stats.style.format({"Avg WSE (m)": "{:.2f}", "Avg Gradient (cm/km)": "{:.2f}"}),
+            display_stats.style.format({"Avg WSE (m)": "{:.2f}"}),
             width='stretch',
             hide_index=True
         )
+        st.caption("River gradient is reported in the **📏 Hydraulic Gradient** tab "
+                   "(per-pass robust slope over the full open-water record), not as a per-selection average.")
 
-        with st.expander("Data Quality Information"):
+        with st.expander("How these numbers are made (and cleaned)"):
             st.markdown("""
-            **Summary Statistics Method:**
-            - **Avg WSE** and **Avg Gradient** use distance-weighted averaging: data is binned into 1 km intervals,
-              the median is taken per bin, then bins are averaged with equal weight. This prevents uneven spatial
-              point density along the river (due to swath geometry, river width, and classification rates) from biasing the mean.
-              Without this correction, rivers with more points concentrated at one end of their reach produce misleading averages.
+            **Average water height:** the satellite collects far more points in some stretches
+            than others, so a plain average would be lopsided. Instead we split the river into
+            1 km steps, take the typical value in each step, and weight every step equally — so
+            the result reflects the whole river fairly, not just the busiest stretch.
 
-            **Data Quality Filtering Applied:**
-            - **Classification:** SWOT Classes 3-4 (high-quality water pixels)
-            - **Outlier Removal:** MAD-based filtering (Modified Z-score threshold 3.5)
-            - **Applied:** Per-reach during data ingestion
-            - **Purpose:** Remove plateau artifacts and anomalous measurements
+            **River slope** is kept out of this table on purpose: a quick average over your
+            selected passes is biased the same lopsided way. The trustworthy slope lives in the
+            **📏 Hydraulic Gradient** tab.
 
-            See `SCIENTIFIC_METHODOLOGY.md` for complete methodology.
+            **Cleaning:** we keep only the satellite's high-quality water readings and
+            automatically drop a few extreme outliers before any of this is computed.
+
+            ― Technical details ―
+            - **Avg WSE:** distance-weighted average — 1 km bins, median per bin, bins averaged
+              equally — to remove along-stream point-density bias (swath geometry, river width, classification rate).
+            - **Gradient:** reported in the Hydraulic Gradient tab as a per-pass robust (Theil–Sen)
+              slope over the full open-water record (median across passes); a per-selection average is density-biased.
+            - **Filtering:** SWOT Classes 3–4 (high-quality water pixels); MAD-based outlier
+              removal (modified Z-score threshold 3.5), per-reach at ingestion.
+
+            See `SCIENTIFIC_METHODOLOGY.md` for the complete methodology.
             """)
 
 
