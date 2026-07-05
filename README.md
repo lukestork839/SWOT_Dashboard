@@ -153,11 +153,9 @@ See [DEM Elevation Comparison](#dem-elevation-comparison) for methodology.
 | **Elevation Difference** | Direct Kanektok minus Uyak WSE comparison in 100m distance bins. Shows which river is higher at each point. |
 | **Slope Profile** | How steepness varies along each river. Uses Gaussian-smoothed binned medians with numerical derivative. |
 | **Raw Data** | Table view of the data with CSV export. |
-| **Temporal Evolution** | Time series of monthly WSE averages and gradients. Includes moving average trendlines, WSE at fixed distances, anomaly detection, and heatmaps. *(Local only)* |
-| **Seasonal Comparison** | Year-over-year comparison: high flow (May) vs. low flow (Jul-Aug) for 2023-2025. *(Local only)* |
-| **Typhoon Impact** | Before/after analysis of Typhoon Halong (Oct 12-14, 2025). Immediate impact and same-season comparison. *(Local only)* |
+| **Temporal Results** | Read-only display of the one-time temporal-stability analysis (seasonal, interannual, and pre/post-Typhoon Halong). Shows the control-chart time series, stage-invariance scatter, distribution comparisons, and the interim typhoon spatial-delta, plus result tables. Rendered from pre-computed files — no on-the-fly computation. |
 
-*Local only tabs require the full dataset from `SWOT_Pull.py` and are hidden on the deployed Streamlit Cloud dashboard.*
+The former interactive **Temporal Evolution**, **Seasonal Comparison**, and **Typhoon Impact** tabs (density-biased, per-selection) have been retired. Their questions are now answered by a single, methodology-locked one-time analysis (`temporal_analysis.py`), whose results the **Temporal Results** tab displays. See [`TEMPORAL_ANALYSIS.md`](TEMPORAL_ANALYSIS.md) for the full write-up. Because the results are pre-computed (git-tracked in `temporal_results/`), this tab is available on both the local and the deployed Streamlit Cloud dashboard.
 
 ### Sidebar Controls
 
