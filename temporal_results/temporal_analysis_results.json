@@ -1,0 +1,195 @@
+{
+  "method": {
+    "node_km": 1.0,
+    "min_nodes": 8,
+    "min_span_km": 30.0,
+    "max_start_km": 3.0,
+    "ref_dist_km": 15.0,
+    "open_water_months": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "high_flow_months": [
+      5
+    ],
+    "low_flow_months": [
+      7,
+      8
+    ],
+    "typhoon_date": "2025-10-12",
+    "slope_estimator": "Theil-Sen on 1km node medians (abs cm/km)",
+    "level_metric": "WSE at 15 km from Theil-Sen fit (m)"
+  },
+  "record": {
+    "n_passes_fit": 275,
+    "n_full_coverage_open_water": 136,
+    "date_min": "2023-07-31",
+    "date_max": "2026-06-20"
+  },
+  "Q1_seasonal": [
+    {
+      "question": "Q1_slope_pooled",
+      "reach": "Kanektok_River",
+      "n_high": 11,
+      "n_low": 19,
+      "slope_high": 195.696,
+      "slope_low": 195.231,
+      "dslope_cm_km": 0.46,
+      "p_slope": 0.2282
+    },
+    {
+      "question": "Q1_wse_seasonal",
+      "reach": "Kanektok_River",
+      "year": 2024,
+      "n_high": 3,
+      "n_low": 8,
+      "wse_high": 30.175,
+      "wse_low": 30.41,
+      "dwse_m": -0.235,
+      "p_wse": 0.3758
+    },
+    {
+      "question": "Q1_wse_seasonal",
+      "reach": "Kanektok_River",
+      "year": 2025,
+      "n_high": 4,
+      "n_low": 8,
+      "wse_high": 30.427,
+      "wse_low": 30.191,
+      "dwse_m": 0.236,
+      "p_wse": 0.1091
+    },
+    {
+      "question": "Q1_slope_pooled",
+      "reach": "Uyak_Creek",
+      "n_high": 8,
+      "n_low": 11,
+      "slope_high": 192.991,
+      "slope_low": 190.503,
+      "dslope_cm_km": 2.49,
+      "p_slope": 0.0506
+    },
+    {
+      "question": "Q1_wse_seasonal",
+      "reach": "Uyak_Creek",
+      "year": 2024,
+      "n_high": 3,
+      "n_low": 3,
+      "wse_high": 29.897,
+      "wse_low": 30.419,
+      "dwse_m": -0.522,
+      "p_wse": 0.1
+    },
+    {
+      "question": "Q1_wse_seasonal",
+      "reach": "Uyak_Creek",
+      "year": 2025,
+      "n_high": 3,
+      "n_low": 5,
+      "wse_high": 30.306,
+      "wse_low": 29.881,
+      "dwse_m": 0.425,
+      "p_wse": 0.25
+    }
+  ],
+  "Q2_interannual": [
+    {
+      "question": "Q2_interannual",
+      "reach": "Kanektok_River",
+      "slope_basis": "full_open_water_year",
+      "wse_basis": "Jul-Aug low flow",
+      "n_slope_2024": 31,
+      "n_slope_2025": 32,
+      "n_wse_2024": 8,
+      "n_wse_2025": 8,
+      "slope_2024": 195.005,
+      "slope_2025": 195.778,
+      "wse_2024": 30.41,
+      "wse_2025": 30.191,
+      "dwse_m": -0.219,
+      "dslope_cm_km": 0.77,
+      "p_wse": 0.003,
+      "p_slope": 0.0
+    },
+    {
+      "question": "Q2_interannual",
+      "reach": "Uyak_Creek",
+      "slope_basis": "full_open_water_year",
+      "wse_basis": "Jul-Aug low flow",
+      "n_slope_2024": 18,
+      "n_slope_2025": 18,
+      "n_wse_2024": 3,
+      "n_wse_2025": 5,
+      "slope_2024": 192.382,
+      "slope_2025": 191.689,
+      "wse_2024": 30.419,
+      "wse_2025": 29.881,
+      "dwse_m": -0.538,
+      "dslope_cm_km": -0.69,
+      "p_wse": 0.1429,
+      "p_slope": 1.0
+    }
+  ],
+  "Q3_typhoon": [
+    {
+      "question": "Q3_typhoon",
+      "reach": "Kanektok_River",
+      "window": "June (interim)",
+      "n_2025": 3,
+      "n_2026": 3,
+      "slope_2025": 195.498,
+      "slope_2026": 195.359,
+      "wse_2025": 30.47,
+      "wse_2026": 30.486,
+      "dwse_m": 0.016,
+      "dslope_cm_km": -0.14,
+      "p_wse": 0.7,
+      "p_slope": 1.0,
+      "baseline_dwse_m": -0.219,
+      "baseline_dslope_cm_km": 0.77,
+      "wse_vs_baseline": "within"
+    },
+    {
+      "question": "Q3_typhoon",
+      "reach": "Uyak_Creek",
+      "window": "June (interim)",
+      "n_2025": 2,
+      "n_2026": 3,
+      "slope_2025": 194.036,
+      "slope_2026": 193.586,
+      "wse_2025": 30.531,
+      "wse_2026": 30.2,
+      "dwse_m": -0.331,
+      "dslope_cm_km": -0.45,
+      "p_wse": null,
+      "p_slope": null,
+      "baseline_dwse_m": -0.538,
+      "baseline_dslope_cm_km": -0.69,
+      "wse_vs_baseline": "within"
+    }
+  ],
+  "Q3_profile": [
+    {
+      "question": "Q3_profile",
+      "reach": "Kanektok_River",
+      "n_bins": 70,
+      "median_dwse_m": 0.066,
+      "downstream_dwse_m": 0.071,
+      "upstream_dwse_m": 0.063
+    },
+    {
+      "question": "Q3_profile",
+      "reach": "Uyak_Creek",
+      "n_bins": 72,
+      "median_dwse_m": 0.009,
+      "downstream_dwse_m": 0.003,
+      "upstream_dwse_m": 0.013
+    }
+  ]
+}
