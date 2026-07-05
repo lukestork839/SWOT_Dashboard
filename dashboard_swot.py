@@ -1,15 +1,12 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
-import plotly.io as pio
 from plotly.subplots import make_subplots
 from scipy import stats
 from scipy.ndimage import gaussian_filter1d
 import numpy as np
 import duckdb
 import os
-import glob
 import gc  # Memory management
 import folium
 from folium import plugins
@@ -24,6 +21,9 @@ from jinja2 import Template as JinjaTemplate
 # --- CONFIGURATION ---
 PAGE_TITLE = "SWOT River Dynamics: Kanektok & Uyak"
 DATA_DIR = "batch_outputs"
+# Pre-computed one-time temporal-analysis results (git-tracked, tiny). Written by
+# temporal_analysis.py; the Temporal Results tab renders these directly (no on-the-fly calc).
+TEMPORAL_DIR = "temporal_results"
 REMOTE_PARQUET_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/dashboard_data.parquet"
 REMOTE_DEM_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/dem_river_elevations.parquet"
 REMOTE_REFGRAD_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/reference_gradient_per_pass.parquet"
@@ -43,36 +43,9 @@ COLOR_MAP = {
     "Uyak_Creek": "dodgerblue"
 }
 
-# --- ANALYSIS PERIOD DEFINITIONS ---
-TYPHOON_DATE = "2025-10-12"  # Typhoon Halong landfall
-
-SEASONAL_PERIODS = [
-    {"label": "2023 High Flow", "start": "2023-05-01", "end": "2023-05-31", "row": 0, "col": 0, "fallback_start": "2023-07-01", "fallback_end": "2023-08-31", "fallback_label": "2023 Earliest Available"},
-    {"label": "2023 Low Flow",  "start": "2023-07-01", "end": "2023-08-31", "row": 1, "col": 0},
-    {"label": "2024 High Flow", "start": "2024-05-01", "end": "2024-05-31", "row": 0, "col": 1},
-    {"label": "2024 Low Flow",  "start": "2024-07-01", "end": "2024-08-31", "row": 1, "col": 1},
-    {"label": "2025 High Flow", "start": "2025-05-01", "end": "2025-05-31", "row": 0, "col": 2},
-    {"label": "2025 Low Flow",  "start": "2025-07-01", "end": "2025-08-31", "row": 1, "col": 2},
-]
-
-TYPHOON_PERIODS = {
-    "pre_immediate":  {"label": "Pre-Storm (Aug-Sep 2025)",  "start": "2025-08-01", "end": "2025-09-30"},
-    "post_immediate": {"label": "Post-Storm (Oct 15-Dec 2025)", "start": "2025-10-15", "end": "2025-12-31"},
-    "pre_season":     {"label": "Pre-Storm Summer 2025",     "start": "2025-05-01", "end": "2025-08-31"},
-    "post_season":    {"label": "Post-Storm Spring 2026",    "start": "2026-03-01", "end": "2026-08-31"},
-}
-
-# --- ICE SEASON DEFINITIONS (Kanektok/Uyak at ~59.8°N) ---
-# SWOT PIXC has no ice classification class. Classes 3-4 exclude most ice
-# (rough ice → land Class 1-2), but smooth river ice classifies as water
-# (Class 3-4) and passes through quality filters during frozen months.
-# Analysis of 170 passes (2023-2026) shows peak contamination Dec-Mar:
-#   - Uyak Creek: 80-95% Class 4 (vs 35-55% in open water)
-#   - Kanektok River: 58-77% Class 4 (wider river, less complete freeze)
-# Oct-Nov are ice-free in the data; Apr-May are transitional but mostly usable.
-# Ice surface elevation ≠ water surface elevation (off by ice thickness 0.5-2+ m).
-ICE_AFFECTED_MONTHS = {12, 1, 2, 3}  # Dec-Mar (data-validated peak ice contamination)
-OPEN_WATER_MONTHS = {4, 5, 6, 7, 8, 9, 10, 11}  # Apr-Nov (reliable for WSE analysis)
+# Note: the seasonal/typhoon period definitions and ice-season constants that the
+# retired live temporal tabs used now live in temporal_analysis.py, which owns the
+# one-time temporal analysis. The dashboard only displays its pre-computed results.
 
 
 def add_bifurcation_line(fig, axis="x"):
@@ -196,31 +169,6 @@ def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
 
     return x_eval, slope_cm_km, y_fitted
 
-@st.cache_data(ttl=3600)
-def detect_anomalies_mad(data, threshold=3.5):
-    """
-    Detect anomalies using Modified Z-score (Median Absolute Deviation).
-    Cached to avoid recomputing on every interaction.
-
-    Args:
-        data: pandas Series with metric values
-        threshold: Modified Z-score threshold (default 3.5, matches pipeline)
-
-    Returns:
-        Boolean array where True = anomaly
-    """
-    median = data.median()
-    mad = np.median(np.abs(data - median))
-
-    if mad == 0:
-        # Fallback to IQR if MAD is 0 (all values identical)
-        q1, q3 = data.quantile(0.25), data.quantile(0.75)
-        iqr = q3 - q1
-        return (data < q1 - 1.5 * iqr) | (data > q3 + 1.5 * iqr)
-
-    modified_z_score = 0.6745 * (data - median) / mad
-    return np.abs(modified_z_score) > threshold
-
 class VerticalColorbar(MacroElement):
     """Vertical colorbar legend as a Leaflet control on the left side of the map."""
 
@@ -257,52 +205,6 @@ class VerticalColorbar(MacroElement):
                 legend.addTo({{ this._parent.get_name() }});
             {% endmacro %}
         """)
-
-def compute_moving_average(series, window, min_periods=2):
-    """
-    Compute rolling moving average with edge handling.
-
-    Args:
-        series: pandas Series (time-indexed)
-        window: Number of periods for rolling window
-        min_periods: Minimum observations required (default 2)
-
-    Returns:
-        pandas Series with moving average values
-    """
-    return series.rolling(window=window, min_periods=min_periods, center=False).mean()
-
-def query_period_data(con, period_start, period_end, selected_reaches, max_points=5000):
-    """Query river data for a specific date range, with sampling if needed."""
-    try:
-        rivers_sql = ", ".join([f"'{r}'" for r in selected_reaches])
-        where = f"WHERE Reach_Name IN ({rivers_sql}) AND CAST(Pass_Date AS DATE) >= CAST('{period_start}' AS DATE) AND CAST(Pass_Date AS DATE) <= CAST('{period_end}' AS DATE)"
-
-        count = con.execute(f"SELECT COUNT(*) FROM river_data {where}").fetchone()[0]
-        if count == 0:
-            return None, None, 0
-
-        if count > max_points:
-            step = int(count / max_points)
-            query = f"""SELECT * FROM (
-                SELECT *, row_number() OVER (ORDER BY Reach_Name, dist_km) as rn
-                FROM river_data {where}) sub WHERE rn % {step} = 0"""
-        else:
-            query = f"SELECT * FROM river_data {where} ORDER BY Reach_Name, dist_km"
-
-        df = con.execute(query).fetchdf()
-
-        # Statistics on full (unsampled) data
-        stats_df = con.execute(f"""
-            SELECT Reach_Name, COUNT(*) as n_points,
-                   COUNT(DISTINCT Pass_Date) as n_passes,
-                   AVG(wse) as mean_wse, AVG(slope_calc) as avg_slope
-            FROM river_data {where} GROUP BY Reach_Name
-        """).fetchdf()
-
-        return df, stats_df, count
-    except Exception:
-        return None, None, 0
 
 # Cache key includes the remote URL so cache invalidates when data source changes
 @st.cache_resource
@@ -452,6 +354,37 @@ def load_metadata(_con):
     all_pass_dates = pass_dates_df['pass_date'].tolist()
     available_reaches = _con.execute("SELECT DISTINCT Reach_Name FROM river_data").fetchdf()['Reach_Name'].tolist()
     return all_pass_dates, available_reaches
+
+
+@st.cache_data(ttl=3600)
+def load_temporal_results():
+    """Load the pre-computed one-time temporal-analysis artifacts.
+
+    Returns a dict {results, metrics, q3_curve} or None if the files are absent.
+    These are static outputs of temporal_analysis.py (git-tracked in temporal_results/),
+    so the tab renders identically on local and Streamlit Cloud with zero computation.
+    """
+    import json
+    j = os.path.join(TEMPORAL_DIR, "temporal_analysis_results.json")
+    m = os.path.join(TEMPORAL_DIR, "temporal_metrics_per_pass.parquet")
+    c = os.path.join(TEMPORAL_DIR, "temporal_q3_profile.parquet")
+    if not (os.path.exists(j) and os.path.exists(m)):
+        return None
+    try:
+        with open(j) as f:
+            results = json.load(f)
+        # Read parquet via DuckDB (same pattern as the rest of the app) so we don't
+        # depend on pyarrow/fastparquet, which are not in requirements.txt.
+        con = duckdb.connect()
+        metrics = con.execute(f"SELECT * FROM read_parquet('{m}')").fetchdf()
+        metrics["date"] = pd.to_datetime(metrics["date"])
+        q3_curve = (con.execute(f"SELECT * FROM read_parquet('{c}')").fetchdf()
+                    if os.path.exists(c) else pd.DataFrame())
+        con.close()
+        return {"results": results, "metrics": metrics, "q3_curve": q3_curve}
+    except Exception as e:
+        st.warning(f"Could not load temporal results: {e}")
+        return None
 
 
 def _is_ice(d):
@@ -742,22 +675,17 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
     main_swot, main_dem = st.tabs(["📡 SWOT Data", "🏔️ DEM Data"])
 
-    # Local-only tabs: Temporal Evolution, Seasonal Comparison, Typhoon Impact
-    # These require the full local dataset and are hidden on Streamlit Cloud
-    is_local = bool(glob.glob(os.path.join(DATA_DIR, "master_all_data_part_*.parquet")))
-
     with main_swot:
+        # Spatial tabs (interactive, per-selection) + one static Temporal Results tab.
+        # The live per-pass temporal/seasonal/typhoon tabs were retired in favour of the
+        # one-time analysis (temporal_analysis.py); the Temporal Results tab shows those
+        # pre-computed conclusions and is available on both local and Streamlit Cloud.
         swot_tab_names = [
             "📈 Gradient Profile", "📏 Hydraulic Gradient", "🎯 Detrended Profile", "🗺️ Map View",
-            "🔀 Elevation Difference", "📐 Slope Profile", "📄 Raw Data",
+            "🔀 Elevation Difference", "📐 Slope Profile", "📄 Raw Data", "⏳ Temporal Results",
         ]
-        if is_local:
-            swot_tab_names += ["⏳ Temporal Evolution", "📊 Seasonal Comparison", "🌊 Typhoon Impact"]
-
         swot_tabs = st.tabs(swot_tab_names)
-        tab1, tab_grad, tab3, tab5, tab2, tab4, tab6 = swot_tabs[:7]
-        if is_local:
-            tab7, tab8, tab9 = swot_tabs[7:]
+        tab1, tab_grad, tab3, tab5, tab2, tab4, tab6, tab_temporal = swot_tabs
 
     with tab1:
         st.subheader("River Profile")
@@ -2213,977 +2141,329 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             key='download-csv'
         )
 
-    # === LOCAL-ONLY TABS (Temporal, Seasonal, Typhoon) ===
-    # These tabs only appear when running locally (is_local=True).
-    # When remote, we skip these blocks entirely.
-    if is_local:
-
-     with tab7:
-        st.subheader("⏳ Temporal Evolution Analysis")
-
-        st.info("""
-        **Purpose:** Track how river metrics evolve over time to identify trends, seasonal patterns, and anomalies.
-
-        **Data:** Monthly averages from satellite passes across the full date range.
-
-        **Ice season note:** At this latitude (~59.8°N), Oct-May data may include ice-affected measurements.
-        Open-water season (Jun-Sep) is most reliable for WSE analysis. See Seasonal Comparison tab for details.
-        """)
-
-        # User controls
-        col1, col2 = st.columns(2)
-
-        with col1:
-            # Future: Add aggregation level selector (per-pass, monthly, seasonal)
-            st.markdown("**Temporal Aggregation:** Monthly averages")
-
-        with col2:
-            ma_window = st.selectbox(
-                "Moving Average Window:",
-                options=[3, 6, 12],
-                index=1,  # Default 6
-                help="Number of consecutive months to average for trendline smoothing"
+    # === TEMPORAL RESULTS TAB (static, one-time analysis; local + Streamlit Cloud) ===
+    with tab_temporal:
+        st.subheader("⏳ Is the River Changing Over Time?")
+        temporal = load_temporal_results()
+        if temporal is None:
+            st.info(
+                "Temporal-analysis results not found. Generate them with "
+                "`python3 temporal_analysis.py` (writes to `temporal_results/`)."
             )
-
-        show_moving_avg = st.checkbox(
-            "Show Moving Average Trendlines",
-            value=True,
-            help="Overlay smoothed trends on time series plots"
-        )
-
-        # Check session state cache
-        if "temporal_df" not in st.session_state or st.session_state.get("temporal_where") != where_clause:
-            with st.spinner("Computing temporal metrics..."):
-                # Query for monthly aggregated metrics
-                monthly_query = f"""
-                WITH monthly_passes AS (
-                    SELECT
-                        DATE_TRUNC('month', CAST(Pass_Date AS DATE)) AS month,
-                        Pass_Date,
-                        Reach_Name,
-                        AVG(wse) AS avg_wse_per_pass,
-                        STDDEV(wse) AS std_wse_per_pass,
-                        AVG(ABS(slope_calc)) AS avg_gradient_per_pass,
-                        STDDEV(slope_calc) AS std_gradient_per_pass,
-                        COUNT(*) AS point_count
-                    FROM river_data
-                    {where_clause}
-                    GROUP BY month, Pass_Date, Reach_Name
-                )
-                SELECT
-                    month,
-                    Pass_Date,
-                    Reach_Name,
-                    AVG(avg_wse_per_pass) AS monthly_avg_wse,
-                    AVG(std_wse_per_pass) AS monthly_wse_std,
-                    AVG(avg_gradient_per_pass) AS monthly_avg_gradient,
-                    AVG(std_gradient_per_pass) AS monthly_gradient_std,
-                    COUNT(DISTINCT Pass_Date) AS passes_in_month,
-                    SUM(point_count) AS total_points
-                FROM monthly_passes
-                GROUP BY month, Pass_Date, Reach_Name
-                ORDER BY Pass_Date, Reach_Name
-                """
-
-                temporal_df = con.execute(monthly_query).fetchdf()
-                st.session_state.temporal_df = temporal_df
-                st.session_state.temporal_where = where_clause
-
-                # Query for WSE evolution at specific distances
-                # Note: This cross-join query can fail over httpfs (remote parquet)
-                try:
-                    dist_evolution_query = f"""
-                    WITH distance_targets AS (
-                        SELECT * FROM (VALUES (10.0), (20.0), (30.0), (40.0), (50.0), (60.0)) AS t(target_dist)
-                    ),
-                    nearest_points AS (
-                        SELECT
-                            DATE_TRUNC('month', CAST(Pass_Date AS DATE)) AS month,
-                            Pass_Date,
-                            Reach_Name,
-                            dist_km,
-                            wse,
-                            dt.target_dist,
-                            ABS(dist_km - dt.target_dist) AS dist_diff,
-                            ROW_NUMBER() OVER (
-                                PARTITION BY Pass_Date, Reach_Name, dt.target_dist
-                                ORDER BY ABS(dist_km - dt.target_dist)
-                            ) AS rn
-                        FROM river_data, distance_targets dt
-                        {where_clause}
-                    )
-                    SELECT
-                        month,
-                        Pass_Date,
-                        Reach_Name,
-                        target_dist,
-                        AVG(wse) AS wse_at_distance,
-                        COUNT(*) AS sample_size
-                    FROM nearest_points
-                    WHERE rn <= 5
-                      AND dist_diff < 0.5
-                    GROUP BY month, Pass_Date, Reach_Name, target_dist
-                    ORDER BY Pass_Date, target_dist, Reach_Name
-                    """
-
-                    dist_evolution_df = con.execute(dist_evolution_query).fetchdf()
-                    st.session_state.dist_evolution_df = dist_evolution_df
-                except Exception:
-                    st.session_state.dist_evolution_df = pd.DataFrame()
-
-                # Query for elevation difference over time (only if both rivers selected)
-                try:
-                    if len(selected_reaches) == 2:
-                        elev_diff_query = f"""
-                        WITH binned_wse AS (
-                            SELECT
-                                DATE_TRUNC('month', CAST(Pass_Date AS DATE)) AS month,
-                                Pass_Date,
-                                ROUND(dist_km / 0.5) * 0.5 AS dist_bin,
-                                Reach_Name,
-                                AVG(wse) AS avg_wse
-                            FROM river_data
-                            {where_clause}
-                            GROUP BY month, Pass_Date, dist_bin, Reach_Name
-                            HAVING COUNT(*) >= 3
-                        ),
-                        kanektok AS (
-                            SELECT month, Pass_Date, dist_bin, avg_wse AS k_wse
-                            FROM binned_wse WHERE Reach_Name = 'Kanektok_River'
-                        ),
-                        uyak AS (
-                            SELECT month, Pass_Date, dist_bin, avg_wse AS u_wse
-                            FROM binned_wse WHERE Reach_Name = 'Uyak_Creek'
-                        )
-                        SELECT
-                            k.month,
-                            k.Pass_Date,
-                            AVG(k.k_wse - u.u_wse) AS avg_elev_diff,
-                            STDDEV(k.k_wse - u.u_wse) AS std_elev_diff,
-                            COUNT(*) AS overlap_bins
-                        FROM kanektok k
-                        JOIN uyak u ON k.Pass_Date = u.Pass_Date AND k.dist_bin = u.dist_bin
-                        GROUP BY k.month, k.Pass_Date
-                        ORDER BY k.Pass_Date
-                        """
-
-                        elev_diff_df = con.execute(elev_diff_query).fetchdf()
-                        st.session_state.elev_diff_df = elev_diff_df
-                except Exception:
-                    pass
         else:
-            temporal_df = st.session_state.temporal_df
-            dist_evolution_df = st.session_state.dist_evolution_df
-            if len(selected_reaches) == 2 and "elev_diff_df" in st.session_state:
-                elev_diff_df = st.session_state.elev_diff_df
+            results = temporal["results"]
+            metrics = temporal["metrics"]
+            q3_curve = temporal["q3_curve"]
+            method = results["method"]
+            record = results["record"]
 
-        # === TIME SERIES VISUALIZATIONS ===
-        st.markdown("### 1. Time Series: Key Metrics")
+            DISP = {"Kanektok_River": "Kanektok River", "Uyak_Creek": "Uyak Creek"}
+            REACH_ORDER = ["Kanektok_River", "Uyak_Creek"]
 
-        col1, col2 = st.columns(2)
+            def _fmt_p(p):
+                if p is None or (isinstance(p, float) and np.isnan(p)):
+                    return "n/a (n<3)"
+                return f"{p:.3f}" + (" *" if p < 0.05 else "")
 
-        with col1:
-            st.markdown("#### Average WSE per Pass")
+            q1_slope = {r["reach"]: r for r in results["Q1_seasonal"]
+                        if r["question"] == "Q1_slope_pooled"}
+            q3p = {r["reach"]: r for r in results["Q3_profile"]}
 
-            fig_wse = go.Figure()
-
-            for reach in selected_reaches:
-                reach_data = temporal_df[temporal_df['Reach_Name'] == reach].sort_values('Pass_Date')
-
-                # Raw monthly data
-                fig_wse.add_trace(go.Scatter(
-                    x=reach_data['Pass_Date'],
-                    y=reach_data['monthly_avg_wse'],
-                    mode='markers+lines',
-                    name=reach,
-                    marker=dict(size=6, color=COLOR_MAP[reach]),
-                    line=dict(width=1.5, color=COLOR_MAP[reach]),
-                    hovertemplate='<b>%{fullData.name}</b><br>' +
-                                  'Date: %{x|%Y-%m-%d}<br>' +
-                                  'Avg WSE: %{y:.2f} m<br>' +
-                                  '<extra></extra>',
-                    connectgaps=False
-                ))
-
-                # Moving average overlay
-                if show_moving_avg and len(reach_data) >= ma_window:
-                    ma_series = reach_data.set_index('Pass_Date')['monthly_avg_wse']
-                    ma_values = compute_moving_average(ma_series, window=ma_window)
-
-                    fig_wse.add_trace(go.Scatter(
-                        x=ma_values.index,
-                        y=ma_values.values,
-                        mode='lines',
-                        name=f"{reach} ({ma_window}-month MA)",
-                        line=dict(width=3, color=COLOR_MAP[reach], dash='dash'),
-                        opacity=0.8,
-                        hovertemplate=f'<b>Moving Avg ({ma_window})</b><br>' +
-                                      'WSE: %{y:.2f} m<br>' +
-                                      '<extra></extra>'
-                    ))
-
-            fig_wse.update_layout(
-                xaxis_title="Date",
-                yaxis_title="Water Surface Elevation (m)",
-                height=400,
-                template=plotly_template,
-                hovermode='x unified',
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            st.markdown(
+                "This page asks a simple question: **are these two rivers changing over "
+                "time?** We look three ways — from spring to late summer, from one year to the "
+                "next, and before vs. after Typhoon Halong. The answers were worked out once, "
+                "off-line, using the same fair method as the river-steepness page: it measures "
+                "the whole river evenly, so a satellite pass that only caught part of the river "
+                "can't tip the results. Nothing here is re-calculated on the fly."
             )
+            st.success(
+                "**Bottom line — both rivers are holding steady.** How steeply the river drops "
+                "has barely changed from spring to late summer, from year to year, or across "
+                "Typhoon Halong. The water level moves around a little, but only as much as it "
+                "normally does from one year to the next — and **we see no sign of the typhoon "
+                "changing the river upstream** (the storm check is still preliminary — see the "
+                "note on the last chart)."
+            )
+            st.markdown(
+                f"- **Spring vs. late summer:** the river's steepness barely moves "
+                f"(a change of {q1_slope['Kanektok_River']['dslope_cm_km']:+.1f} cm/km on "
+                f"Kanektok and {q1_slope['Uyak_Creek']['dslope_cm_km']:+.1f} on Uyak, against "
+                f"an overall drop of about 195 cm/km — too small to matter). The water level "
+                f"rises and falls only about 0.2–0.5 m, and which season is higher flips from "
+                f"year to year.\n"
+                f"- **Year to year (summer 2024 vs. 2025):** both rivers steady — the steepness "
+                f"change is tiny, and the water level shifts only about 0.2 m (Kanektok) to "
+                f"0.5 m (Uyak).\n"
+                f"- **Typhoon Halong (preliminary):** upriver, the water level changed only "
+                f"{q3p['Kanektok_River']['median_dwse_m']:+.2f} m (Kanektok) and "
+                f"{q3p['Uyak_Creek']['median_dwse_m']:+.2f} m (Uyak) — within the normal "
+                f"year-to-year range. The storm's damage was along the coast, not up the river."
+            )
+            st.caption(
+                "Two terms to know: the river's **steepness** (how far the water surface drops "
+                "for every kilometer downstream — about 195 cm, roughly 6 feet, per km on these "
+                "rivers) is labeled **Hydraulic Gradient** on the charts; the **water level** is "
+                "labeled **Water Surface Elevation**. "
+                "Full write-up, method checks, and limitations: "
+                "`TEMPORAL_ANALYSIS.md` · `SCIENTIFIC_METHODOLOGY.md`."
+            )
+            st.divider()
 
-            st.plotly_chart(fig_wse, width='stretch', theme=None)
+            # ---------- FIGURE 3: control chart (time series with event markers) ----------
+            st.markdown("#### Chart 1 — The whole record, with the big events marked")
+            st.caption(
+                "Each dot is one satellite pass from 2023 to 2026. The top shows how high the "
+                "water sat; the bottom shows how steeply the river dropped. If the typhoon had "
+                "reshaped the river, you'd see the dots jump up or down at the dashed line and "
+                "stay there. They don't — after the storm the river just goes back to its usual "
+                "pattern."
+            )
+            fig_ts = make_subplots(
+                rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.09,
+                subplot_titles=("Water Surface Elevation at 15 km (m)",
+                                "Hydraulic Gradient (cm/km)"),
+            )
+            for reach in REACH_ORDER:
+                d = metrics[metrics["reach"] == reach].sort_values("date")
+                color = COLOR_MAP.get(reach, "black")
+                fig_ts.add_trace(go.Scatter(
+                    x=d["date"], y=d["wse_ref_m"], mode="markers", name=DISP[reach],
+                    legendgroup=reach, marker=dict(color=color, size=6, opacity=0.8),
+                    hovertemplate="%{x|%b %d, %Y}<br>WSE " + "%{y:.2f} m<extra></extra>",
+                ), row=1, col=1)
+                fig_ts.add_trace(go.Scatter(
+                    x=d["date"], y=d["slope_cm_km"], mode="markers", name=DISP[reach],
+                    legendgroup=reach, showlegend=False,
+                    marker=dict(color=color, size=6, opacity=0.8),
+                    hovertemplate="%{x|%b %d, %Y}<br>slope " + "%{y:.0f} cm/km<extra></extra>",
+                ), row=2, col=1)
+            # winter ice bands (no open-water data in the gated set) — explains the gaps
+            for x0, x1 in [("2023-12-01", "2024-03-31"), ("2024-12-01", "2025-03-31"),
+                           ("2025-12-01", "2026-03-31")]:
+                fig_ts.add_vrect(x0=x0, x1=x1, fillcolor="lightsteelblue", opacity=0.25,
+                                 line_width=0, row="all")
+            # typhoon landfall
+            fig_ts.add_vline(x=method["typhoon_date"], line_dash="dash", line_color="black",
+                             line_width=1.5, row="all")
+            fig_ts.add_annotation(x=method["typhoon_date"], yref="paper", y=1.0,
+                                  text="Typhoon Halong", showarrow=False, xanchor="left",
+                                  font=dict(size=11, color="black"))
+            fig_ts.update_layout(height=620, template=plotly_template,
+                                 legend=dict(orientation="h", yanchor="bottom", y=1.06))
+            fig_ts.update_xaxes(title_text="Date", row=2, col=1)
+            st.plotly_chart(fig_ts, width="stretch", theme=None)
+            st.caption("The pale blue stripes are winter (Dec–Mar), when the rivers freeze and "
+                       "the satellite can't get a clean water reading — so there are no dots "
+                       "there. That's expected, not missing data.")
+            st.divider()
 
-        with col2:
-            st.markdown("#### Average Gradient per Pass")
-
-            fig_grad = go.Figure()
-
-            for reach in selected_reaches:
-                reach_data = temporal_df[temporal_df['Reach_Name'] == reach].sort_values('Pass_Date')
-
-                fig_grad.add_trace(go.Scatter(
-                    x=reach_data['Pass_Date'],
-                    y=reach_data['monthly_avg_gradient'],
-                    mode='markers+lines',
-                    name=reach,
-                    marker=dict(size=6, color=COLOR_MAP[reach]),
-                    line=dict(width=1.5, color=COLOR_MAP[reach]),
-                    hovertemplate='<b>%{fullData.name}</b><br>' +
-                                  'Date: %{x|%Y-%m-%d}<br>' +
-                                  'Gradient: %{y:.2f} cm/km<br>' +
-                                  '<extra></extra>',
-                    connectgaps=False
+            # ---------- FIGURE 1: stage-invariance scatter ----------
+            st.markdown("#### Chart 2 — Steepness stays the same whether the water is high or low")
+            st.caption(
+                "Each dot is one satellite pass. On a lot of rivers the steepness changes a lot "
+                "when the water rises or drops. Here the dots form a flat band — this river "
+                "drops just as steeply at high water as at low water. That's why it's fair to "
+                "combine passes from different seasons and years when we talk about steepness."
+            )
+            fig_si = go.Figure()
+            corr_txt = []
+            for reach in REACH_ORDER:
+                d = metrics[metrics["reach"] == reach]
+                color = COLOR_MAP.get(reach, "black")
+                fig_si.add_trace(go.Scatter(
+                    x=d["wse_ref_m"], y=d["slope_cm_km"], mode="markers", name=DISP[reach],
+                    marker=dict(color=color, size=8, opacity=0.55),
+                    customdata=d["date"].dt.strftime("%b %d, %Y"),
+                    hovertemplate=(f"<b>{DISP[reach]}</b><br>Pass: %{{customdata}}<br>"
+                                   "WSE %{x:.2f} m<br>slope %{y:.0f} cm/km<extra></extra>"),
                 ))
-
-                if show_moving_avg and len(reach_data) >= ma_window:
-                    ma_series = reach_data.set_index('Pass_Date')['monthly_avg_gradient']
-                    ma_values = compute_moving_average(ma_series, window=ma_window)
-
-                    fig_grad.add_trace(go.Scatter(
-                        x=ma_values.index,
-                        y=ma_values.values,
-                        mode='lines',
-                        name=f"{reach} ({ma_window}-month MA)",
-                        line=dict(width=3, color=COLOR_MAP[reach], dash='dash'),
-                        opacity=0.8
-                    ))
-
-            fig_grad.update_layout(
-                xaxis_title="Date",
+                med = float(d["slope_cm_km"].median())
+                r = float(np.corrcoef(d["wse_ref_m"], d["slope_cm_km"])[0, 1])
+                fig_si.add_hline(y=med, line_dash="dot", line_color=color, opacity=0.7)
+                corr_txt.append(f"{DISP[reach]}: usually about {med:.0f} cm/km")
+            fig_si.update_layout(
+                height=460, template=plotly_template,
+                xaxis_title="Water Surface Elevation at 15 km (m)",
                 yaxis_title="Hydraulic Gradient (cm/km)",
-                height=400,
-                template=plotly_template,
-                hovermode='x unified'
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
             )
-
-            st.plotly_chart(fig_grad, width='stretch', theme=None)
-
-        # Second row: WSE at specific distances and elevation difference
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown("#### WSE Evolution at Fixed Distances")
-
-            dist_evolution_df = st.session_state.get("dist_evolution_df", pd.DataFrame())
-            if len(dist_evolution_df) == 0:
-                st.info("WSE at fixed distances not available (query too complex for remote data).")
-            else:
-                fig_dist = go.Figure()
-
-                for reach in selected_reaches:
-                    for target_dist in [10, 20, 30, 40, 50, 60]:
-                        subset = dist_evolution_df[
-                        (dist_evolution_df['Reach_Name'] == reach) &
-                        (dist_evolution_df['target_dist'] == target_dist)
-                    ].sort_values('Pass_Date')
-
-                    if len(subset) == 0:
-                        continue
-
-                    # Opacity varies with distance (closer = more opaque)
-                    opacity = 1.0 - (target_dist / 70) * 0.5
-
-                    fig_dist.add_trace(go.Scatter(
-                        x=subset['Pass_Date'],
-                        y=subset['wse_at_distance'],
-                        mode='lines',
-                        name=f"{reach} @ {int(target_dist)}km",
-                        line=dict(width=2, color=COLOR_MAP[reach]),
-                        opacity=opacity,
-                        hovertemplate=f'<b>{reach} @ {int(target_dist)}km</b><br>' +
-                                      'Date: %{x|%Y-%m-%d}<br>' +
-                                      'WSE: %{y:.2f} m<br>' +
-                                      '<extra></extra>',
-                        connectgaps=False,
-                        legendgroup=reach
-                    ))
-
-                fig_dist.update_layout(
-                    xaxis_title="Date",
-                    yaxis_title="Water Surface Elevation (m)",
-                    height=400,
-                    template=plotly_template,
-                    hovermode='x unified'
-                )
-
-                st.plotly_chart(fig_dist, width='stretch', theme=None)
-
-        with col2:
-            st.markdown("#### Elevation Difference Over Time")
-
-            if len(selected_reaches) == 2 and "elev_diff_df" in st.session_state:
-                elev_diff_df = st.session_state.elev_diff_df
-                fig_diff = go.Figure()
-
-                elev_diff_sorted = elev_diff_df.sort_values('Pass_Date')
-
-                # Main trend line with error bars
-                fig_diff.add_trace(go.Scatter(
-                    x=elev_diff_sorted['Pass_Date'],
-                    y=elev_diff_sorted['avg_elev_diff'],
-                    mode='markers+lines',
-                    name='Kanektok - Uyak',
-                    marker=dict(size=6, color='darkgreen'),
-                    line=dict(width=2, color='darkgreen'),
-                    error_y=dict(
-                        type='data',
-                        array=elev_diff_sorted['std_elev_diff'],
-                        visible=True,
-                        color='lightgray',
-                        thickness=1
-                    ),
-                    hovertemplate='<b>Elevation Difference</b><br>' +
-                                  'Date: %{x|%Y-%m-%d}<br>' +
-                                  'Diff: %{y:.3f} m<br>' +
-                                  '<extra></extra>'
-                ))
-
-                # Zero reference line
-                fig_diff.add_hline(
-                    y=0,
-                    line_dash="dash",
-                    line_color="gray",
-                    line_width=1,
-                    annotation_text="Equal Elevation",
-                    annotation_position="bottom right"
-                )
-
-                # Moving average
-                if show_moving_avg and len(elev_diff_sorted) >= ma_window:
-                    ma_series = elev_diff_sorted.set_index('Pass_Date')['avg_elev_diff']
-                    ma_values = compute_moving_average(ma_series, window=ma_window)
-
-                    fig_diff.add_trace(go.Scatter(
-                        x=ma_values.index,
-                        y=ma_values.values,
-                        mode='lines',
-                        name=f'{ma_window}-month MA',
-                        line=dict(width=3, color='darkgreen', dash='dot')
-                    ))
-
-                fig_diff.update_layout(
-                    xaxis_title="Date",
-                    yaxis_title="Elevation Difference (m)",
-                    height=400,
-                    template=plotly_template,
-                    hovermode='x unified'
-                )
-
-                st.plotly_chart(fig_diff, width='stretch', theme=None)
-            else:
-                st.warning("⚠️ Elevation difference requires both rivers to be selected.")
-
-        # === ANOMALY DETECTION ===
-        with st.expander("🚨 Anomaly Detection", expanded=False):
-            st.markdown("""
-            **What this does:** automatically flags satellite passes that look unusual — where
-            the water height or slope is far from what's typical. An odd pass can mean either a
-            measurement glitch or a real, dramatic event (like a flood). It's a way to catch
-            dates worth a closer look.
-
-            ― Technical details ―
-            Modified Z-score using MAD (median absolute deviation), threshold 3.5 (matches the
-            data-pipeline filtering). Flags passes where monthly-average WSE or gradient deviate
-            significantly from the typical value.
-            """)
-
-            # Detect anomalies for each river and metric
-            anomalies_list = []
-
-            for reach in selected_reaches:
-                reach_data = temporal_df[temporal_df['Reach_Name'] == reach].copy()
-
-                if len(reach_data) == 0:
-                    continue
-
-                # Detect WSE anomalies
-                reach_data['is_anomaly_wse'] = detect_anomalies_mad(
-                    reach_data['monthly_avg_wse'],
-                    threshold=3.5
-                )
-
-                # Detect gradient anomalies
-                reach_data['is_anomaly_gradient'] = detect_anomalies_mad(
-                    reach_data['monthly_avg_gradient'],
-                    threshold=3.5
-                )
-
-                # Mark as anomalous if either metric is anomalous
-                reach_data['is_anomaly'] = (
-                    reach_data['is_anomaly_wse'] | reach_data['is_anomaly_gradient']
-                )
-
-                anomalies_list.append(reach_data[reach_data['is_anomaly']])
-
-            if anomalies_list:
-                anomaly_df = pd.concat(anomalies_list, ignore_index=True)
-            else:
-                anomaly_df = pd.DataFrame()
-
-            if len(anomaly_df) > 0:
-                st.warning(f"⚠️ Detected {len(anomaly_df)} anomalous passes")
-
-                st.dataframe(
-                    anomaly_df[[
-                        'Pass_Date', 'Reach_Name', 'monthly_avg_wse',
-                        'monthly_avg_gradient', 'is_anomaly_wse', 'is_anomaly_gradient'
-                    ]].style.format({
-                        'monthly_avg_wse': '{:.2f} m',
-                        'monthly_avg_gradient': '{:.2f} cm/km'
-                    }),
-                    width='stretch'
-                )
-            else:
-                st.success("✅ No anomalies detected in selected data")
-
-        # === HEATMAP SECTION ===
-        with st.expander("📊 Heatmap: Distance × Time Evolution", expanded=False):
-            st.markdown("""
-            **What this shows:** the whole river over the whole time period in one picture.
-            Each column is a month, each row is a spot along the river, and the **color** is the
-            water height there. It lets you spot patterns — for example, whether the upstream
-            end rises and falls differently from the coast over the seasons.
-
-            - **Left–right:** month.
-            - **Up–down:** distance along the river (km from where the rivers meet).
-            - **Color:** average water height (m).
-            """)
-
-            # Query for heatmap (only run when section expanded)
-            if "heatmap_df" not in st.session_state or st.session_state.get("heatmap_where") != where_clause:
-                with st.spinner("Computing heatmap data..."):
-                    heatmap_query = f"""
-                    WITH binned_data AS (
-                        SELECT
-                            DATE_TRUNC('month', CAST(Pass_Date AS DATE)) AS month,
-                            ROUND(dist_km / 1.0) * 1.0 AS dist_bin,
-                            Reach_Name,
-                            AVG(wse) AS avg_wse,
-                            COUNT(*) AS point_count
-                        FROM river_data
-                        {where_clause}
-                        GROUP BY month, dist_bin, Reach_Name
-                        HAVING COUNT(*) >= 3
-                    )
-                    SELECT month, dist_bin, Reach_Name, avg_wse, point_count
-                    FROM binned_data
-                    ORDER BY Reach_Name, month, dist_bin
-                    """
-
-                    heatmap_df = con.execute(heatmap_query).fetchdf()
-                    st.session_state.heatmap_df = heatmap_df
-                    st.session_state.heatmap_where = where_clause
-            else:
-                heatmap_df = st.session_state.heatmap_df
-
-            for reach in selected_reaches:
-                reach_heatmap = heatmap_df[heatmap_df['Reach_Name'] == reach]
-
-                if len(reach_heatmap) == 0:
-                    st.warning(f"No heatmap data for {reach}")
-                    continue
-
-                # Pivot to matrix format
-                pivot_data = reach_heatmap.pivot_table(
-                    index='dist_bin',
-                    columns='month',
-                    values='avg_wse',
-                    aggfunc='mean'
-                )
-
-                fig_heat = go.Figure(data=go.Heatmap(
-                    z=pivot_data.values,
-                    x=pivot_data.columns,
-                    y=pivot_data.index,
-                    colorscale='Viridis',
-                    colorbar=dict(title="WSE (m)"),
-                    hovertemplate='Month: %{x|%Y-%m}<br>' +
-                                  'Distance: %{y:.0f} km<br>' +
-                                  'Avg WSE: %{z:.2f} m<br>' +
-                                  '<extra></extra>'
-                ))
-
-                fig_heat.update_layout(
-                    title=f"{reach} - Water Surface Elevation Heatmap",
-                    xaxis_title="Month",
-                    yaxis_title="Distance from Confluence (km)",
-                    height=500,
-                    template=plotly_template
-                )
-
-                # Reverse Y-axis (coast at top, confluence at bottom)
-                fig_heat.update_yaxes(autorange="reversed")
-                add_bifurcation_line(fig_heat, axis="y")
-
-                st.plotly_chart(fig_heat, width='stretch', theme=None)
-
-        # === SUMMARY STATISTICS ===
-        st.markdown("### Summary Statistics")
-
-        # Calculate temporal trends
-        summary_stats = []
-
-        for reach in selected_reaches:
-            reach_data = temporal_df[temporal_df['Reach_Name'] == reach].sort_values('Pass_Date')
-
-            if len(reach_data) > 0:
-                # Calculate linear trend
-                days_elapsed = (pd.to_datetime(reach_data['Pass_Date']) - pd.to_datetime(reach_data['Pass_Date'].min())).dt.days
-
-                wse_trend, wse_intercept, wse_r, wse_p, _ = stats.linregress(days_elapsed, reach_data['monthly_avg_wse'])
-                grad_trend, grad_intercept, grad_r, grad_p, _ = stats.linregress(days_elapsed, reach_data['monthly_avg_gradient'])
-
-                summary_stats.append({
-                    'River': reach,
-                    'Passes': len(reach_data),
-                    'Avg WSE (m)': reach_data['monthly_avg_wse'].mean(),
-                    'WSE Trend (m/year)': wse_trend * 365,
-                    'WSE R²': wse_r**2,
-                    'Avg Gradient (cm/km)': reach_data['monthly_avg_gradient'].mean(),
-                    'Gradient Trend (cm/km/year)': grad_trend * 365
-                })
-
-        summary_df = pd.DataFrame(summary_stats)
-
-        st.dataframe(
-            summary_df.style.format({
-                'Avg WSE (m)': '{:.2f}',
-                'WSE Trend (m/year)': '{:.4f}',
-                'WSE R²': '{:.3f}',
-                'Avg Gradient (cm/km)': '{:.2f}',
-                'Gradient Trend (cm/km/year)': '{:.4f}'
-            }),
-            width='stretch'
-        )
-
-        with st.expander("How to read these numbers"):
-            st.markdown("""
-            - **Water-level trend:** positive means the water is rising over time; negative means it's dropping.
-            - **Slope trend:** whether the river is getting steeper or gentler over time.
-            - **R²** (0 to 1): how clear the trend is. Close to 1 is a steady, reliable trend;
-              close to 0 means the values jump around a lot.
-            """)
-
-     # === TAB 8: SEASONAL COMPARISON ===
-     with tab8:
-        st.subheader("Seasonal Comparison: High Flow vs Low Flow (2023-2025)")
-        st.caption("Top row: High flow (May). Bottom row: Low flow (July-August). Each panel compares both rivers.")
-
-        # Build subplot titles in grid order (row-major: left-to-right, top-to-bottom)
-        # make_subplots assigns titles as (1,1),(1,2),(1,3),(2,1),(2,2),(2,3)
-        title_grid = [[None]*3 for _ in range(2)]
-        for p in SEASONAL_PERIODS:
-            title_grid[p["row"]][p["col"]] = p["label"]
-        grid_ordered_titles = [title_grid[r][c] for r in range(2) for c in range(3)]
-
-        fig_seasonal = make_subplots(
-            rows=2, cols=3,
-            subplot_titles=grid_ordered_titles,
-            shared_yaxes=True, horizontal_spacing=0.04, vertical_spacing=0.08
-        )
-
-        summary_rows = []
-
-        for period in SEASONAL_PERIODS:
-            row, col = period["row"] + 1, period["col"] + 1  # Plotly 1-indexed
-            df_period, stats_period, period_count = query_period_data(con, period["start"], period["end"], selected_reaches)
-
-            used_label = period["label"]
-
-            # Handle May 2023 fallback
-            if df_period is None and "fallback_start" in period:
-                df_period, stats_period, period_count = query_period_data(con, period["fallback_start"], period["fallback_end"], selected_reaches)
-                if df_period is not None:
-                    used_label = period.get("fallback_label", period["label"])
-                    # Update subplot title annotation
-                    for ann in fig_seasonal.layout.annotations:
-                        if ann.text == period["label"]:
-                            ann.text = used_label
-
-            if df_period is None:
-                fig_seasonal.add_annotation(
-                    text="No data available",
-                    xref=f"x{'' if (row == 1 and col == 1) else (col + (row - 1) * 3)}",
-                    yref=f"y{'' if (row == 1 and col == 1) else (col + (row - 1) * 3)}",
-                    x=0.5, y=0.5, xanchor="center", yanchor="middle",
-                    showarrow=False, font=dict(size=14, color="gray"),
-                    row=row, col=col
-                )
-                continue
-
-            for reach in selected_reaches:
-                reach_df = df_period[df_period['Reach_Name'] == reach]
-                if len(reach_df) == 0:
-                    continue
-
-                fig_seasonal.add_trace(go.Scatter(
-                    x=reach_df['dist_km'], y=reach_df['wse'],
-                    mode='markers',
-                    marker=dict(color=COLOR_MAP.get(reach, "black"), size=3, opacity=0.3),
-                    name=reach,
-                    showlegend=(row == 1 and col == 1),
-                    legendgroup=reach,
-                ), row=row, col=col)
-
-                # Trendline
-                if len(reach_df) >= 5:
-                    slope, intercept, r_val, _, _ = stats.linregress(reach_df['dist_km'], reach_df['wse'])
-                    x_range = np.linspace(reach_df['dist_km'].min(), reach_df['dist_km'].max(), 50)
-                    fig_seasonal.add_trace(go.Scatter(
-                        x=x_range, y=intercept + slope * x_range,
-                        mode='lines',
-                        line=dict(color=COLOR_MAP.get(reach, "black"), width=3, dash='dash'),
-                        name=f"{reach} {abs(slope * 100):.1f} cm/km",
-                        showlegend=False,
-                    ), row=row, col=col)
-
-                    # Collect for summary table
-                    reach_stats_row = stats_period[stats_period['Reach_Name'] == reach]
-                    n_passes = int(reach_stats_row['n_passes'].iloc[0]) if len(reach_stats_row) > 0 else 0
-                    summary_rows.append({
-                        "Period": used_label, "River": reach,
-                        "Slope (cm/km)": round(abs(slope * 100), 2),
-                        "R²": round(r_val**2, 3),
-                        "Points": period_count, "Passes": n_passes
-                    })
-
-            fig_seasonal.update_xaxes(autorange="reversed", row=row, col=col)
-
-        fig_seasonal.update_layout(
-            height=800, template=plotly_template,
-            title_text="Seasonal WSE Profiles: High Flow (May) vs Low Flow (Jul-Aug)"
-        )
-        add_bifurcation_line(fig_seasonal)
-        st.plotly_chart(fig_seasonal, width='stretch', theme=None)
-
-        # Summary statistics table
-        if summary_rows:
-            st.subheader("Slope Summary")
-            st.dataframe(pd.DataFrame(summary_rows), width='stretch', hide_index=True)
-
-        st.info("""**How to read this:** Each panel shows WSE vs distance for both rivers.
-        Top row = high flow (May), bottom row = low flow (July-August).
-        Dashed lines show linear trendlines with slope values.
-        Steeper slopes indicate faster-flowing reaches. Compare slopes between years to detect changes.""")
-
-        st.warning("""**Ice Season Note:** May panels (top row) fall within the spring break-up period
-        (Apr-May) for rivers at this latitude (~59.8°N). Some SWOT measurements may reflect
-        ice surface elevation rather than open water, which would be 0.5-2+ m higher than true WSE.
-        The PIXC classification filter (Classes 3-4) excludes most ice pixels, but partially frozen
-        surfaces during break-up may still pass. July-August panels (bottom row) are fully within
-        the open-water season and are the most reliable for gradient comparison.""")
-
-     # === TAB 9: TYPHOON IMPACT ===
-     with tab9:
-        st.subheader("Typhoon Halong Impact Analysis (October 12-14, 2025)")
-        st.caption("Compare river profiles before and after Typhoon Halong struck Quinhagak, Alaska, eroding ~60 feet of shoreline.")
-
-        # Build rivers_sql for this tab scope
-        rivers_sql_tab9 = ", ".join([f"'{r}'" for r in selected_reaches])
-
-        st.info("""**How we do this fairly:** rivers naturally rise and fall with the seasons, so to
-        see what the *storm* actually changed we compare the **same season** in two different years —
-        Summer 2025 (before) vs Summer 2026 (after). Comparing summer to winter would be misleading,
-        because in winter the satellite reads the ice surface and the heights look 0.5–2+ m too high.""")
-
-        # --- Section A: Same-Season Comparison (PRIMARY) ---
-        st.markdown("### Same-Season Comparison (Summer 2025 vs Summer 2026)")
-
-        pre_s = TYPHOON_PERIODS["pre_season"]
-        post_s = TYPHOON_PERIODS["post_season"]
-
-        df_pre_s, stats_pre_s, n_pre_s = query_period_data(con, pre_s["start"], pre_s["end"], selected_reaches)
-        df_post_s, stats_post_s, n_post_s = query_period_data(con, post_s["start"], post_s["end"], selected_reaches)
-
-        if df_pre_s is not None and df_post_s is not None and n_post_s > 0:
-            fig_season = make_subplots(
-                rows=1, cols=2,
-                subplot_titles=[pre_s["label"], post_s["label"]],
-                shared_yaxes=True, horizontal_spacing=0.06
+            st.plotly_chart(fig_si, width="stretch", theme=None)
+            st.caption("The dotted line is each river's usual steepness.  " +
+                       "  ·  ".join(corr_txt) +
+                       ".  Because the bands are flat, the water level has almost no effect on "
+                       "how steeply the river drops.")
+            st.divider()
+
+            # ---------- FIGURE 4: distribution swarms ----------
+            st.markdown("#### Chart 3 — Why we say \"no real change\": the groups overlap")
+            st.caption(
+                "Each box shows the range of the individual passes, and the dots are the passes "
+                "themselves. When two boxes cover the same ground, there's no real difference "
+                "between them. This is the plain-language version of the \"no real change\" "
+                "notes in the tables further down."
             )
-
-            season_slope_changes = {}
-            for panel_idx, (df_panel, label) in enumerate([(df_pre_s, "pre"), (df_post_s, "post")], 1):
-                for reach in selected_reaches:
-                    reach_df = df_panel[df_panel['Reach_Name'] == reach]
-                    if len(reach_df) < 5:
-                        continue
-
-                    fig_season.add_trace(go.Scatter(
-                        x=reach_df['dist_km'], y=reach_df['wse'],
-                        mode='markers',
-                        marker=dict(color=COLOR_MAP.get(reach, "black"), size=3, opacity=0.3),
-                        name=reach,
-                        showlegend=(panel_idx == 1),
-                        legendgroup=reach,
-                    ), row=1, col=panel_idx)
-
-                    slope, intercept, _, _, _ = stats.linregress(reach_df['dist_km'], reach_df['wse'])
-                    season_slope_changes.setdefault(reach, {})[label] = slope * 100
-                    x_range = np.linspace(reach_df['dist_km'].min(), reach_df['dist_km'].max(), 50)
-                    fig_season.add_trace(go.Scatter(
-                        x=x_range, y=intercept + slope * x_range,
-                        mode='lines',
-                        line=dict(color=COLOR_MAP.get(reach, "black"), width=3, dash='dash'),
-                        name=f"{abs(slope * 100):.1f} cm/km",
-                        showlegend=False,
-                    ), row=1, col=panel_idx)
-
-                fig_season.update_xaxes(autorange="reversed", row=1, col=panel_idx)
-
-            fig_season.update_layout(height=500, template=plotly_template,
-                                     title_text="Same-Season Comparison: Summer 2025 vs Summer 2026")
-            add_bifurcation_line(fig_season)
-            st.plotly_chart(fig_season, width='stretch', theme=None)
-
-            # Slope change metrics
-            cols = st.columns(len(season_slope_changes))
-            for i, (reach, slopes) in enumerate(season_slope_changes.items()):
-                if "pre" in slopes and "post" in slopes:
-                    change = abs(slopes["post"]) - abs(slopes["pre"])
-                    cols[i].metric(
-                        f"{reach} Slope",
-                        f"{abs(slopes['post']):.2f} cm/km",
-                        delta=f"{change:+.2f} cm/km vs pre-storm"
-                    )
-
-            # Binned elevation change using same-season data
-            st.markdown("---")
-            st.markdown("### Elevation Change by Distance (Same-Season)")
-            try:
-                change_query = f"""
-                    WITH pre AS (
-                        SELECT ROUND(dist_km / 0.5) * 0.5 AS dist_bin, Reach_Name, AVG(wse) AS pre_wse
-                        FROM river_data WHERE CAST(Pass_Date AS DATE) >= CAST('{pre_s["start"]}' AS DATE) AND CAST(Pass_Date AS DATE) <= CAST('{pre_s["end"]}' AS DATE)
-                        AND Reach_Name IN ({rivers_sql_tab9})
-                        GROUP BY dist_bin, Reach_Name HAVING COUNT(*) >= 3
-                    ),
-                    post AS (
-                        SELECT ROUND(dist_km / 0.5) * 0.5 AS dist_bin, Reach_Name, AVG(wse) AS post_wse
-                        FROM river_data WHERE CAST(Pass_Date AS DATE) >= CAST('{post_s["start"]}' AS DATE) AND CAST(Pass_Date AS DATE) <= CAST('{post_s["end"]}' AS DATE)
-                        AND Reach_Name IN ({rivers_sql_tab9})
-                        GROUP BY dist_bin, Reach_Name HAVING COUNT(*) >= 3
-                    )
-                    SELECT pre.dist_bin, pre.Reach_Name, pre.pre_wse, post.post_wse,
-                           post.post_wse - pre.pre_wse AS wse_change
-                    FROM pre INNER JOIN post ON pre.dist_bin = post.dist_bin AND pre.Reach_Name = post.Reach_Name
-                    ORDER BY pre.Reach_Name, pre.dist_bin
-                """
-                change_df = con.execute(change_query).fetchdf()
-
-                if len(change_df) > 0:
-                    fig_change = px.line(change_df, x="dist_bin", y="wse_change",
-                                        color="Reach_Name", color_discrete_map=COLOR_MAP)
-                    fig_change.add_hline(y=0, line_dash="dash", line_color="gray")
-                    fig_change.update_xaxes(autorange="reversed")
-                    fig_change.update_layout(
-                        height=400, template=plotly_template,
-                        yaxis_title="WSE Change (m)", xaxis_title="Distance from Anchor Point (km)",
-                        title_text="Summer 2026 minus Summer 2025 WSE"
-                    )
-                    add_bifurcation_line(fig_change)
-                    st.plotly_chart(fig_change, width='stretch', theme=None)
-                    st.caption("Above zero = water height rose after the storm; below zero = it dropped. "
-                               "Measured in 500 m steps (min. 3 points each); comparing the same season avoids ice errors.")
-                else:
-                    st.info("Not enough overlapping distance bins between pre- and post-storm seasons.")
-            except Exception as e:
-                st.error(f"Error computing elevation change: {e}")
-
-        else:
-            st.info("""**Open-water post-storm data not yet available.**
-
-As of May 2026, Alaska rivers are just beginning breakup. The open-water same-season
-comparison (Summer 2025 vs Summer 2026) will become available once SWOT captures
-June-August 2026 data. Re-run `SWOT_Pull.py` after June 2026 to populate this section.""")
-
-            # --- Interim: Same-Month Year-over-Year (ice-season, but matched conditions) ---
-            # Find the latest month we have in both pre- and post-typhoon years
-            try:
-                interim_query = """
-                    SELECT EXTRACT(MONTH FROM CAST(Pass_Date AS DATE)) AS mo,
-                           EXTRACT(YEAR FROM CAST(Pass_Date AS DATE)) AS yr,
-                           COUNT(*) AS pts, COUNT(DISTINCT Pass_Date) AS passes
-                    FROM river_data
-                    WHERE EXTRACT(YEAR FROM CAST(Pass_Date AS DATE)) IN (2025, 2026)
-                      AND EXTRACT(MONTH FROM CAST(Pass_Date AS DATE)) <= 5
-                    GROUP BY yr, mo
-                    HAVING COUNT(DISTINCT Pass_Date) >= 3
-                    ORDER BY yr, mo
-                """
-                interim_df = con.execute(interim_query).fetchdf()
-
-                # Find months present in both years
-                months_2025 = set(interim_df[interim_df['yr'] == 2025]['mo'].astype(int))
-                months_2026 = set(interim_df[interim_df['yr'] == 2026]['mo'].astype(int))
-                shared_months = sorted(months_2025 & months_2026, reverse=True)
-
-                if shared_months:
-                    # Use the latest shared month for the best interim comparison
-                    compare_month = shared_months[0]
-                    month_name = ["", "Jan", "Feb", "Mar", "Apr", "May"][compare_month]
-
-                    st.markdown(f"### Interim Comparison: {month_name} 2025 vs {month_name} 2026 (same-month, year-over-year)")
-                    st.warning(f"""**Interim analysis — interpret with caution.** {month_name} falls within the
-                    ice/break-up season at this latitude. Both years are compared under the **same seasonal
-                    conditions**, so ice artifacts should be similar and largely cancel out when comparing
-                    **slopes** (gradients). However, absolute WSE values will be affected by ice thickness
-                    and are not reliable. **Focus on slope changes, not WSE changes.** This will be replaced
-                    by the open-water comparison once summer 2026 data is available.""")
-
-                    pre_interim_start = f"2025-{compare_month:02d}-01"
-                    pre_interim_end = f"2025-{compare_month:02d}-28"
-                    post_interim_start = f"2026-{compare_month:02d}-01"
-                    post_interim_end = f"2026-{compare_month:02d}-28"
-
-                    df_pre_int, stats_pre_int, n_pre_int = query_period_data(con, pre_interim_start, pre_interim_end, selected_reaches)
-                    df_post_int, stats_post_int, n_post_int = query_period_data(con, post_interim_start, post_interim_end, selected_reaches)
-
-                    if df_pre_int is not None and df_post_int is not None:
-                        fig_interim = make_subplots(
-                            rows=1, cols=2,
-                            subplot_titles=[f"{month_name} 2025 (Pre-Storm)", f"{month_name} 2026 (Post-Storm)"],
-                            shared_yaxes=True, horizontal_spacing=0.06
-                        )
-
-                        interim_slope_changes = {}
-                        for panel_idx, (df_panel, label) in enumerate([(df_pre_int, "pre"), (df_post_int, "post")], 1):
-                            for reach in selected_reaches:
-                                reach_df = df_panel[df_panel['Reach_Name'] == reach]
-                                if len(reach_df) < 5:
-                                    continue
-
-                                fig_interim.add_trace(go.Scatter(
-                                    x=reach_df['dist_km'], y=reach_df['wse'],
-                                    mode='markers',
-                                    marker=dict(color=COLOR_MAP.get(reach, "black"), size=3, opacity=0.3),
-                                    name=reach,
-                                    showlegend=(panel_idx == 1),
-                                    legendgroup=reach,
-                                ), row=1, col=panel_idx)
-
-                                slope, intercept, _, _, _ = stats.linregress(reach_df['dist_km'], reach_df['wse'])
-                                interim_slope_changes.setdefault(reach, {})[label] = slope * 100
-                                x_range = np.linspace(reach_df['dist_km'].min(), reach_df['dist_km'].max(), 50)
-                                fig_interim.add_trace(go.Scatter(
-                                    x=x_range, y=intercept + slope * x_range,
-                                    mode='lines',
-                                    line=dict(color=COLOR_MAP.get(reach, "black"), width=3, dash='dash'),
-                                    name=f"{abs(slope * 100):.1f} cm/km",
-                                    showlegend=False,
-                                ), row=1, col=panel_idx)
-
-                            fig_interim.update_xaxes(autorange="reversed", row=1, col=panel_idx)
-
-                        fig_interim.update_layout(height=500, template=plotly_template,
-                                                  title_text=f"Same-Month Comparison: {month_name} 2025 vs {month_name} 2026")
-                        add_bifurcation_line(fig_interim)
-                        st.plotly_chart(fig_interim, width='stretch', theme=None)
-
-                        # Slope change metrics
-                        cols = st.columns(len(interim_slope_changes))
-                        for i, (reach, slopes) in enumerate(interim_slope_changes.items()):
-                            if "pre" in slopes and "post" in slopes:
-                                change = abs(slopes["post"]) - abs(slopes["pre"])
-                                cols[i].metric(
-                                    f"{reach} Slope",
-                                    f"{abs(slopes['post']):.2f} cm/km",
-                                    delta=f"{change:+.2f} cm/km vs pre-storm"
-                                )
-
-            except Exception as e:
-                st.error(f"Error computing interim comparison: {e}")
-
-        # --- Section B: Immediate Before/After (ice-contaminated, for reference only) ---
-        st.markdown("---")
-        with st.expander("Immediate Before/After (Aug-Sep vs Oct-Dec 2025) — ice-contaminated, use with caution"):
-            st.error("""**Warning — river ice makes this comparison unreliable.** It puts open-water
-            months (Aug–Sep) next to freeze-up months (Oct–Dec). When the river is frozen, the
-            satellite reads the **top of the ice, not the water below**, so the later heights are
-            likely **too high by 0.5–2+ meters**. Our filters remove most ice, but partly-frozen
-            surfaces can slip through. **Do not use these slope changes to judge storm impact.**
-            Use the same-season comparison above instead.""")
-
-            pre = TYPHOON_PERIODS["pre_immediate"]
-            post = TYPHOON_PERIODS["post_immediate"]
-
-            df_pre, stats_pre, n_pre = query_period_data(con, pre["start"], pre["end"], selected_reaches)
-            df_post, stats_post, n_post = query_period_data(con, post["start"], post["end"], selected_reaches)
-
-            if df_pre is not None and df_post is not None:
-                fig_imm = make_subplots(
-                    rows=1, cols=2,
-                    subplot_titles=[pre["label"], post["label"]],
-                    shared_yaxes=True, horizontal_spacing=0.06
+            colA, colB = st.columns(2)
+            with colA:
+                mA = metrics[metrics["month"].isin([5, 7, 8])].copy()
+                mA["season"] = np.where(mA["month"] == 5, "Spring (May)", "Late summer (Jul–Aug)")
+                fig_sa = go.Figure()
+                for reach in REACH_ORDER:
+                    d = mA[mA["reach"] == reach]
+                    fig_sa.add_trace(go.Box(
+                        x=d["season"], y=d["slope_cm_km"], name=DISP[reach],
+                        marker_color=COLOR_MAP.get(reach, "black"),
+                        boxpoints="all", jitter=0.5, pointpos=0,
+                    ))
+                fig_sa.update_layout(
+                    height=430, template=plotly_template, boxmode="group",
+                    title="Hydraulic Gradient: spring vs. late summer",
+                    yaxis_title="Hydraulic Gradient (cm/km)",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
                 )
+                fig_sa.update_xaxes(categoryorder="array",
+                                    categoryarray=["Spring (May)", "Late summer (Jul–Aug)"])
+                st.plotly_chart(fig_sa, width="stretch", theme=None)
+            with colB:
+                mB = metrics[(metrics["month"].isin([7, 8])) &
+                             (metrics["year"].isin([2024, 2025]))].copy()
+                mB["yr"] = mB["year"].astype(str)
+                fig_sb = go.Figure()
+                for reach in REACH_ORDER:
+                    d = mB[mB["reach"] == reach]
+                    fig_sb.add_trace(go.Box(
+                        x=d["yr"], y=d["wse_ref_m"], name=DISP[reach],
+                        marker_color=COLOR_MAP.get(reach, "black"),
+                        boxpoints="all", jitter=0.5, pointpos=0, showlegend=False,
+                    ))
+                fig_sb.update_layout(
+                    height=430, template=plotly_template, boxmode="group",
+                    title="Water Surface Elevation: 2024 vs. 2025 (late summer)",
+                    yaxis_title="Water Surface Elevation at 15 km (m)", xaxis_title="Year",
+                )
+                st.plotly_chart(fig_sb, width="stretch", theme=None)
+            st.divider()
 
-                slope_changes = {}
-                for panel_idx, (df_panel, label) in enumerate([(df_pre, "pre"), (df_post, "post")], 1):
-                    for reach in selected_reaches:
-                        reach_df = df_panel[df_panel['Reach_Name'] == reach]
-                        if len(reach_df) < 5:
-                            continue
-
-                        fig_imm.add_trace(go.Scatter(
-                            x=reach_df['dist_km'], y=reach_df['wse'],
-                            mode='markers',
-                            marker=dict(color=COLOR_MAP.get(reach, "black"), size=3, opacity=0.3),
-                            name=reach,
-                            showlegend=(panel_idx == 1),
-                            legendgroup=reach,
-                        ), row=1, col=panel_idx)
-
-                        slope, intercept, _, _, _ = stats.linregress(reach_df['dist_km'], reach_df['wse'])
-                        slope_changes.setdefault(reach, {})[label] = slope * 100
-                        x_range = np.linspace(reach_df['dist_km'].min(), reach_df['dist_km'].max(), 50)
-                        fig_imm.add_trace(go.Scatter(
-                            x=x_range, y=intercept + slope * x_range,
-                            mode='lines',
-                            line=dict(color=COLOR_MAP.get(reach, "black"), width=3, dash='dash'),
-                            name=f"{abs(slope * 100):.1f} cm/km",
-                            showlegend=False,
-                        ), row=1, col=panel_idx)
-
-                    fig_imm.update_xaxes(autorange="reversed", row=1, col=panel_idx)
-
-                fig_imm.update_layout(height=500, template=plotly_template)
-                add_bifurcation_line(fig_imm)
-                st.plotly_chart(fig_imm, width='stretch', theme=None)
-
-                # Slope change metrics
-                cols = st.columns(len(slope_changes))
-                for i, (reach, slopes) in enumerate(slope_changes.items()):
-                    if "pre" in slopes and "post" in slopes:
-                        change = abs(slopes["post"]) - abs(slopes["pre"])
-                        cols[i].metric(
-                            f"{reach} Slope",
-                            f"{abs(slopes['post']):.2f} cm/km",
-                            delta=f"{change:+.2f} cm/km vs pre-storm"
-                        )
-            elif df_pre is not None:
-                st.warning("No post-storm data available for Oct-Dec 2025.")
+            # ---------- FIGURE 2: spatial delta (typhoon, interim) ----------
+            st.markdown("#### Chart 4 — Did the typhoon change any spot along the river? (preliminary)")
+            st.warning(
+                "**Still preliminary.** This compares June 2025 with June 2026, and we only "
+                "have 2–3 clean passes per river for those months. Treat it as a strong hint, "
+                "not a final answer — we'll know for sure once the summer 2026 data comes in."
+            )
+            st.caption(
+                "This line shows how much the water level changed at each point along the river "
+                "(June 2026 compared with June 2025). If the storm had scoured out the riverbed "
+                "or dumped a pile of gravel somewhere, you'd see a sharp spike or dip at that "
+                "spot. Instead the line stays flat and hugs zero — no spot along the river shows "
+                "a storm scar."
+            )
+            if len(q3_curve):
+                fig_d = go.Figure()
+                for reach in REACH_ORDER:
+                    d = q3_curve[q3_curve["reach"] == reach].sort_values("dist_km")
+                    if not len(d):
+                        continue
+                    color = COLOR_MAP.get(reach, "black")
+                    fig_d.add_trace(go.Scatter(
+                        x=d["dist_km"], y=d["dwse"], mode="lines+markers", name=DISP[reach],
+                        marker=dict(color=color, size=5),
+                        line=dict(color=color, width=1.5),
+                        hovertemplate="%{x:.1f} km<br>ΔWSE %{y:+.2f} m<extra></extra>",
+                    ))
+                fig_d.add_hline(y=0, line_color="black", line_width=1)
+                add_bifurcation_line(fig_d, axis="x")
+                fig_d.update_layout(
+                    height=440, template=plotly_template,
+                    xaxis_title="Distance from Confluence (km)",
+                    yaxis_title="Change in Water Surface Elevation, Jun 2026 − Jun 2025 (m)",
+                    yaxis_range=[-0.5, 0.5],
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                )
+                st.plotly_chart(fig_d, width="stretch", theme=None)
             else:
-                st.warning("Insufficient data for immediate before/after comparison.")
+                st.info("Not enough matching June passes to draw this chart yet.")
+            st.divider()
+
+            # ---------- TABLES (secondary, in expanders) ----------
+            st.markdown("#### The numbers behind the charts")
+            st.caption("Open any section for the exact figures. Click a header to expand it.")
+
+            with st.expander("Spring vs. late summer (May high water vs. Jul–Aug low water)"):
+                rows = [{
+                    "River": DISP[r["reach"]], "Passes May": r["n_high"],
+                    "Passes Jul–Aug": r["n_low"],
+                    "Steepness May (cm/km)": round(r["slope_high"], 1),
+                    "Steepness Jul–Aug (cm/km)": round(r["slope_low"], 1),
+                    "Change (cm/km)": r["dslope_cm_km"], "p-value": _fmt_p(r["p_slope"]),
+                } for r in results["Q1_seasonal"] if r["question"] == "Q1_slope_pooled"]
+                st.markdown("**Steepness (all years combined — it doesn't change with season):**")
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+                rows = [{
+                    "River": DISP[r["reach"]], "Year": r["year"],
+                    "Water level May (m)": round(r["wse_high"], 2),
+                    "Water level Jul–Aug (m)": round(r["wse_low"], 2),
+                    "Change (m)": r["dwse_m"], "p-value": _fmt_p(r["p_wse"]),
+                } for r in results["Q1_seasonal"] if r["question"] == "Q1_wse_seasonal"]
+                st.markdown("**Water level (shown per year — this is what rises and falls with flow):**")
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+                st.caption("The water level goes up and down a little, and which season is "
+                           "higher flips from year to year — that's ordinary flow variation, not "
+                           "the river steadily changing. (A p-value below 0.05, marked *, is the "
+                           "statistician's flag that a difference is probably not just chance.)")
+
+            with st.expander("Year to year (summer 2024 vs. 2025 — the normal yardstick)"):
+                rows = [{
+                    "River": DISP[r["reach"]],
+                    "Steepness 2024 (cm/km)": round(r["slope_2024"], 1),
+                    "Steepness 2025 (cm/km)": round(r["slope_2025"], 1),
+                    "Change (cm/km)": r["dslope_cm_km"], "p-value (steepness)": _fmt_p(r["p_slope"]),
+                    "Water level 2024 (m)": round(r["wse_2024"], 2),
+                    "Water level 2025 (m)": round(r["wse_2025"], 2),
+                    "Change (m)": r["dwse_m"], "p-value (level)": _fmt_p(r["p_wse"]),
+                } for r in results["Q2_interannual"]]
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+                st.caption("Steepness is measured over the whole ice-free year; water level is "
+                           "compared in the same season (late summer). Kanektok's water-level "
+                           "change shows up as \"significant\" only because its readings are so "
+                           "consistent — the change itself (about 0.2 m, roughly 8 inches) is far "
+                           "too small to notice on the ground. A result can be statistically "
+                           "\"significant\" and still be too tiny to matter.")
+
+            with st.expander("Typhoon Halong (June 2025 vs. June 2026 — preliminary)"):
+                rows = [{
+                    "River": DISP[r["reach"]], "Passes 2025": r["n_2025"],
+                    "Passes 2026": r["n_2026"],
+                    "Water level 2025 (m)": round(r["wse_2025"], 2),
+                    "Water level 2026 (m)": round(r["wse_2026"], 2),
+                    "Change (m)": r["dwse_m"], "Normal year-to-year change (m)": r["baseline_dwse_m"],
+                    "Within normal?": "yes" if r["wse_vs_baseline"] == "within" else r["wse_vs_baseline"],
+                    "Steepness change (cm/km)": r["dslope_cm_km"], "p-value (level)": _fmt_p(r["p_wse"]),
+                } for r in results["Q3_typhoon"]]
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+                rows = [{
+                    "River": DISP[r["reach"]], "Points compared": r["n_bins"],
+                    "Typical change (m)": r["median_dwse_m"],
+                    "Lower river (≤18 km)": r["downstream_dwse_m"],
+                    "Upper river (>18 km)": r["upstream_dwse_m"],
+                } for r in results["Q3_profile"]]
+                st.markdown("**Change at each point along the river:**")
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+                st.caption("The change around the storm stays inside the normal year-to-year "
+                           "range, and it's flat all along the river — no upstream storm scar. "
+                           "Preliminary until the summer 2026 (Jul–Aug) data comes in.")
+
+            st.caption(
+                f"**Where the numbers come from.** Satellite record {record['date_min']} – "
+                f"{record['date_max']}; {record['n_passes_fit']} passes measured, and the "
+                f"{record['n_full_coverage_open_water']} that caught the whole river in the "
+                f"ice-free season were used here. Technical detail — steepness: "
+                f"{method['slope_estimator']}; water level: {method['level_metric']}; "
+                f"a pass qualifies with ≥{method['min_nodes']} points, spanning "
+                f"≥{method['min_span_km']:.0f} km and starting within "
+                f"{method['max_start_km']:.0f} km of the mouth, in months "
+                f"{method['open_water_months']}. Generated by temporal_analysis.py."
+            )
 
     # --- SUMMARY STATS & DATA INFO (inside SWOT tab) ---
     with main_swot:

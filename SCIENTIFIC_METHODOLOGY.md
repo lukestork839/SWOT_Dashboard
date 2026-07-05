@@ -26,6 +26,7 @@
 | **Spatial Filtering** | ✅ Verified | Two-stage filtering (bounding box + exact geometry) |
 | **Distance Calculation** | ✅ Verified | Haversine formula appropriate for <100 km scale |
 | **Reference Gradient** | ✅ Verified | Per-pass Theil–Sen on 1 km nodes, median across passes; density-bias decomposition + season/coverage sensitivity (`gradient_prototype.py`) |
+| **Temporal Stability** | ✅ Q1/Q2 · ⏳ Q3 interim | Seasonal + interannual + typhoon comparisons on the reference-gradient engine; Q2 as natural-variability control for Q3 (`temporal_analysis.py`, `TEMPORAL_ANALYSIS.md`) |
 | **Field Calibration** | ✅ **SUCCESSFULLY VERIFIED** | RTK GPS (±1 cm precision), agreement within 1 m after datum correction |
 | **Code Implementation** | ✅ Verified | All critical steps documented with file:line references |
 | **Ice Season Handling** | ✅ Documented | Dashboard warnings for Oct-May; Classes 3-4 exclude most ice; no PIXC ice flag available |
@@ -46,10 +47,11 @@
 5. [Spatial Filtering](#spatial-filtering)
 6. [Distance Calculation](#distance-calculation)
 7. [Gradient Analysis](#gradient-analysis) — incl. [Reference Gradient (per-pass robust regression)](#reference-gradient-per-pass-robust-regression)
-8. [Field Calibration & Validation](#field-calibration--validation)
-9. [DEM Elevation Comparison](#dem-elevation-comparison)
-10. [Code Implementation Reference](#code-implementation-reference)
-11. [Verification Checklist](#verification-checklist)
+8. [Temporal Stability Analysis](#temporal-stability-analysis)
+9. [Field Calibration & Validation](#field-calibration--validation)
+10. [DEM Elevation Comparison](#dem-elevation-comparison)
+11. [Code Implementation Reference](#code-implementation-reference)
+12. [Verification Checklist](#verification-checklist)
 
 ---
 
@@ -784,6 +786,78 @@ competing path is more able to capture flow; Slingerland & Smith, 1998).
 > be labelled as such (e.g. "reference gradient, median of per-pass robust fits"), and must not be
 > printed next to the regression/poly trendlines in a way that implies it came from that line.
 > Integration approach is tracked separately; this section defines the number, not its display.
+
+---
+
+## Temporal Stability Analysis
+
+**Status:** ✅ Q1 (seasonal) & Q2 (interannual) complete; Q3 (typhoon) **interim** (June-only,
+pending summer-2026 data). Standalone diagnostic: `temporal_analysis.py`. Full report:
+[`TEMPORAL_ANALYSIS.md`](TEMPORAL_ANALYSIS.md).
+
+**Purpose.** A one-time assessment of how the two rivers' long-profiles change over time,
+answering three questions: (Q1) seasonal variability, May high flow vs Jul–Aug low flow;
+(Q2) normal interannual stability, Summer 2024 vs 2025; (Q3) extreme-event impact,
+pre- vs post-Typhoon Halong (2025-10-12). It is computed once, offline; the *authoritative*
+conclusions live here and in the report. The dashboard's former interactive
+Seasonal/Typhoon/Temporal tabs (density-biased, per-selection) have been **retired** and
+replaced by a single read-only **⏳ Temporal Results** tab that renders these pre-computed
+results — no on-the-fly recomputation.
+
+**Method.** Every number reuses the [Reference Gradient](#reference-gradient-per-pass-robust-regression)
+engine — per-pass **Theil–Sen on 1 km node medians**, the **full-coverage gate**
+(≥ 8 nodes, span ≥ 30 km, start ≤ 3 km), **open-water only** — so all comparisons are
+density-unbiased, robust, and made over the same concave profile. Two per-pass metrics:
+**slope** (cm/km, the hydraulic gradient) and **WSE@15 km** (m, water level at a fixed
+reference distance from the Theil–Sen fit, carrying the flow/storm signal). WSE comparisons are
+**season-matched and year-resolved** (water level is seasonal). **Slope** comparisons instead
+**pool over the largest defensible sample** (Q1 seasonal contrast pooled across all years; Q2
+interannual over the full open-water year) because slope is season-invariant *and*
+coverage-sensitive: a per-year/per-season slice of only 3–5 passes is dominated by one or two
+marginal-coverage passes (a documented artifact — see the Q1/Q2 findings). Medians and
+Mann–Whitney U tests throughout.
+Reads the **full local record**
+(186 passes, 2023–2026; 136 full-coverage open-water passes). **Key design:** Q2 (change under
+no disturbance) is the **natural-variability baseline / control for Q3** — the storm counts as
+an impact only if its signal exceeds normal year-to-year variation.
+
+**Findings.**
+
+| Question | Result |
+|---|---|
+| **Q1 Seasonal** (May vs Jul–Aug) | Small and **inconsistent**: slope ≈ season-invariant (pooled swing +0.5 Kanektok / +2.5 Uyak cm/km, neither significant, matching the reference gradient); WSE swings only ±0.2–0.5 m and *flips sign* between years. No repeatable seasonal profile shift. *(Slope pooled across years — a per-year slice gave a spurious +8.3 Uyak-2025 swing, same coverage artifact as Q2.)* |
+| **Q2 Interannual** (2024 vs 2025) | Both rivers stable. Slope change trivial (Kanektok +0.8, Uyak −0.7 cm/km); WSE movement ≈ **0.2 m (Kanektok) – 0.5 m (Uyak)**. Kanektok's changes are *statistically* significant only because variance is tiny — magnitude is geomorphically trivial. **Slope uses the full open-water year** (season-invariant per Q1): a Jul–Aug-only slice gave a −6.8 cm/km Uyak "drop" that is *largely* a coverage artifact (an independent fixed-window slope shrinks it to −2.0; annual medians flat at 192.4/191.7/192.4; residual non-robust) — see the adversarial check below. |
+| **Q3 Typhoon** (interim, Jun 2025 vs Jun 2026) | **No detectable signal.** WSE change +0.02 m (Kanektok) / −0.33 m (Uyak) — both **within (below) the normal baseline**; slope change ≤ 0.4 cm/km; along-river change flat. Storm damage was coastal; upstream profile unchanged beyond normal noise. |
+
+**Why the dedicated analysis matters.** The retired Seasonal/Typhoon tabs used
+density-biased pooled OLS on raw pixels with no coverage gate, and compared genuine
+summer 2025 against ice-contaminated Mar–Jun 2026. The de-biased robust method with a
+proper control is what makes the Q3 **null result** trustworthy.
+
+**Adversarial verification (`verify_temporal_method.py`).** Because pooling slope is a
+researcher degree of freedom, the pooling decision was stress-tested independently. (1) The
+profile is confirmed concave (near-confluence slope ~3× the downstream slope), so clipping the
+steep reach *mechanically* lowers a pass's slope. (2) The coverage artifact concentrates in
+small samples — the dataset-wide slope↔start correlation is weak (−0.07 to −0.13); the −0.94
+was subsample-specific. (3) An independent **fixed-window slope** (coverage held constant, no
+pooling) reaches the same "stable" conclusion, shrinking the Uyak-2025 anomalies ~4× (seasonal
++8.3→+2.4, interannual −6.8→−2.0 cm/km); the small residual is non-robust (does not replicate
+at the annual level, fails multiple-testing, within Uyak's ±8 cm/km scatter). (4) Season-
+invariance holds on full-coverage-only passes (May−JulAug +0.5/+0.7 cm/km, n.s.). (5) Positive
+control: the real ~3 cm/km between-river difference is detected at p≈2×10⁻¹⁶, so the method is
+not merely insensitive. Pooling is thus justified on independent grounds, not to erase a result.
+
+**Limitations.** Q3 is interim (June only, 2–3 passes/river — low power; definitive answer
+needs Jul–Aug 2026). WSE reflects unmeasured discharge (matched-month + Q2 baseline are the
+defense, not a correction). Samples are small throughout, so "not significant" often means
+"underpowered." Both metrics are whole-reach quantities.
+
+**Outputs.** Written to the git-tracked `temporal_results/` directory (read directly by the
+dashboard's ⏳ Temporal Results tab, so results are identical local and on Streamlit Cloud):
+`temporal_metrics_per_pass.parquet` (per-pass metrics), `temporal_q3_profile.parquet`
+(along-river ΔWSE curve for the interim typhoon figure), `temporal_analysis_results.json`
+(summary). Method parameters mirror the reference gradient plus `REF_DIST_KM = 15.0`.
+Method-verification suite: `verify_temporal_method.py` (T1–T5 above).
 
 ---
 
