@@ -2,7 +2,7 @@
 # For the full ingestion pipeline (SWOT_Pull.py), use: pip install -r requirements-full.txt
 
 # Dashboard framework
-streamlit>=1.33.0
+streamlit>=1.35.0   # >=1.35 for st.plotly_chart(on_select=...) selection events
 plotly>=5.17.0
 
 # Data & computation

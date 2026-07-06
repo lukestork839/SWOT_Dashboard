@@ -78,6 +78,38 @@ def add_bifurcation_marker(m):
         icon=folium.Icon(color="green", icon="info-sign"),
     ).add_to(m)
 
+
+def extract_selection(event):
+    """Pull selected points out of a Plotly `on_select` event returned by st.plotly_chart.
+
+    Profile data traces carry customdata = [latitude, longitude, pass_date, reach];
+    trendline/legend traces have no customdata and are ignored. Returns a list of
+    {lat, lon, date, reach} dicts that the Map View uses to draw highlight markers.
+    Written defensively so it works whether Streamlit returns dicts or attr objects.
+    """
+    pts = []
+    if not event:
+        return pts
+    sel = event.get("selection") if isinstance(event, dict) else getattr(event, "selection", None)
+    if not sel:
+        return pts
+    points = sel.get("points", []) if isinstance(sel, dict) else getattr(sel, "points", [])
+    for p in points:
+        cd = p.get("customdata") if isinstance(p, dict) else getattr(p, "customdata", None)
+        if not cd or len(cd) < 2:
+            continue
+        try:
+            pts.append({
+                "lat": float(cd[0]),
+                "lon": float(cd[1]),
+                "date": str(cd[2]) if len(cd) > 2 else "",
+                "reach": str(cd[3]) if len(cd) > 3 else "",
+            })
+        except (TypeError, ValueError):
+            continue
+    return pts
+
+
 st.set_page_config(page_title=PAGE_TITLE, layout="wide", page_icon="🌊")
 
 @st.cache_data(ttl=3600)  # Cache for 1 hour
@@ -124,6 +156,41 @@ def calculate_detrending(dist_km, wse, method):
         method_name = "LOESS (Local Regression)"
 
     return baseline_pred, coeffs, method_name
+
+
+@st.cache_data(ttl=3600)
+def load_detrend_frame(_con, where_clause, detrend_method):
+    """Fetch + detrend the profile data ONCE per (passes, method) and cache it.
+
+    Caching is essential for the profile→map selection: st.cache_data returns identical
+    content across reruns, so the detrended figure is byte-stable and Streamlit keeps the
+    chart's box-selection through the on_select rerun. Previously the frame was re-queried
+    (with a non-deterministic sample) every rerun, which changed the figure and made the
+    selection — and the map highlight — vanish. Returns (baseline_df, method_name, total_count).
+    """
+    total_count = _con.execute(f"SELECT COUNT(*) FROM river_data {where_clause}").fetchone()[0]
+    order_cols = "Reach_Name, dist_km, Pass_Date, latitude, longitude"
+    if total_count > MAX_BASELINE_POINTS:
+        step = max(1, total_count // MAX_BASELINE_POINTS)
+        query = f"""
+            SELECT dist_km, wse, Reach_Name, latitude, longitude, Pass_Date FROM (
+                SELECT dist_km, wse, Reach_Name, latitude, longitude, Pass_Date,
+                       row_number() OVER (ORDER BY {order_cols}) AS rn
+                FROM river_data {where_clause}
+            ) sub WHERE rn % {step} = 0 ORDER BY {order_cols}
+        """
+    else:
+        query = (f"SELECT dist_km, wse, Reach_Name, latitude, longitude, Pass_Date "
+                 f"FROM river_data {where_clause} ORDER BY {order_cols}")
+    bdf = _con.execute(query).fetchdf()
+    if len(bdf) == 0:
+        return bdf, None, total_count
+    baseline_pred, _coeffs, method_name = calculate_detrending(
+        bdf['dist_km'].tolist(), bdf['wse'].tolist(), detrend_method)
+    bdf['residual'] = bdf['wse'].values - baseline_pred
+    bdf['baseline'] = baseline_pred
+    return bdf, method_name, total_count
+
 
 @st.cache_data(ttl=3600)
 def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
@@ -505,12 +572,15 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         st.title(PAGE_TITLE)
     with top_right:
         if st.button("Return to Homepage"):
-            # Clear cached dataframes but preserve pass selection
+            # Clear cached dataframes + the pinned pass selection and any map highlights,
+            # so the welcome-page checkboxes become authoritative again on next launch.
+            # (pass_{date} widget states are preserved so the checkboxes still reflect the
+            # last choice.)
             for key in ["viz_df", "stats_df", "count", "where_clause",
-                        "selected_pass_dates", "selected_reaches", "detrend_method",
-                        "metrics_calculated", "temporal_df", "temporal_where",
-                        "heatmap_df", "heatmap_where",
-                        "dist_evolution_df", "elev_diff_df"]:
+                        "selected_pass_dates", "confirmed_pass_dates", "selected_reaches",
+                        "detrend_method", "metrics_calculated", "temporal_df", "temporal_where",
+                        "heatmap_df", "heatmap_where", "dist_evolution_df", "elev_diff_df",
+                        "sel_grad", "sel_detr"]:
                 st.session_state.pop(key, None)
             st.session_state.page = "welcome"
             st.rerun()
@@ -518,10 +588,19 @@ def render_dashboard(con, all_pass_dates, available_reaches):
     # Always include both rivers
     selected_reaches = available_reaches
 
-    # Read pass selection from session state
+    # Read pass selection from session state.
+    # The pass_{date} checkboxes live only on the welcome page, so their widget-keyed
+    # state can be garbage-collected by Streamlit once those widgets stop rendering
+    # (e.g. on the extra reruns from chart on_select / the map fragment / st.rerun).
+    # To stay robust, mirror the selection into a plain (non-widget) key and fall back
+    # to it whenever the widget keys have been cleaned up.
     selected_pass_dates = sorted(
         d for d in all_pass_dates if st.session_state.get(f"pass_{d}", False)
     )
+    if selected_pass_dates:
+        st.session_state["confirmed_pass_dates"] = selected_pass_dates
+    else:
+        selected_pass_dates = st.session_state.get("confirmed_pass_dates", [])
 
     if not selected_pass_dates:
         st.warning("No passes selected. Please return to the homepage to select passes.")
@@ -708,7 +787,15 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 marker=dict(color=line_color, size=8, opacity=1.0),
                 legendgroup=reach,
             ))
-            # Scatter points (translucent data, hidden from legend)
+            # Scatter points (translucent data, hidden from legend).
+            # customdata carries [lat, lon, date, reach] so a lasso/box selection here
+            # can be highlighted on the Map View tab (see extract_selection / tab5).
+            cd = np.column_stack([
+                reach_data['latitude'].to_numpy(),
+                reach_data['longitude'].to_numpy(),
+                reach_data['Pass_Date'].astype(str).to_numpy(),
+                np.full(len(reach_data), reach),
+            ])
             fig.add_trace(go.Scatter(
                 x=reach_data['dist_km'],
                 y=reach_data['wse'],
@@ -716,9 +803,11 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 marker=dict(color=line_color, size=5, opacity=0.3),
                 legendgroup=reach,
                 showlegend=False,
+                customdata=cd,
                 hovertemplate='<b>' + reach + '</b><br>'
                               'Distance: %{x:.2f} km<br>'
                               'WSE: %{y:.2f} m<br>'
+                              'Pass: %{customdata[2]}<br>'
                               '<extra></extra>'
             ))
 
@@ -755,9 +844,17 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         # 🔄 REVERSE THE X-AXIS HERE
         fig.update_xaxes(autorange="reversed")
 
-        fig.update_layout(height=600, template=plotly_template)
+        fig.update_layout(height=600, template=plotly_template, dragmode="select")
         add_bifurcation_line(fig)
-        st.plotly_chart(fig, width="stretch", theme=None)
+        st.caption("🔦 **Link to map:** drag a box around points here — they'll be highlighted "
+                   "(yellow outline) on the **🗺️ Map View** tab so you can see where they are on "
+                   "the river. Switch back to zoom/pan with the toolbar at the top-right of the chart.")
+        grad_event = st.plotly_chart(
+            fig, width="stretch", theme=None,
+            on_select="rerun", selection_mode=("points", "box"),
+            key=f"grad_profile_select_{st.session_state.get('sel_ver', 0)}",
+        )
+        st.session_state["sel_grad"] = extract_selection(grad_event)
 
         # Add interpretation guide
         with st.expander("How to read this graph"):
@@ -1491,51 +1588,17 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             return y_result
 
         try:
-            # Get dataset for baseline (with memory-safe limit for Streamlit Cloud)
-            # Check total count first
-            count_query = f"SELECT COUNT(*) FROM river_data {where_clause}"
-            total_count = con.execute(count_query).fetchone()[0]
-
-            # Use sampling if dataset is too large (prevents memory issues)
+            # Fetch + detrend ONCE per (passes, method); cached so the figure is stable
+            # across reruns and the chart's box-selection survives (see load_detrend_frame).
+            baseline_df, method_name, total_count = load_detrend_frame(
+                con, where_clause, detrend_method)
             if total_count > MAX_BASELINE_POINTS:
-                st.info(f"📊 Using {MAX_BASELINE_POINTS:,} sampled points for baseline fitting (out of {total_count:,} total) to optimize performance.")
-                baseline_query = f"""
-                    SELECT * FROM (
-                        SELECT dist_km, wse, Reach_Name,
-                               row_number() OVER (ORDER BY RANDOM()) as rn
-                        FROM river_data
-                        {where_clause}
-                    ) sub
-                    WHERE rn <= {MAX_BASELINE_POINTS}
-                    ORDER BY dist_km
-                """
-            else:
-                baseline_query = f"""
-                    SELECT dist_km, wse, Reach_Name
-                    FROM river_data
-                    {where_clause}
-                    ORDER BY dist_km
-                """
-
-            baseline_df = con.execute(baseline_query).fetchdf()
+                st.info(f"📊 Baseline fit on ~{MAX_BASELINE_POINTS:,} systematically sampled "
+                        f"points (of {total_count:,} total) for performance.")
 
             if len(baseline_df) == 0:
                 st.warning("No data available for detrending analysis.")
             else:
-                # Use cached detrending function for performance
-                baseline_pred, coeffs, method_name = calculate_detrending(
-                    baseline_df['dist_km'].tolist(),
-                    baseline_df['wse'].tolist(),
-                    detrend_method
-                )
-
-                # Calculate residuals
-                baseline_df['residual'] = baseline_df['wse'].values - baseline_pred
-                baseline_df['baseline'] = baseline_pred
-
-                # Clean up memory after large operations
-                gc.collect()
-
                 # Check detrending quality
                 overall_mean_residual = baseline_df['residual'].mean()
                 overall_std_residual = baseline_df['residual'].std()
@@ -1572,7 +1635,15 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         marker=dict(color=line_color, size=8, opacity=1.0),
                         legendgroup=reach,
                     ))
-                    # Translucent data points (hidden from legend)
+                    # Translucent data points (hidden from legend).
+                    # customdata = [lat, lon, date, reach] so a box-selection here can be
+                    # highlighted on the Map View tab (same mechanism as the Gradient Profile).
+                    cd = np.column_stack([
+                        reach_data['latitude'].to_numpy(),
+                        reach_data['longitude'].to_numpy(),
+                        reach_data['Pass_Date'].astype(str).to_numpy(),
+                        np.full(len(reach_data), reach),
+                    ])
                     fig_detrend.add_trace(go.Scatter(
                         x=reach_data['dist_km'],
                         y=reach_data['residual'],
@@ -1580,9 +1651,11 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         marker=dict(color=line_color, size=3, opacity=0.4),
                         legendgroup=reach,
                         showlegend=False,
+                        customdata=cd,
                         hovertemplate='<b>' + reach + '</b><br>' +
                                       'Distance: %{x:.2f} km<br>' +
                                       'Residual: %{y:.3f} m<br>' +
+                                      'Pass: %{customdata[2]}<br>' +
                                       '<extra></extra>'
                     ))
 
@@ -1608,9 +1681,18 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
                 # Reverse x-axis to match other plots
                 fig_detrend.update_xaxes(autorange="reversed")
+                fig_detrend.update_layout(dragmode="select")
                 add_bifurcation_line(fig_detrend)
 
-                st.plotly_chart(fig_detrend, width="stretch", theme=None)
+                st.caption("🔦 **Link to map:** drag a box around points here — they'll be "
+                           "highlighted (yellow outline) on the **🗺️ Map View** tab. Switch back "
+                           "to zoom/pan with the toolbar at the top-right of the chart.")
+                detr_event = st.plotly_chart(
+                    fig_detrend, width="stretch", theme=None,
+                    on_select="rerun", selection_mode=("points", "box"),
+                    key=f"detrend_select_{st.session_state.get('sel_ver', 0)}",
+                )
+                st.session_state["sel_detr"] = extract_selection(detr_event)
 
                 # Show fit quality metrics
                 col1, col2, col3 = st.columns(3)
@@ -2090,9 +2172,50 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     vmax=slope_max,
                 ).add_to(m)
 
+            # --- Highlight points box-selected on a profile tab (Gradient/Detrended) ---
+            # Union of both charts' selections so either (or both) can drive the highlight.
+            highlight_pts = (st.session_state.get("sel_grad", [])
+                             + st.session_state.get("sel_detr", []))
+            if highlight_pts:
+                hl_group = folium.FeatureGroup(name="🔦 Selected from profile", show=True)
+                for pt in highlight_pts:
+                    label = " · ".join(x for x in (pt.get("reach", "").replace("_", " "),
+                                                   pt.get("date", "")) if x)
+                    reach_color = COLOR_MAP.get(pt.get("reach", ""), "gray")
+                    folium.CircleMarker(
+                        location=[pt["lat"], pt["lon"]],
+                        radius=7,
+                        color="yellow", weight=3, opacity=0.6,   # yellow outline at 60%
+                        fill=True, fill_color=reach_color, fill_opacity=1.0,  # keep original river color inside
+                        popup=folium.Popup(f"Selected point<br>{label}", max_width=250),
+                        tooltip="Selected from profile",
+                    ).add_to(hl_group)
+                hl_group.add_to(m)
+                # zoom to the highlighted points so the user lands on that stretch of river
+                lats = [p["lat"] for p in highlight_pts]
+                lons = [p["lon"] for p in highlight_pts]
+                lat_min, lat_max = min(lats), max(lats)
+                lon_min, lon_max = min(lons), max(lons)
+                # pad a degenerate (single-point / tight-cluster) box so fit_bounds doesn't over-zoom
+                if lat_max - lat_min < 1e-3:
+                    lat_min -= 1e-3; lat_max += 1e-3
+                if lon_max - lon_min < 1e-3:
+                    lon_min -= 1e-3; lon_max += 1e-3
+                m.fit_bounds([[lat_min, lon_min], [lat_max, lon_max]], padding=(40, 40))
+
             # Add layer control (toggle layers on/off)
             add_bifurcation_marker(m)
             folium.LayerControl().add_to(m)
+
+            if highlight_pts:
+                c_msg, c_btn = st.columns([3, 1])
+                c_msg.success(f"🔦 **{len(highlight_pts)} point(s) highlighted** from your profile "
+                              "selection (yellow outlines). The map has zoomed to them.")
+                if c_btn.button("Clear highlight", use_container_width=True, key="clear_highlight"):
+                    st.session_state["sel_ver"] = st.session_state.get("sel_ver", 0) + 1
+                    st.session_state["sel_grad"] = []
+                    st.session_state["sel_detr"] = []
+                    st.rerun()
 
             st_folium(
                 m, width=1400, height=600,
