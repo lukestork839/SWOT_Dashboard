@@ -112,7 +112,7 @@ def extract_selection(event):
 
 st.set_page_config(page_title=PAGE_TITLE, layout="wide", page_icon="🌊")
 
-@st.cache_data(ttl=3600)  # Cache for 1 hour
+@st.cache_data(ttl=86400)  # Cache for 24h (data is release-static; redeploys clear caches)
 def calculate_detrending(dist_km, wse, method):
     """
     Calculate baseline and residuals for detrended profile.
@@ -158,7 +158,7 @@ def calculate_detrending(dist_km, wse, method):
     return baseline_pred, coeffs, method_name
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_detrend_frame(_con, where_clause, detrend_method):
     """Fetch + detrend the profile data ONCE per (passes, method) and cache it.
 
@@ -192,7 +192,7 @@ def load_detrend_frame(_con, where_clause, detrend_method):
     return bdf, method_name, total_count
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
     """
     Compute a smooth slope profile for a single river by:
@@ -273,9 +273,11 @@ class VerticalColorbar(MacroElement):
             {% endmacro %}
         """)
 
-# Cache key includes the remote URL so cache invalidates when data source changes
+# Cache key includes the remote URL so the cached connection invalidates when the data
+# source changes. NOTE: the parameter must NOT start with an underscore — Streamlit excludes
+# underscore-prefixed args from the cache key, which would silently disable this busting.
 @st.cache_resource
-def get_database_connection(_url_version=REMOTE_PARQUET_URL):
+def get_database_connection(url_version=REMOTE_PARQUET_URL):
     """
     Initialize DuckDB connection with parquet data.
     Cached as a resource to prevent reconnecting on every interaction.
@@ -328,7 +330,7 @@ def get_database_connection(_url_version=REMOTE_PARQUET_URL):
         st.code(traceback.format_exc())
         return None
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_dem_profile(_con):
     """Compute exact DEM bin profile from full dataset via DuckDB.
     Returns DataFrame with columns: Reach_Name, dist_bin, wse_median, wse_p10, wse_p25, wse_p75, wse_p90
@@ -349,20 +351,20 @@ def load_dem_profile(_con):
     except Exception:
         return None
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_dem_points(_con):
     """Load sampled DEM points for map visualization via DuckDB."""
     try:
         return _con.execute("""
             SELECT Reach_Name, dist_km, wse, latitude, longitude
             FROM dem_data
-            USING SAMPLE 15000
+            USING SAMPLE 15000 ROWS (reservoir, 42)
         """).fetchdf()
     except Exception:
         return None
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_reference_gradient(_con):
     """Load the per-pass reference-gradient artifact (one row per reach x pass).
 
@@ -376,7 +378,7 @@ def load_reference_gradient(_con):
         return None
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_refgrad_decomposition(_con):
     """Pooled-OLS gradient (open-water) on raw pixels [A] vs on 1km nodes [B].
 
@@ -406,7 +408,7 @@ def load_refgrad_decomposition(_con):
         return None
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_metadata(_con):
     """Return (all_pass_dates, available_reaches) from the database."""
     date_range = _con.execute("SELECT MIN(Pass_Date), MAX(Pass_Date) FROM river_data").fetchone()
@@ -423,7 +425,7 @@ def load_metadata(_con):
     return all_pass_dates, available_reaches
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_temporal_results():
     """Load the pre-computed one-time temporal-analysis artifacts.
 
@@ -576,10 +578,9 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             # so the welcome-page checkboxes become authoritative again on next launch.
             # (pass_{date} widget states are preserved so the checkboxes still reflect the
             # last choice.)
-            for key in ["viz_df", "stats_df", "count", "where_clause",
+            for key in ["viz_df", "viz_sig", "stats_df", "count", "where_clause",
                         "selected_pass_dates", "confirmed_pass_dates", "selected_reaches",
-                        "detrend_method", "metrics_calculated", "temporal_df", "temporal_where",
-                        "heatmap_df", "heatmap_where", "dist_evolution_df", "elev_diff_df",
+                        "detrend_method", "metrics_calculated",
                         "sel_grad", "sel_detr"]:
                 st.session_state.pop(key, None)
             st.session_state.page = "welcome"
@@ -625,7 +626,15 @@ def render_dashboard(con, all_pass_dates, available_reaches):
     plotly_template = "plotly_white"
 
     # --- DATA LOADING WITH CACHING ---
-    if "viz_df" not in st.session_state:
+    # Rebuild the cached frame whenever the selection (rivers, passes, method) changes —
+    # not merely when it's absent — so the charts can never lag behind the header date
+    # label. str() the dates so the signature is hashable/stable across reruns.
+    selection_sig = (
+        tuple(selected_reaches),
+        tuple(str(d) for d in selected_pass_dates),
+        detrend_method,
+    )
+    if "viz_df" not in st.session_state or st.session_state.get("viz_sig") != selection_sig:
         # FILTER DATA
         rivers_sql = "'" + "','".join(selected_reaches) + "'"
         dates_sql = ",".join(f"CAST('{d}' AS DATE)" for d in selected_pass_dates)
@@ -706,6 +715,11 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         st.session_state.selected_pass_dates = selected_pass_dates
         st.session_state.detrend_method = detrend_method
         st.session_state.where_clause = where_clause
+        st.session_state.viz_sig = selection_sig
+        # Selection changed → drop the derived-metrics flag so the block below recomputes
+        # detrended_residual / interval_slope on the freshly loaded frame (otherwise it is
+        # keyed only on the hardcoded detrend_method and would skip, leaving stale columns).
+        st.session_state.pop("metrics_calculated", None)
     else:
         # Use cached data (instant - no database query!)
         viz_df = st.session_state.viz_df
@@ -1979,9 +1993,11 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     value=0.7, step=0.1, key="point_opacity"
                 )
 
-            # Sample data if too large
+            # Sample data if too large. Seed the sample so the plotted points stay put
+            # across the fragment's reruns (opacity/basemap/color-by changes) instead of
+            # jittering to a new random subset each interaction.
             if len(viz_df) > MAX_MAP_POINTS:
-                map_df = viz_df.sample(MAX_MAP_POINTS)
+                map_df = viz_df.sample(MAX_MAP_POINTS, random_state=42)
                 st.info(f"📍 Showing {MAX_MAP_POINTS:,} sampled points (out of {len(viz_df):,}) for map performance.")
             else:
                 map_df = viz_df
