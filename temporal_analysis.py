@@ -56,6 +56,14 @@ MIN_SPAN_KM = 30.0     # full-coverage gate: pass must span >= this
 MAX_START_KM = 3.0     # full-coverage gate: pass must start <= this (steep reach)
 REF_DIST_KM = 15.0     # water-level reference distance (inside every gated pass's coverage)
 
+# Apr-Nov open-water window. Empirically validated (2026-07): the shoulder months
+# (Apr, Nov) supply 37/136 = 27% of gated open-water passes -- real statistical
+# power, not filler -- and their per-pass slopes match the core May-Oct summer to
+# within ~1 cm/km (Kanektok Apr 196.7 / Nov 195.5 vs core 195.3; Uyak Apr 191.2 /
+# Nov 190.4 vs core 192.7), i.e. no ice-inflation signature. So the shoulders are
+# kept. Dec-Mar are dropped: although the gradient is season-invariant enough that
+# even winter slopes match (~195 / ~192), winter WSE is ice-affected and must be
+# excluded from the freshet/baseflow (Q1) and typhoon (Q3) water-level comparisons.
 OPEN_WATER_MONTHS = {4, 5, 6, 7, 8, 9, 10, 11}
 HIGH_FLOW_MONTHS = {5}      # May freshet
 LOW_FLOW_MONTHS = {7, 8}    # Jul-Aug baseflow
