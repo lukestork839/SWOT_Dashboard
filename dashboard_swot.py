@@ -31,6 +31,16 @@ MAX_PLOT_POINTS = 15000  # Reduced for large datasets (was 25000)
 MAX_BASELINE_POINTS = 30000  # Reduced for Streamlit Cloud (was 50000)
 MAX_MAP_POINTS = 5000  # Strict limit for map rendering
 
+# Residual-domain outlier flag for the Detrended Profile.
+# The ingestion MAD filter (SWOT_Pull.py) runs on RAW WSE per-pass, where the
+# ~70 km downstream gradient inflates the reach spread so much that its keep-band
+# is ~150 m wide -- so localized spring-ice/contamination blobs (a handful of
+# passes producing WSE tens of metres below the local trend) pass through and
+# then dominate the detrended min/max/range. This threshold re-applies the SAME
+# Modified Z-Score method (Iglewicz & Hoaglin 1993) in the DETRENDED domain,
+# where residuals are ~0-centred so the flag actually isolates those points.
+RESIDUAL_MAD_THRESHOLD = 3.5  # Modified Z-score, matches ingestion MAD_THRESHOLD
+
 # --- BIFURCATION POINT ---
 # Where Kanektok River and Uyak Creek diverge (59°49'43.99"N, 161°22'40.00"W)
 BIFURCATION_LAT = 59.828886
@@ -156,6 +166,29 @@ def calculate_detrending(dist_km, wse, method):
         method_name = "LOESS (Local Regression)"
 
     return baseline_pred, coeffs, method_name
+
+
+def flag_residual_outliers(residuals, threshold=RESIDUAL_MAD_THRESHOLD):
+    """Flag detrended residuals as outliers via the Modified Z-Score (MAD-based).
+
+    Same estimator as the ingestion filter (calculate_mad_outliers in SWOT_Pull.py):
+    Modified Z = 0.6745 * (x - median) / MAD, flagged when |Z| > threshold. The
+    difference is the DOMAIN: applied here to residuals (data minus baseline), not
+    raw WSE, so the trend no longer inflates the spread and the flag isolates the
+    genuinely anomalous points instead of being masked by the downstream gradient.
+
+    Returns a boolean array (True = outlier) aligned to `residuals`. Nothing is
+    deleted -- callers decide how to present flagged points.
+    """
+    r = np.asarray(residuals, dtype=float)
+    if len(r) == 0:
+        return np.zeros(0, dtype=bool)
+    median = np.median(r)
+    mad = np.median(np.abs(r - median))
+    if mad == 0:  # degenerate spread -> flag nothing
+        return np.zeros(len(r), dtype=bool)
+    modified_z = 0.6745 * (r - median) / mad
+    return np.abs(modified_z) > threshold
 
 
 @st.cache_data(ttl=86400)
@@ -1613,9 +1646,27 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             if len(baseline_df) == 0:
                 st.warning("No data available for detrending analysis.")
             else:
-                # Check detrending quality
-                overall_mean_residual = baseline_df['residual'].mean()
-                overall_std_residual = baseline_df['residual'].std()
+                # Flag residual-domain outliers (per-reach), matching the ingestion
+                # Modified Z-Score method but applied to residuals rather than raw WSE.
+                # These are localized contamination (e.g. spring-ice blobs) that the
+                # raw-WSE ingestion MAD cannot catch; flagging (not deleting) them keeps
+                # the stats table and plot readable without discarding data silently.
+                baseline_df = baseline_df.copy()
+                baseline_df['residual_outlier'] = False
+                for _reach in baseline_df['Reach_Name'].unique():
+                    _mask = baseline_df['Reach_Name'] == _reach
+                    _flags = flag_residual_outliers(baseline_df.loc[_mask, 'residual'].values)
+                    baseline_df.loc[_mask, 'residual_outlier'] = _flags
+                n_flagged = int(baseline_df['residual_outlier'].sum())
+                pct_flagged = 100 * n_flagged / len(baseline_df)
+
+                # Fit-quality metrics use the CLEAN (non-flagged) residuals so a handful
+                # of contaminated points can't dominate the mean/spread shown to the user.
+                clean_df = baseline_df[~baseline_df['residual_outlier']]
+
+                # Check detrending quality (robust to flagged outliers)
+                overall_mean_residual = clean_df['residual'].mean()
+                overall_std_residual = clean_df['residual'].std()
 
                 # Warning if only one river selected (detrending works best with both)
                 num_rivers = baseline_df['Reach_Name'].nunique()
@@ -1633,9 +1684,13 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 # Create detrended plot
                 fig_detrend = go.Figure()
 
-                # Plot residuals for each river (Uyak on top)
+                # Plot residuals for each river (Uyak on top). Flagged residual
+                # outliers are omitted from the traces so the y-axis auto-scales to the
+                # real signal instead of being stretched by a few contaminated points;
+                # they remain in baseline_df and the Raw Data tab (nothing is deleted).
                 for reach in sorted(selected_reaches, key=lambda r: r == "Uyak_Creek"):
-                    reach_data = plot_df[plot_df['Reach_Name'] == reach]
+                    reach_data = plot_df[(plot_df['Reach_Name'] == reach)
+                                         & (~plot_df['residual_outlier'])]
                     if len(reach_data) == 0:
                         continue
 
@@ -1701,6 +1756,13 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 st.caption("🔦 **Link to map:** drag a box around points here — they'll be "
                            "highlighted (yellow outline) on the **🗺️ Map View** tab. Switch back "
                            "to zoom/pan with the toolbar at the top-right of the chart.")
+                if n_flagged > 0:
+                    st.caption(f"⚠️ **{n_flagged:,} point(s) ({pct_flagged:.3f}%)** flagged as "
+                               f"residual outliers (Modified Z-Score > {RESIDUAL_MAD_THRESHOLD}, "
+                               "per river) and omitted from this view so the axis reflects the "
+                               "real signal. These are localized contamination (e.g. spring ice) "
+                               "that the raw-WSE ingestion filter cannot catch. They are **not "
+                               "deleted** — they remain in the data and the Raw Data tab.")
                 detr_event = st.plotly_chart(
                     fig_detrend, width="stretch", theme=None,
                     on_select="rerun", selection_mode=("points", "box"),
@@ -1712,10 +1774,10 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("Overall Mean Residual", f"{overall_mean_residual:.4f} m",
-                             help="Should be close to 0.000 for a good fit")
+                             help="Mean of non-flagged residuals; should be close to 0.000 for a good fit")
                 with col2:
                     st.metric("Residual Std Dev", f"{overall_std_residual:.3f} m",
-                             help="Measures spread of residuals around baseline")
+                             help="Spread of non-flagged residuals around baseline (flagged outliers excluded)")
                 with col3:
                     st.metric("Rivers in Baseline Fit", num_rivers,
                              help="Detrending works best when both rivers are included")
@@ -1793,32 +1855,56 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 # Show statistics per river
                 st.subheader("Detrended Elevation Statistics")
 
+                # Robust statistics. Min/Max/Range are non-robust by construction (a
+                # single contaminated pixel sets them), so they are replaced by robust
+                # dispersion measures computed over ALL residuals: the median, a
+                # MAD-based robust standard deviation (1.4826 * MAD, the normal-
+                # consistent estimator), and the 1st/99th percentiles. Mean and Std Dev
+                # are retained for continuity but computed on the non-flagged residuals
+                # so they are not distorted by flagged outliers. "N Flagged" reports how
+                # many points exceeded the residual Modified Z-Score threshold.
                 stats_data = []
                 for reach in selected_reaches:
-                    reach_data = baseline_df[baseline_df['Reach_Name'] == reach]
-                    if len(reach_data) > 0:
-                        residuals = reach_data['residual']
-                        stats_data.append({
-                            "River": reach,
-                            "Mean Residual (m)": residuals.mean(),
-                            "Std Dev (m)": residuals.std(),
-                            "Min Residual (m)": residuals.min(),
-                            "Max Residual (m)": residuals.max(),
-                            "Range (m)": residuals.max() - residuals.min()
-                        })
+                    reach_all = baseline_df[baseline_df['Reach_Name'] == reach]
+                    if len(reach_all) == 0:
+                        continue
+                    residuals_all = reach_all['residual']
+                    residuals_clean = reach_all.loc[~reach_all['residual_outlier'], 'residual']
+                    med = residuals_all.median()
+                    robust_sd = 1.4826 * (residuals_all - med).abs().median()
+                    stats_data.append({
+                        "River": reach,
+                        "Median (m)": med,
+                        "Robust SD (m)": robust_sd,
+                        "P1 (m)": residuals_all.quantile(0.01),
+                        "P99 (m)": residuals_all.quantile(0.99),
+                        "Mean (m)": residuals_clean.mean(),
+                        "Std Dev (m)": residuals_clean.std(),
+                        "N Flagged": int(reach_all['residual_outlier'].sum()),
+                    })
 
                 if stats_data:
                     stats_summary = pd.DataFrame(stats_data)
                     st.dataframe(
                         stats_summary.style.format({
-                            "Mean Residual (m)": "{:.3f}",
+                            "Median (m)": "{:.3f}",
+                            "Robust SD (m)": "{:.3f}",
+                            "P1 (m)": "{:.3f}",
+                            "P99 (m)": "{:.3f}",
+                            "Mean (m)": "{:.3f}",
                             "Std Dev (m)": "{:.3f}",
-                            "Min Residual (m)": "{:.3f}",
-                            "Max Residual (m)": "{:.3f}",
-                            "Range (m)": "{:.3f}"
+                            "N Flagged": "{:,d}",
                         }),
                         width="stretch",
                         hide_index=True
+                    )
+                    st.caption(
+                        "**Median / Robust SD (1.4826·MAD) / P1 / P99** are outlier-resistant "
+                        "measures over all residuals. **Mean / Std Dev** exclude points flagged "
+                        f"by the residual Modified Z-Score (> {RESIDUAL_MAD_THRESHOLD}). "
+                        "**N Flagged** counts those points, retained in the data but excluded here "
+                        "and from the plot. Min/Max/Range were removed: a single contaminated "
+                        "pixel sets them, so they misrepresented the detrended spread."
                     )
 
                 # Optional: Show baseline trend curve
