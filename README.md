@@ -132,7 +132,7 @@ The dashboard organizes analysis into top-level tabs and nested "More Tabs":
 | Tab | What It Shows |
 |-----|---------------|
 | **Gradient Profile** | WSE vs. distance scatter plot with linear regression trendlines. Shows overall river steepness in cm/km. Supports **box-select → Map View highlight** (see below). |
-| **Detrended Profile** | Removes the large-scale elevation trend (Relative Elevation Model). Reveals subtle systematic differences between rivers. Supports Linear, Polynomial (2nd/3rd order), and LOESS baselines. Supports **box-select → Map View highlight** (see below). |
+| **Detrended Profile** | Removes the large-scale elevation trend (Relative Elevation Model). Reveals subtle systematic differences between rivers. Supports Linear, Polynomial (2nd/3rd order), and LOESS baselines. Statistics are reported as robust measures (median, MAD-based robust SD, P1/P99); a residual-domain outlier flag (Modified Z-Score > 3.5, per river) omits localized contamination from the plot and mean/SD without deleting it. Supports **box-select → Map View highlight** (see below). |
 | **Map View** | Interactive Folium map with multiple basemaps (satellite, terrain, etc.), measuring tools for distance/area, and color-by options (river name, WSE, classification, detrended residual, interval slope). Shows points **box-selected on a profile** as yellow-outlined markers. |
 
 > **Profile → Map cross-highlight:** on the **Gradient Profile** or **Detrended Profile**, drag a box (or lasso) around points of interest. Those exact points are outlined in yellow (keeping their river color) on the **Map View**, which auto-zooms to them so you can see where along the river they sit. Selections from both profiles combine; a **Clear highlight** button on the map resets them. Requires `streamlit>=1.35` (Plotly selection events).
@@ -197,6 +197,8 @@ All corrections verified against the SWOT Science Data Products User Handbook (J
 | 4 | Crossover calibration | Bit 23 of `geolocation_qual` = 0 | Excludes pixels without crossover correction (meter-scale errors) |
 | 5 | Classification | Classes 3 and 4 only | Keeps high-quality water pixels (Handbook Table 6.1) |
 | 6 | MAD outlier removal | Modified Z-score <= 3.5, per-reach | Removes anomalous WSE measurements |
+
+**Note on the two MAD applications:** this ingestion filter runs on *raw WSE per pass*, where the downstream gradient inflates the spread so much that localized contamination (e.g. spring-ice blobs in a couple of passes) can pass through. The Detrended Profile tab therefore re-applies the *same* Modified Z-Score (> 3.5, per river) to the *residuals* — the domain where such points actually stand out — to flag them in its statistics and plot. This is a display-layer safeguard; no data is deleted.
 
 **Pending expert review:** `geolocation_qual` and `classification_qual` bit-mask filters are implemented but disabled. They remove nearly all data for narrow rivers (~50-100m wide) like Uyak Creek due to land/water mixing effects. See `SCIENTIFIC_METHODOLOGY.md` for the full PIXC quality flag reference.
 
