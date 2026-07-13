@@ -31,6 +31,12 @@ MAX_PLOT_POINTS = 15000  # Reduced for large datasets (was 25000)
 MAX_BASELINE_POINTS = 30000  # Reduced for Streamlit Cloud (was 50000)
 MAX_MAP_POINTS = 5000  # Strict limit for map rendering
 
+# Gradient Profile tab: density-de-biased profile line. Bin distance to nodes and
+# take the MEDIAN WSE per node (each along-stream location weighted equally,
+# regardless of point density) instead of an OLS fit through the raw point cloud.
+PROFILE_NODE_KM = 0.5       # distance-bin width for the binned-median profile line
+PROFILE_BAND = (5, 95)      # percentile band shown around the median profile
+
 # Residual-domain outlier flag for the Detrended Profile.
 # The ingestion MAD filter (SWOT_Pull.py) runs on RAW WSE per-pass, where the
 # ~70 km downstream gradient inflates the reach spread so much that its keep-band
@@ -45,7 +51,7 @@ RESIDUAL_MAD_THRESHOLD = 3.5  # Modified Z-score, matches ingestion MAD_THRESHOL
 # Where Kanektok River and Uyak Creek diverge (59°49'43.99"N, 161°22'40.00"W)
 BIFURCATION_LAT = 59.828886
 BIFURCATION_LON = -161.377778
-BIFURCATION_DIST_KM = 2.493  # Haversine distance from confluence anchor point
+BIFURCATION_DIST_KM = 2.493  # Haversine distance from anchor point
 
 # FIXED COLORS
 COLOR_MAP = {
@@ -815,7 +821,28 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
     with tab1:
         st.subheader("River Profile")
-        
+
+        # B2: surface each river's robust reference gradient on the landing tab.
+        # This is the SAME value as the Hydraulic Gradient tab -- the median of
+        # per-pass Theil-Sen slopes over the full open-water record -- NOT the slope
+        # of the profile line below (which follows the current pass selection).
+        _refg = load_reference_gradient(con)
+        if _refg is not None and len(_refg) > 0:
+            _ow = _refg[(_refg["open_water"]) & (_refg["gated"])]
+            _parts = []
+            for _r in sorted(selected_reaches, key=lambda r: r == "Uyak_Creek"):
+                _d = _ow[_ow["Reach_Name"] == _r]
+                if len(_d) > 0:
+                    _parts.append(f"**{_r.replace('_', ' ')}** {_d['theilsen_cm_km'].abs().median():.1f} cm/km")
+            if _parts:
+                st.markdown(
+                    "**Reference gradient (robust Theil–Sen, full open-water record):** "
+                    + " · ".join(_parts)
+                    + " — each river's characteristic slope (details on the **Hydraulic "
+                    "Gradient** tab). This is *not* the slope of the profile line below, "
+                    "which follows your current pass selection."
+                )
+
         fig = go.Figure()
 
         # Draw Kanektok first so Uyak layers on top
@@ -858,29 +885,40 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                               '<extra></extra>'
             ))
 
-            # Trendlines: linear (existing) + 2nd-order polynomial (test overlay)
+            # Density-de-biased profile line: bin distance to PROFILE_NODE_KM nodes
+            # and take the MEDIAN WSE per node, so every along-stream location
+            # contributes equally regardless of point density. This replaces the old
+            # OLS linear trend, whose cm/km slope was density-biased (see the
+            # Hydraulic Gradient tab). Same median-per-bin idiom as the Slope Profile
+            # and Elevation Difference tabs. A shaded percentile band shows the spread
+            # of passes around the median. The single characteristic slope is NOT
+            # drawn here -- it is the robust Theil-Sen value shown above the chart.
             if len(reach_data) >= 5:
-                slope, intercept, r, _, _ = stats.linregress(reach_data['dist_km'], reach_data['wse'])
-                slope_cm = abs(slope * 100)
-                x_range = np.linspace(reach_data['dist_km'].min(), reach_data['dist_km'].max(), 100)
-                y_range = intercept + slope * x_range
+                node = (reach_data['dist_km'] / PROFILE_NODE_KM).round() * PROFILE_NODE_KM
+                g = reach_data.assign(_node=node).groupby('_node')['wse']
+                med = g.median().sort_index()
+                lo = g.quantile(PROFILE_BAND[0] / 100).sort_index()
+                hi = g.quantile(PROFILE_BAND[1] / 100).sort_index()
+                xb = np.asarray(med.index, dtype=float)
 
+                # percentile band (drawn under the line)
                 fig.add_trace(go.Scatter(
-                    x=x_range,
-                    y=y_range,
-                    mode='lines',
-                    name=f"{reach} Linear Trend: {slope_cm:.1f} cm/km",
-                    line=dict(color=line_color, width=4, dash='dash')
+                    x=np.concatenate([xb, xb[::-1]]),
+                    y=np.concatenate([hi.to_numpy(), lo.to_numpy()[::-1]]),
+                    fill='toself', fillcolor=line_color, opacity=0.15,
+                    mode='lines', line=dict(width=0),
+                    name=f"{reach} {PROFILE_BAND[0]}–{PROFILE_BAND[1]}% of passes",
+                    legendgroup=reach, showlegend=False, hoverinfo='skip',
                 ))
-
-                # 2nd-order polynomial fit (same curve shape as the Detrended tab baseline)
-                poly = np.polynomial.Polynomial.fit(reach_data['dist_km'], reach_data['wse'], 2)
+                # binned-median profile line
                 fig.add_trace(go.Scatter(
-                    x=x_range,
-                    y=poly(x_range),
-                    mode='lines',
-                    name=f"{reach} Poly Trend (2nd order)",
-                    line=dict(color=line_color, width=3, dash='dot')
+                    x=xb, y=med.to_numpy(), mode='lines',
+                    name=f"{reach} median profile ({PROFILE_NODE_KM:g} km bins)",
+                    line=dict(color=line_color, width=3),
+                    legendgroup=reach,
+                    hovertemplate='<b>' + reach + '</b><br>'
+                                  'Distance: %{x:.2f} km<br>'
+                                  'Median WSE: %{y:.2f} m<extra></extra>',
                 ))
 
         fig.update_layout(
@@ -907,20 +945,22 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         with st.expander("How to read this graph"):
             st.markdown("""
             **What this shows:** the height of the water surface along each river — from
-            the coast on the left, back to where the two rivers meet on the right.
+            the coast on the left, back toward the anchor point on the right.
 
             - **Left–right**: how far up the river you are, in kilometers. The coast/river
-              mouth is on the left (~70 km); the point where the rivers meet is on the right (0 km).
+              mouth is on the left (~36 km); the anchor point is on the right (0 km).
             - **Up–down**: how high the water sits above sea level, in meters.
             - **Dots**: individual measurements from the satellite.
-            - **Dashed line**: the river's average slope — how steeply the water drops as it
-              flows downhill, shown as centimeters of drop per kilometer (cm/km).
+            - **Solid line**: the river's typical water-surface profile — the median height
+              at each point along the river.
+            - **Shaded band**: the middle range (5th–95th percentile) of measurements around
+              that median — how much the passes vary at each point.
 
             **What to look for:**
-            - A **steeper slope** (bigger cm/km) means the water drops faster and flows with more force.
+            - A **steeper drop** along the line means the water loses height faster there.
             - If one river sits **higher** than the other along the same stretch, it has more
               potential to spill over and shift its path toward the lower one.
-            - The **spread of the dots** shows natural differences between satellite passes and water levels.
+            - A **wider band** means more variation between satellite passes and water levels.
 
             **Tip:** the other tabs go deeper —
             - *Hydraulic Gradient* gives each river's single best average slope.
@@ -929,9 +969,11 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             - *Slope Profile* shows how the steepness changes along the river.
 
             ― Technical details ―
-            Heights are orthometric, relative to the EGM2008 geoid. The dashed line is an
-            ordinary least-squares (OLS) linear fit; its slope is shown in the legend in cm/km.
-            For the density-de-biased, robust characteristic slope, see the Hydraulic Gradient tab.
+            Heights are orthometric, relative to the EGM2008 geoid. The solid line is the
+            **median water-surface elevation in 0.5 km distance bins** (median-per-bin removes
+            along-stream point-density bias); the band spans the 5th–95th percentiles within
+            each bin. For each river's single characteristic slope (robust Theil–Sen), see the
+            Hydraulic Gradient tab.
             """)
 
     with tab_grad:
@@ -1022,8 +1064,8 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                    pairwise slopes) — robust to outliers, unlike ordinary least squares.
 
                 We keep only passes that image the **full river** — at least **8 nodes**, a span of
-                **≥ 30 km**, and a start within **3 km of the confluence**. This matters because both
-                rivers are steep near the confluence and gentle toward the mouth, so a pass that only
+                **≥ 30 km**, and a start within **3 km of the anchor point**. This matters because both
+                rivers are steep near the anchor point and gentle toward the mouth, so a pass that only
                 catches part of the river reports a misleadingly different slope. Only the
                 **open-water season (Apr–Nov)** is used — winter ice inflates WSE by 0.5–2+ m.
 
@@ -1133,7 +1175,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         ))
 
                 fig_dem.update_layout(
-                    xaxis_title="Distance from Confluence Anchor (km)",
+                    xaxis_title="Distance from Anchor Point (km)",
                     yaxis_title="Terrain Elevation (m, EGM2008)",
                     height=600, template=plotly_template,
                 )
@@ -1183,7 +1225,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     ))
                     fig_diff.add_hline(y=0, line_dash="dot", line_color="gray")
                     fig_diff.update_layout(
-                        xaxis_title="Distance from Confluence Anchor (km)",
+                        xaxis_title="Distance from Anchor Point (km)",
                         yaxis_title="Elevation Difference (m)",
                         height=500, template=plotly_template,
                     )
@@ -1230,7 +1272,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     ))
 
                 fig_slope.update_layout(
-                    xaxis_title="Distance from Confluence Anchor (km)",
+                    xaxis_title="Distance from Anchor Point (km)",
                     yaxis_title="Terrain Slope (cm/km)",
                     height=500, template=plotly_template,
                 )
@@ -1276,7 +1318,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
                 fig_detrend.add_hline(y=0, line_dash="dot", line_color="gray")
                 fig_detrend.update_layout(
-                    xaxis_title="Distance from Confluence Anchor (km)",
+                    xaxis_title="Distance from Anchor Point (km)",
                     yaxis_title="Detrended Elevation (m)",
                     height=500, template=plotly_template,
                 )
@@ -1572,7 +1614,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         hovermode='x unified'
                     )
 
-                    # Reverse x-axis to match other plots (Coast on left, Confluence on right)
+                    # Reverse x-axis to match other plots (Coast on left, Anchor on right)
                     fig_diff.update_xaxes(autorange="reversed")
                     add_bifurcation_line(fig_diff)
 
@@ -2006,7 +2048,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         "Max Slope (cm/km)": abs_slope.max(),
                         "Min Slope (cm/km)": abs_slope.min(),
                         "Slope at Coast (cm/km)": abs_slope[0],
-                        "Slope at Confluence (cm/km)": abs_slope[-1],
+                        "Slope at Anchor (cm/km)": abs_slope[-1],
                         "Points Used": len(reach_data)
                     })
 
@@ -2045,7 +2087,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                             "Max Slope (cm/km)": "{:.1f}",
                             "Min Slope (cm/km)": "{:.1f}",
                             "Slope at Coast (cm/km)": "{:.1f}",
-                            "Slope at Confluence (cm/km)": "{:.1f}",
+                            "Slope at Anchor (cm/km)": "{:.1f}",
                         }),
                         width="stretch",
                         hide_index=True
@@ -2600,7 +2642,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 add_bifurcation_line(fig_d, axis="x")
                 fig_d.update_layout(
                     height=440, template=plotly_template,
-                    xaxis_title="Distance from Confluence (km)",
+                    xaxis_title="Distance from Anchor Point (km)",
                     yaxis_title="Change in Water Surface Elevation, Jun 2026 − Jun 2025 (m)",
                     yaxis_range=[-0.5, 0.5],
                     legend=dict(orientation="h", yanchor="bottom", y=1.02),

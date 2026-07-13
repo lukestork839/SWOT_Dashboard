@@ -21,6 +21,10 @@ ENV/
 *.swo
 *~
 
+# Thesis figures: commit the generators/captions/assets, not the rendered output
+# (regenerable from the scripts; re-rendered on each clean-data refresh)
+thesis_figures/output/
+
 # Project-specific: Large data files
 batch_outputs/
 # Deployment data lives on the GitHub Release (v2.0-data), not in git
