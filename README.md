@@ -99,7 +99,7 @@ For each satellite pass in your date range:
 3. Extracts pixel cloud data within the river polygon boundaries (`river_poly.zip`)
 4. Applies the quality filter chain (see [Scientific Methodology](#scientific-methodology))
 5. Computes WSE with geoid and tide corrections
-6. Computes distance from the confluence anchor point (Haversine)
+6. Computes distance from the anchor point (Haversine)
 7. Calculates per-reach gradient (linear regression)
 8. Saves a daily CSV checkpoint to `batch_outputs/data/YYYY-MM-DD_data.csv`
 9. Deletes the temporary NetCDF file
@@ -204,14 +204,14 @@ All corrections verified against the SWOT Science Data Products User Handbook (J
 
 ### Distance Calculation
 
-All measurements referenced to a common confluence anchor point using Haversine great-circle distance:
+All measurements referenced to a common anchor point using Haversine great-circle distance:
 
 ```python
 ANCHOR_LAT = 59.82463509   # just upriver of the bifurcation
 ANCHOR_LON = -161.33397834
 ```
 
-Convention: 0 km = anchor/confluence, ~70 km = coast. X-axis is reversed in all plots (coast on left, confluence on right).
+Convention: 0 km = anchor point (~2.5 km upriver of the bifurcation), ~36 km = coast. X-axis is reversed in all plots (coast on left, anchor point on right).
 
 ### Ice Season Awareness
 
@@ -292,7 +292,7 @@ All configurable constants are at the top of `SWOT_Pull.py`:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `POLYGON_PATH` | `river_poly.zip` (relative) | Path to river boundary polygons |
-| `ANCHOR_LAT/LON` | 59.825, -161.334 | Confluence anchor point for distance calculation |
+| `ANCHOR_LAT/LON` | 59.825, -161.334 | Anchor point for distance calculation |
 | `DEFAULT_CLASSES` | `[3, 4]` | SWOT classification classes to keep |
 | `CROSS_TRACK_MIN/MAX` | 10,000 / 60,000 m | Cross-track distance filter range |
 | `XOVERCAL_MISSING_MASK` | Bit 23 (8388608) | Crossover calibration missing flag |
@@ -314,7 +314,7 @@ All configurable constants are at the top of `SWOT_Pull.py`:
 | `MAX_MAP_POINTS` | 5,000 | Max points rendered on Folium map |
 | `BIFURCATION_LAT` | 59.828886 | Latitude of river bifurcation point |
 | `BIFURCATION_LON` | -161.377778 | Longitude of river bifurcation point |
-| `BIFURCATION_DIST_KM` | 2.493 | Distance from confluence anchor to bifurcation |
+| `BIFURCATION_DIST_KM` | 2.493 | Distance from anchor point to bifurcation |
 
 ---
 
