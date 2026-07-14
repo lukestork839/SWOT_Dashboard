@@ -47,7 +47,7 @@ This analysis instead reuses the **locked reference-gradient engine** for every 
 | Aggregate each pass to **1 km node medians** before fitting | Removes along-stream point-density bias |
 | **Theil–Sen** slope per pass | Robust to outliers (breakdown ≈ 29 %) |
 | **Full-coverage gate** (≥ 8 nodes, span ≥ 30 km, start ≤ 3 km) | Every pass measures the *same* concave profile — no partial-pass artifact |
-| **Open-water only** (Apr–Nov) | Excludes ice-inflated WSE (Dec–Mar) |
+| **Open-water only** (Apr–Nov) | Excludes ice-inflated WSE (Dec–Mar). Window validated empirically (see note below) |
 | Compare **matched seasons / months** | Removes the seasonal cycle from year-over-year and storm comparisons |
 
 **Two metrics per pass**, both density-unbiased (from the node fit, not raw pixels):
@@ -62,6 +62,16 @@ disturbance (2024 → 2025) is the **natural-variability baseline**. The storm s
 vague "did it change?" into a signal-vs-noise test.
 
 Of 186 passes, **136 full-coverage open-water passes** enter the analysis.
+
+**Why Apr–Nov and not a stricter May–Oct core?** Checked empirically (2026-07). SWOT
+returns gated passes in all 12 months, so the window is a real filter, not a no-op. The
+two shoulder months contribute **37 of 136 (27 %)** of the open-water passes — meaningful
+statistical power — and their per-pass slopes are indistinguishable from the core May–Oct
+summer (Kanektok Apr 196.7 / Nov 195.5 vs core 195.3 cm/km; Uyak Apr 191.2 / Nov 190.4 vs
+core 192.7), i.e. **no ice-inflation signature**, so they are kept. Dec–Mar are dropped:
+the gradient is season-invariant enough that even winter slopes match (~195 / ~192 cm/km),
+but winter WSE is ice-affected and must be excluded from the freshet/baseflow (Q1) and
+typhoon (Q3) water-level comparisons.
 
 ---
 

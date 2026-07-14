@@ -61,6 +61,20 @@ REFGRAD_HIGH_FLOW_MONTHS = {5}     # May freshet
 REFGRAD_LOW_FLOW_MONTHS = {7, 8}   # Jul-Aug baseflow
 REFGRAD_OUTPUT = os.path.join(OUTPUT_BASE, "reference_gradient_per_pass.parquet")
 
+# --- QC: KNOWN-BAD PASSES (documented exclusion registry) ---
+# Passes dropped when building the master analysis product (parquet/CSV + reference
+# gradient). This is a QC FLAG, not a raw-data edit: the per-date daily CSVs in
+# batch_outputs/data/ are left intact for provenance, so the raw pass remains
+# inspectable; it is only filtered when aggregating the master. Kept in sync with
+# thesis_figures/config.EXCLUDED_PASSES. Each entry: 'YYYY-MM-DD': 'reason (evidence)'.
+KNOWN_BAD_PASSES = {
+    "2025-04-17": (
+        "Spring-breakup ice contamination: reach gradient anomalously steep on BOTH "
+        "channels simultaneously (Uyak 236, Kanektok 224 cm/km vs medians 192/196) -- "
+        "a synchronous basin-wide spike is an ice-event signature, not a real gradient."
+    ),
+}
+
 # --- 📍 THE CONFLUENCE ANCHOR ---
 # 59.82463509° N, 161.33397834° W
 # All distances will be measured as a straight line from this point.
@@ -467,6 +481,19 @@ def rebuild_master_from_daily_csvs():
         return
 
     final_df = pd.concat(all_dataframes, ignore_index=True)
+
+    # --- QC: drop documented known-bad passes (provenance kept in daily CSVs) ---
+    # Single filter point: master CSV/parquet, partitions, AND the reference-gradient
+    # artifact (compute_reference_gradient receives final_df) all inherit the exclusion.
+    if KNOWN_BAD_PASSES and "Pass_Date" in final_df.columns:
+        bad = final_df["Pass_Date"].isin(KNOWN_BAD_PASSES)
+        if bad.any():
+            for d in sorted(KNOWN_BAD_PASSES):
+                n = int((final_df["Pass_Date"] == d).sum())
+                if n:
+                    print(f"   🚫 Excluding known-bad pass {d}: {n:,} rows ({KNOWN_BAD_PASSES[d][:60]}…)")
+            final_df = final_df[~bad].reset_index(drop=True)
+
     original_rows = len(final_df)
 
     # --- OPTIMIZATION STEP 1: Keep only necessary columns ---
