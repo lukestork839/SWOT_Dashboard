@@ -31,11 +31,27 @@ MAX_PLOT_POINTS = 15000  # Reduced for large datasets (was 25000)
 MAX_BASELINE_POINTS = 30000  # Reduced for Streamlit Cloud (was 50000)
 MAX_MAP_POINTS = 5000  # Strict limit for map rendering
 
+# Gradient Profile tab: density-de-biased profile line. Bin distance to nodes and
+# take the MEDIAN WSE per node (each along-stream location weighted equally,
+# regardless of point density) instead of an OLS fit through the raw point cloud.
+PROFILE_NODE_KM = 0.5       # distance-bin width for the binned-median profile line
+PROFILE_BAND = (5, 95)      # percentile band shown around the median profile
+
+# Residual-domain outlier flag for the Detrended Profile.
+# The ingestion MAD filter (SWOT_Pull.py) runs on RAW WSE per-pass, where the
+# ~70 km downstream gradient inflates the reach spread so much that its keep-band
+# is ~150 m wide -- so localized spring-ice/contamination blobs (a handful of
+# passes producing WSE tens of metres below the local trend) pass through and
+# then dominate the detrended min/max/range. This threshold re-applies the SAME
+# Modified Z-Score method (Iglewicz & Hoaglin 1993) in the DETRENDED domain,
+# where residuals are ~0-centred so the flag actually isolates those points.
+RESIDUAL_MAD_THRESHOLD = 3.5  # Modified Z-score, matches ingestion MAD_THRESHOLD
+
 # --- BIFURCATION POINT ---
 # Where Kanektok River and Uyak Creek diverge (59°49'43.99"N, 161°22'40.00"W)
 BIFURCATION_LAT = 59.828886
 BIFURCATION_LON = -161.377778
-BIFURCATION_DIST_KM = 2.493  # Haversine distance from confluence anchor point
+BIFURCATION_DIST_KM = 2.493  # Haversine distance from anchor point
 
 # FIXED COLORS
 COLOR_MAP = {
@@ -156,6 +172,29 @@ def calculate_detrending(dist_km, wse, method):
         method_name = "LOESS (Local Regression)"
 
     return baseline_pred, coeffs, method_name
+
+
+def flag_residual_outliers(residuals, threshold=RESIDUAL_MAD_THRESHOLD):
+    """Flag detrended residuals as outliers via the Modified Z-Score (MAD-based).
+
+    Same estimator as the ingestion filter (calculate_mad_outliers in SWOT_Pull.py):
+    Modified Z = 0.6745 * (x - median) / MAD, flagged when |Z| > threshold. The
+    difference is the DOMAIN: applied here to residuals (data minus baseline), not
+    raw WSE, so the trend no longer inflates the spread and the flag isolates the
+    genuinely anomalous points instead of being masked by the downstream gradient.
+
+    Returns a boolean array (True = outlier) aligned to `residuals`. Nothing is
+    deleted -- callers decide how to present flagged points.
+    """
+    r = np.asarray(residuals, dtype=float)
+    if len(r) == 0:
+        return np.zeros(0, dtype=bool)
+    median = np.median(r)
+    mad = np.median(np.abs(r - median))
+    if mad == 0:  # degenerate spread -> flag nothing
+        return np.zeros(len(r), dtype=bool)
+    modified_z = 0.6745 * (r - median) / mad
+    return np.abs(modified_z) > threshold
 
 
 @st.cache_data(ttl=86400)
@@ -782,7 +821,28 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
     with tab1:
         st.subheader("River Profile")
-        
+
+        # B2: surface each river's robust reference gradient on the landing tab.
+        # This is the SAME value as the Hydraulic Gradient tab -- the median of
+        # per-pass Theil-Sen slopes over the full open-water record -- NOT the slope
+        # of the profile line below (which follows the current pass selection).
+        _refg = load_reference_gradient(con)
+        if _refg is not None and len(_refg) > 0:
+            _ow = _refg[(_refg["open_water"]) & (_refg["gated"])]
+            _parts = []
+            for _r in sorted(selected_reaches, key=lambda r: r == "Uyak_Creek"):
+                _d = _ow[_ow["Reach_Name"] == _r]
+                if len(_d) > 0:
+                    _parts.append(f"**{_r.replace('_', ' ')}** {_d['theilsen_cm_km'].abs().median():.1f} cm/km")
+            if _parts:
+                st.markdown(
+                    "**Reference gradient (robust Theil–Sen, full open-water record):** "
+                    + " · ".join(_parts)
+                    + " — each river's characteristic slope (details on the **Hydraulic "
+                    "Gradient** tab). This is *not* the slope of the profile line below, "
+                    "which follows your current pass selection."
+                )
+
         fig = go.Figure()
 
         # Draw Kanektok first so Uyak layers on top
@@ -825,29 +885,40 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                               '<extra></extra>'
             ))
 
-            # Trendlines: linear (existing) + 2nd-order polynomial (test overlay)
+            # Density-de-biased profile line: bin distance to PROFILE_NODE_KM nodes
+            # and take the MEDIAN WSE per node, so every along-stream location
+            # contributes equally regardless of point density. This replaces the old
+            # OLS linear trend, whose cm/km slope was density-biased (see the
+            # Hydraulic Gradient tab). Same median-per-bin idiom as the Slope Profile
+            # and Elevation Difference tabs. A shaded percentile band shows the spread
+            # of passes around the median. The single characteristic slope is NOT
+            # drawn here -- it is the robust Theil-Sen value shown above the chart.
             if len(reach_data) >= 5:
-                slope, intercept, r, _, _ = stats.linregress(reach_data['dist_km'], reach_data['wse'])
-                slope_cm = abs(slope * 100)
-                x_range = np.linspace(reach_data['dist_km'].min(), reach_data['dist_km'].max(), 100)
-                y_range = intercept + slope * x_range
+                node = (reach_data['dist_km'] / PROFILE_NODE_KM).round() * PROFILE_NODE_KM
+                g = reach_data.assign(_node=node).groupby('_node')['wse']
+                med = g.median().sort_index()
+                lo = g.quantile(PROFILE_BAND[0] / 100).sort_index()
+                hi = g.quantile(PROFILE_BAND[1] / 100).sort_index()
+                xb = np.asarray(med.index, dtype=float)
 
+                # percentile band (drawn under the line)
                 fig.add_trace(go.Scatter(
-                    x=x_range,
-                    y=y_range,
-                    mode='lines',
-                    name=f"{reach} Linear Trend: {slope_cm:.1f} cm/km",
-                    line=dict(color=line_color, width=4, dash='dash')
+                    x=np.concatenate([xb, xb[::-1]]),
+                    y=np.concatenate([hi.to_numpy(), lo.to_numpy()[::-1]]),
+                    fill='toself', fillcolor=line_color, opacity=0.15,
+                    mode='lines', line=dict(width=0),
+                    name=f"{reach} {PROFILE_BAND[0]}–{PROFILE_BAND[1]}% of passes",
+                    legendgroup=reach, showlegend=False, hoverinfo='skip',
                 ))
-
-                # 2nd-order polynomial fit (same curve shape as the Detrended tab baseline)
-                poly = np.polynomial.Polynomial.fit(reach_data['dist_km'], reach_data['wse'], 2)
+                # binned-median profile line
                 fig.add_trace(go.Scatter(
-                    x=x_range,
-                    y=poly(x_range),
-                    mode='lines',
-                    name=f"{reach} Poly Trend (2nd order)",
-                    line=dict(color=line_color, width=3, dash='dot')
+                    x=xb, y=med.to_numpy(), mode='lines',
+                    name=f"{reach} median profile ({PROFILE_NODE_KM:g} km bins)",
+                    line=dict(color=line_color, width=3),
+                    legendgroup=reach,
+                    hovertemplate='<b>' + reach + '</b><br>'
+                                  'Distance: %{x:.2f} km<br>'
+                                  'Median WSE: %{y:.2f} m<extra></extra>',
                 ))
 
         fig.update_layout(
@@ -874,20 +945,22 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         with st.expander("How to read this graph"):
             st.markdown("""
             **What this shows:** the height of the water surface along each river — from
-            the coast on the left, back to where the two rivers meet on the right.
+            the coast on the left, back toward the anchor point on the right.
 
             - **Left–right**: how far up the river you are, in kilometers. The coast/river
-              mouth is on the left (~70 km); the point where the rivers meet is on the right (0 km).
+              mouth is on the left (~36 km); the anchor point is on the right (0 km).
             - **Up–down**: how high the water sits above sea level, in meters.
             - **Dots**: individual measurements from the satellite.
-            - **Dashed line**: the river's average slope — how steeply the water drops as it
-              flows downhill, shown as centimeters of drop per kilometer (cm/km).
+            - **Solid line**: the river's typical water-surface profile — the median height
+              at each point along the river.
+            - **Shaded band**: the middle range (5th–95th percentile) of measurements around
+              that median — how much the passes vary at each point.
 
             **What to look for:**
-            - A **steeper slope** (bigger cm/km) means the water drops faster and flows with more force.
+            - A **steeper drop** along the line means the water loses height faster there.
             - If one river sits **higher** than the other along the same stretch, it has more
               potential to spill over and shift its path toward the lower one.
-            - The **spread of the dots** shows natural differences between satellite passes and water levels.
+            - A **wider band** means more variation between satellite passes and water levels.
 
             **Tip:** the other tabs go deeper —
             - *Hydraulic Gradient* gives each river's single best average slope.
@@ -896,9 +969,11 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             - *Slope Profile* shows how the steepness changes along the river.
 
             ― Technical details ―
-            Heights are orthometric, relative to the EGM2008 geoid. The dashed line is an
-            ordinary least-squares (OLS) linear fit; its slope is shown in the legend in cm/km.
-            For the density-de-biased, robust characteristic slope, see the Hydraulic Gradient tab.
+            Heights are orthometric, relative to the EGM2008 geoid. The solid line is the
+            **median water-surface elevation in 0.5 km distance bins** (median-per-bin removes
+            along-stream point-density bias); the band spans the 5th–95th percentiles within
+            each bin. For each river's single characteristic slope (robust Theil–Sen), see the
+            Hydraulic Gradient tab.
             """)
 
     with tab_grad:
@@ -989,8 +1064,8 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                    pairwise slopes) — robust to outliers, unlike ordinary least squares.
 
                 We keep only passes that image the **full river** — at least **8 nodes**, a span of
-                **≥ 30 km**, and a start within **3 km of the confluence**. This matters because both
-                rivers are steep near the confluence and gentle toward the mouth, so a pass that only
+                **≥ 30 km**, and a start within **3 km of the anchor point**. This matters because both
+                rivers are steep near the anchor point and gentle toward the mouth, so a pass that only
                 catches part of the river reports a misleadingly different slope. Only the
                 **open-water season (Apr–Nov)** is used — winter ice inflates WSE by 0.5–2+ m.
 
@@ -1100,7 +1175,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         ))
 
                 fig_dem.update_layout(
-                    xaxis_title="Distance from Confluence Anchor (km)",
+                    xaxis_title="Distance from Anchor Point (km)",
                     yaxis_title="Terrain Elevation (m, EGM2008)",
                     height=600, template=plotly_template,
                 )
@@ -1150,7 +1225,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     ))
                     fig_diff.add_hline(y=0, line_dash="dot", line_color="gray")
                     fig_diff.update_layout(
-                        xaxis_title="Distance from Confluence Anchor (km)",
+                        xaxis_title="Distance from Anchor Point (km)",
                         yaxis_title="Elevation Difference (m)",
                         height=500, template=plotly_template,
                     )
@@ -1197,7 +1272,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     ))
 
                 fig_slope.update_layout(
-                    xaxis_title="Distance from Confluence Anchor (km)",
+                    xaxis_title="Distance from Anchor Point (km)",
                     yaxis_title="Terrain Slope (cm/km)",
                     height=500, template=plotly_template,
                 )
@@ -1243,7 +1318,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
                 fig_detrend.add_hline(y=0, line_dash="dot", line_color="gray")
                 fig_detrend.update_layout(
-                    xaxis_title="Distance from Confluence Anchor (km)",
+                    xaxis_title="Distance from Anchor Point (km)",
                     yaxis_title="Detrended Elevation (m)",
                     height=500, template=plotly_template,
                 )
@@ -1539,7 +1614,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         hovermode='x unified'
                     )
 
-                    # Reverse x-axis to match other plots (Coast on left, Confluence on right)
+                    # Reverse x-axis to match other plots (Coast on left, Anchor on right)
                     fig_diff.update_xaxes(autorange="reversed")
                     add_bifurcation_line(fig_diff)
 
@@ -1613,9 +1688,27 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             if len(baseline_df) == 0:
                 st.warning("No data available for detrending analysis.")
             else:
-                # Check detrending quality
-                overall_mean_residual = baseline_df['residual'].mean()
-                overall_std_residual = baseline_df['residual'].std()
+                # Flag residual-domain outliers (per-reach), matching the ingestion
+                # Modified Z-Score method but applied to residuals rather than raw WSE.
+                # These are localized contamination (e.g. spring-ice blobs) that the
+                # raw-WSE ingestion MAD cannot catch; flagging (not deleting) them keeps
+                # the stats table and plot readable without discarding data silently.
+                baseline_df = baseline_df.copy()
+                baseline_df['residual_outlier'] = False
+                for _reach in baseline_df['Reach_Name'].unique():
+                    _mask = baseline_df['Reach_Name'] == _reach
+                    _flags = flag_residual_outliers(baseline_df.loc[_mask, 'residual'].values)
+                    baseline_df.loc[_mask, 'residual_outlier'] = _flags
+                n_flagged = int(baseline_df['residual_outlier'].sum())
+                pct_flagged = 100 * n_flagged / len(baseline_df)
+
+                # Fit-quality metrics use the CLEAN (non-flagged) residuals so a handful
+                # of contaminated points can't dominate the mean/spread shown to the user.
+                clean_df = baseline_df[~baseline_df['residual_outlier']]
+
+                # Check detrending quality (robust to flagged outliers)
+                overall_mean_residual = clean_df['residual'].mean()
+                overall_std_residual = clean_df['residual'].std()
 
                 # Warning if only one river selected (detrending works best with both)
                 num_rivers = baseline_df['Reach_Name'].nunique()
@@ -1633,9 +1726,13 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 # Create detrended plot
                 fig_detrend = go.Figure()
 
-                # Plot residuals for each river (Uyak on top)
+                # Plot residuals for each river (Uyak on top). Flagged residual
+                # outliers are omitted from the traces so the y-axis auto-scales to the
+                # real signal instead of being stretched by a few contaminated points;
+                # they remain in baseline_df and the Raw Data tab (nothing is deleted).
                 for reach in sorted(selected_reaches, key=lambda r: r == "Uyak_Creek"):
-                    reach_data = plot_df[plot_df['Reach_Name'] == reach]
+                    reach_data = plot_df[(plot_df['Reach_Name'] == reach)
+                                         & (~plot_df['residual_outlier'])]
                     if len(reach_data) == 0:
                         continue
 
@@ -1701,6 +1798,13 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 st.caption("🔦 **Link to map:** drag a box around points here — they'll be "
                            "highlighted (yellow outline) on the **🗺️ Map View** tab. Switch back "
                            "to zoom/pan with the toolbar at the top-right of the chart.")
+                if n_flagged > 0:
+                    st.caption(f"⚠️ **{n_flagged:,} point(s) ({pct_flagged:.3f}%)** flagged as "
+                               f"residual outliers (Modified Z-Score > {RESIDUAL_MAD_THRESHOLD}, "
+                               "per river) and omitted from this view so the axis reflects the "
+                               "real signal. These are localized contamination (e.g. spring ice) "
+                               "that the raw-WSE ingestion filter cannot catch. They are **not "
+                               "deleted** — they remain in the data and the Raw Data tab.")
                 detr_event = st.plotly_chart(
                     fig_detrend, width="stretch", theme=None,
                     on_select="rerun", selection_mode=("points", "box"),
@@ -1712,10 +1816,10 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("Overall Mean Residual", f"{overall_mean_residual:.4f} m",
-                             help="Should be close to 0.000 for a good fit")
+                             help="Mean of non-flagged residuals; should be close to 0.000 for a good fit")
                 with col2:
                     st.metric("Residual Std Dev", f"{overall_std_residual:.3f} m",
-                             help="Measures spread of residuals around baseline")
+                             help="Spread of non-flagged residuals around baseline (flagged outliers excluded)")
                 with col3:
                     st.metric("Rivers in Baseline Fit", num_rivers,
                              help="Detrending works best when both rivers are included")
@@ -1793,32 +1897,56 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 # Show statistics per river
                 st.subheader("Detrended Elevation Statistics")
 
+                # Robust statistics. Min/Max/Range are non-robust by construction (a
+                # single contaminated pixel sets them), so they are replaced by robust
+                # dispersion measures computed over ALL residuals: the median, a
+                # MAD-based robust standard deviation (1.4826 * MAD, the normal-
+                # consistent estimator), and the 1st/99th percentiles. Mean and Std Dev
+                # are retained for continuity but computed on the non-flagged residuals
+                # so they are not distorted by flagged outliers. "N Flagged" reports how
+                # many points exceeded the residual Modified Z-Score threshold.
                 stats_data = []
                 for reach in selected_reaches:
-                    reach_data = baseline_df[baseline_df['Reach_Name'] == reach]
-                    if len(reach_data) > 0:
-                        residuals = reach_data['residual']
-                        stats_data.append({
-                            "River": reach,
-                            "Mean Residual (m)": residuals.mean(),
-                            "Std Dev (m)": residuals.std(),
-                            "Min Residual (m)": residuals.min(),
-                            "Max Residual (m)": residuals.max(),
-                            "Range (m)": residuals.max() - residuals.min()
-                        })
+                    reach_all = baseline_df[baseline_df['Reach_Name'] == reach]
+                    if len(reach_all) == 0:
+                        continue
+                    residuals_all = reach_all['residual']
+                    residuals_clean = reach_all.loc[~reach_all['residual_outlier'], 'residual']
+                    med = residuals_all.median()
+                    robust_sd = 1.4826 * (residuals_all - med).abs().median()
+                    stats_data.append({
+                        "River": reach,
+                        "Median (m)": med,
+                        "Robust SD (m)": robust_sd,
+                        "P1 (m)": residuals_all.quantile(0.01),
+                        "P99 (m)": residuals_all.quantile(0.99),
+                        "Mean (m)": residuals_clean.mean(),
+                        "Std Dev (m)": residuals_clean.std(),
+                        "N Flagged": int(reach_all['residual_outlier'].sum()),
+                    })
 
                 if stats_data:
                     stats_summary = pd.DataFrame(stats_data)
                     st.dataframe(
                         stats_summary.style.format({
-                            "Mean Residual (m)": "{:.3f}",
+                            "Median (m)": "{:.3f}",
+                            "Robust SD (m)": "{:.3f}",
+                            "P1 (m)": "{:.3f}",
+                            "P99 (m)": "{:.3f}",
+                            "Mean (m)": "{:.3f}",
                             "Std Dev (m)": "{:.3f}",
-                            "Min Residual (m)": "{:.3f}",
-                            "Max Residual (m)": "{:.3f}",
-                            "Range (m)": "{:.3f}"
+                            "N Flagged": "{:,d}",
                         }),
                         width="stretch",
                         hide_index=True
+                    )
+                    st.caption(
+                        "**Median / Robust SD (1.4826·MAD) / P1 / P99** are outlier-resistant "
+                        "measures over all residuals. **Mean / Std Dev** exclude points flagged "
+                        f"by the residual Modified Z-Score (> {RESIDUAL_MAD_THRESHOLD}). "
+                        "**N Flagged** counts those points, retained in the data but excluded here "
+                        "and from the plot. Min/Max/Range were removed: a single contaminated "
+                        "pixel sets them, so they misrepresented the detrended spread."
                     )
 
                 # Optional: Show baseline trend curve
@@ -1920,7 +2048,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         "Max Slope (cm/km)": abs_slope.max(),
                         "Min Slope (cm/km)": abs_slope.min(),
                         "Slope at Coast (cm/km)": abs_slope[0],
-                        "Slope at Confluence (cm/km)": abs_slope[-1],
+                        "Slope at Anchor (cm/km)": abs_slope[-1],
                         "Points Used": len(reach_data)
                     })
 
@@ -1959,7 +2087,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                             "Max Slope (cm/km)": "{:.1f}",
                             "Min Slope (cm/km)": "{:.1f}",
                             "Slope at Coast (cm/km)": "{:.1f}",
-                            "Slope at Confluence (cm/km)": "{:.1f}",
+                            "Slope at Anchor (cm/km)": "{:.1f}",
                         }),
                         width="stretch",
                         hide_index=True
@@ -2514,7 +2642,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 add_bifurcation_line(fig_d, axis="x")
                 fig_d.update_layout(
                     height=440, template=plotly_template,
-                    xaxis_title="Distance from Confluence (km)",
+                    xaxis_title="Distance from Anchor Point (km)",
                     yaxis_title="Change in Water Surface Elevation, Jun 2026 − Jun 2025 (m)",
                     yaxis_range=[-0.5, 0.5],
                     legend=dict(orientation="h", yanchor="bottom", y=1.02),

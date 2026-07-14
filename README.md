@@ -99,7 +99,7 @@ For each satellite pass in your date range:
 3. Extracts pixel cloud data within the river polygon boundaries (`river_poly.zip`)
 4. Applies the quality filter chain (see [Scientific Methodology](#scientific-methodology))
 5. Computes WSE with geoid and tide corrections
-6. Computes distance from the confluence anchor point (Haversine)
+6. Computes distance from the anchor point (Haversine)
 7. Calculates per-reach gradient (linear regression)
 8. Saves a daily CSV checkpoint to `batch_outputs/data/YYYY-MM-DD_data.csv`
 9. Deletes the temporary NetCDF file
@@ -132,7 +132,7 @@ The dashboard organizes analysis into top-level tabs and nested "More Tabs":
 | Tab | What It Shows |
 |-----|---------------|
 | **Gradient Profile** | WSE vs. distance scatter plot with linear regression trendlines. Shows overall river steepness in cm/km. Supports **box-select → Map View highlight** (see below). |
-| **Detrended Profile** | Removes the large-scale elevation trend (Relative Elevation Model). Reveals subtle systematic differences between rivers. Supports Linear, Polynomial (2nd/3rd order), and LOESS baselines. Supports **box-select → Map View highlight** (see below). |
+| **Detrended Profile** | Removes the large-scale elevation trend (Relative Elevation Model). Reveals subtle systematic differences between rivers. Supports Linear, Polynomial (2nd/3rd order), and LOESS baselines. Statistics are reported as robust measures (median, MAD-based robust SD, P1/P99); a residual-domain outlier flag (Modified Z-Score > 3.5, per river) omits localized contamination from the plot and mean/SD without deleting it. Supports **box-select → Map View highlight** (see below). |
 | **Map View** | Interactive Folium map with multiple basemaps (satellite, terrain, etc.), measuring tools for distance/area, and color-by options (river name, WSE, classification, detrended residual, interval slope). Shows points **box-selected on a profile** as yellow-outlined markers. |
 
 > **Profile → Map cross-highlight:** on the **Gradient Profile** or **Detrended Profile**, drag a box (or lasso) around points of interest. Those exact points are outlined in yellow (keeping their river color) on the **Map View**, which auto-zooms to them so you can see where along the river they sit. Selections from both profiles combine; a **Clear highlight** button on the map resets them. Requires `streamlit>=1.35` (Plotly selection events).
@@ -198,18 +198,20 @@ All corrections verified against the SWOT Science Data Products User Handbook (J
 | 5 | Classification | Classes 3 and 4 only | Keeps high-quality water pixels (Handbook Table 6.1) |
 | 6 | MAD outlier removal | Modified Z-score <= 3.5, per-reach | Removes anomalous WSE measurements |
 
+**Note on the two MAD applications:** this ingestion filter runs on *raw WSE per pass*, where the downstream gradient inflates the spread so much that localized contamination (e.g. spring-ice blobs in a couple of passes) can pass through. The Detrended Profile tab therefore re-applies the *same* Modified Z-Score (> 3.5, per river) to the *residuals* — the domain where such points actually stand out — to flag them in its statistics and plot. This is a display-layer safeguard; no data is deleted.
+
 **Pending expert review:** `geolocation_qual` and `classification_qual` bit-mask filters are implemented but disabled. They remove nearly all data for narrow rivers (~50-100m wide) like Uyak Creek due to land/water mixing effects. See `SCIENTIFIC_METHODOLOGY.md` for the full PIXC quality flag reference.
 
 ### Distance Calculation
 
-All measurements referenced to a common confluence anchor point using Haversine great-circle distance:
+All measurements referenced to a common anchor point using Haversine great-circle distance:
 
 ```python
 ANCHOR_LAT = 59.82463509   # just upriver of the bifurcation
 ANCHOR_LON = -161.33397834
 ```
 
-Convention: 0 km = anchor/confluence, ~70 km = coast. X-axis is reversed in all plots (coast on left, confluence on right).
+Convention: 0 km = anchor point (~2.5 km upriver of the bifurcation), ~36 km = coast. X-axis is reversed in all plots (coast on left, anchor point on right).
 
 ### Ice Season Awareness
 
@@ -290,7 +292,7 @@ All configurable constants are at the top of `SWOT_Pull.py`:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `POLYGON_PATH` | `river_poly.zip` (relative) | Path to river boundary polygons |
-| `ANCHOR_LAT/LON` | 59.825, -161.334 | Confluence anchor point for distance calculation |
+| `ANCHOR_LAT/LON` | 59.825, -161.334 | Anchor point for distance calculation |
 | `DEFAULT_CLASSES` | `[3, 4]` | SWOT classification classes to keep |
 | `CROSS_TRACK_MIN/MAX` | 10,000 / 60,000 m | Cross-track distance filter range |
 | `XOVERCAL_MISSING_MASK` | Bit 23 (8388608) | Crossover calibration missing flag |
@@ -312,7 +314,7 @@ All configurable constants are at the top of `SWOT_Pull.py`:
 | `MAX_MAP_POINTS` | 5,000 | Max points rendered on Folium map |
 | `BIFURCATION_LAT` | 59.828886 | Latitude of river bifurcation point |
 | `BIFURCATION_LON` | -161.377778 | Longitude of river bifurcation point |
-| `BIFURCATION_DIST_KM` | 2.493 | Distance from confluence anchor to bifurcation |
+| `BIFURCATION_DIST_KM` | 2.493 | Distance from anchor point to bifurcation |
 
 ---
 
