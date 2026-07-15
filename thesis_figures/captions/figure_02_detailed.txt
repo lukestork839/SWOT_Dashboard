@@ -1,0 +1,87 @@
+Figure 2 — detailed description of the data-processing pipeline (Section 4.2)
+
+The pipeline is implemented as a single ingestion script (SWOT_Pull.py) that runs
+top to bottom for every satellite overpass, writing an immutable per-pass
+checkpoint at the halfway point so a long download can be interrupted and resumed.
+Each stage of Figure 2 is described below in the order it executes.
+
+SWOT satellite data (source). The pipeline draws on NASA's Surface Water and Ocean
+Topography (SWOT) mission, specifically the Level-2 high-rate pixel-cloud product
+(SWOT_L2_HR_PIXC_D, Version D). Rather than a river-averaged product, the pixel
+cloud reports the individual illuminated water pixels within each pass, preserving
+the across-channel detail needed to resolve two narrow, adjacent channels. Granules
+are discovered and downloaded through the earthaccess client, queried by the
+study-area bounding box and the requested date range.
+
+Data ingest. For each downloaded granule the pixel_cloud group is opened and the
+required fields are read: pixel latitude and longitude, the raw range-derived
+height, the surface-classification flag, the geoid and geophysical-tide corrections
+(solid-earth, pole, and load tides), and the per-pixel geolocation-quality and
+cross-track-distance fields used later for filtering. Passes are handled one at a
+time to keep memory bounded regardless of archive size.
+
+Spatial subset. Each pass is first reduced with a fast rectangular bounding-box mask,
+then clipped exactly by an point-in-polygon test (.within()) against the two
+hand-digitised channel polygons (river_poly.zip). Only pixels falling inside the
+Kanektok River or Uyak Creek polygon are retained; everything else — ocean, tundra,
+neighbouring water bodies — is discarded. This is the step that was tightened in the
+polygon refinement to exclude a small lake that had been leaking into the Uyak
+extent.
+
+Elevation correction. The raw pixel height is not yet a usable water-surface
+elevation: it still contains the geoid undulation and the time-varying tidal
+loads. Following the SWOT product handbook (JPL D-109532), the pipeline computes
+true water-surface elevation as WSE = height − geoid − solid-earth tide − pole tide
+− load tide. All subsequent elevation and slope quantities are computed on this
+corrected WSE.
+
+Distance mapping. To place both channels on a single downstream axis, every pixel is
+assigned an along-stream position equal to its great-circle (Haversine) distance
+from one shared anchor point on the common upstream channel (Figure 1; 0 km). Using
+one radial origin for both rivers is what makes their gradients directly comparable
+in Figures 4-8. The Haversine approximation is appropriate at these sub-100 km
+distances.
+
+Quality-control filters. Four filters are applied in a fixed order, each removing a
+distinct class of unreliable pixel:
+  1. Cross-track filter — keeps only pixels whose across-track distance from the
+     satellite ground track lies between 10 and 60 km, excluding both the near-nadir
+     data gap and the noisy far edge of the swath.
+  2. Calibration filter — drops pixels for which the crossover-calibration flag is
+     marked missing (the XOVERCAL_MISSING bit, bit 23, of geolocation_qual), i.e.
+     pixels whose geolocation could not be properly calibrated.
+  3. Classification filter — retains only open-water surface classes (classes 3 and
+     4), removing land, near-land, and low-confidence edge pixels.
+  4. Outlier filter — within each reach, flags and removes residual elevation
+     outliers using a robust modified Z-score based on the median absolute deviation
+     (|modified Z| ≤ 3.5; Iglewicz & Hoaglin, 1993), which is insensitive to the very
+     outliers it is meant to catch.
+
+Daily checkpoint. Each fully processed pass is written to a dated CSV
+(batch_outputs/data/YYYY-MM-DD_data.csv). These files are the raw-provenance layer of
+the pipeline: they are never edited in place, and because the script skips any date
+whose CSV already exists, an interrupted pull resumes exactly where it stopped
+without re-downloading completed passes.
+
+Aggregation. Once all requested dates are present as daily CSVs, the master product
+is rebuilt from the full set (rebuild_master_from_daily_csvs). At this single point
+the pipeline applies its quality-control registry of known-bad passes — for example
+the 2025-04-17 spring-breakup pass, which is contaminated by river ice — excluding
+them from every downstream product without touching the raw checkpoints. The master
+is then reduced to the analysis columns and stored efficiently (float32 / categorical
+types, zstd compression, and partitioned copies for the dashboard).
+
+Data products. Aggregation yields two products. The master dataset
+(master_all_data.parquet, plus dashboard partitions) is the complete table of clean
+water-surface points. The reference gradient (reference_gradient_per_pass.parquet) is
+the derived slope product: within each pass the pixels are binned to 1 km nodes
+(median WSE per node), a robust Theil–Sen slope is fit to those nodes, and the
+per-river reference gradient is taken as the median slope over the full-coverage,
+open-water passes that pass a span-and-start gate.
+
+Downstream consumers. Because the known-bad-pass registry is applied once at
+aggregation, all three consumers inherit exactly the same definition of the
+analysis-ready data: the one-time temporal-stability analysis (temporal_analysis.py,
+Figure 3), the interactive Streamlit dashboard (dashboard_swot.py, served over DuckDB
+from a deployment subset on a GitHub Release), and the static thesis figures
+(thesis_figures/, Figures 1 and 3-8).
