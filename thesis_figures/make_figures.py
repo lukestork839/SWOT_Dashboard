@@ -15,9 +15,9 @@ Usage
     python -m thesis_figures.make_figures --all
     python -m thesis_figures.make_figures --smoke    # verify data + core, no plots
 
-Status: SCAFFOLDING. Figures are stubbed and will be implemented one at a time as
-we finalise each figure's spec. Fig 2 (pipeline flowchart) is external (drawn in a
-diagramming tool) and intentionally has no builder here.
+All figures (1-8) have in-module builders. Fig 2 (the pipeline flowchart) is a
+matplotlib-drawn diagram rather than a data plot, but is generated here too so it
+stays consistent with the thesis typography and is regenerable.
 """
 
 from __future__ import annotations
@@ -285,6 +285,126 @@ def build_fig1(zoom: int = 12, n_points: int = 90000, pad_frac: float = 0.06):
     axins.set_xticks([]); axins.set_yticks([])
     for s in axins.spines.values():
         s.set(visible=True, edgecolor="0.3", linewidth=0.8)
+
+    return fig
+
+
+def build_fig2():
+    """Fig 2 -- SWOT ingestion & processing pipeline (Methodology 4.2).
+
+    Flowchart of the custom Python pipeline (SWOT_Pull.py), drawn in matplotlib (no
+    external diagramming tool) so it shares the thesis typography and is regenerable.
+    It plots no data, so it is unaffected by data refreshes. Flow, top to bottom:
+      source (NASA PIXC) -> per-pass processing [ingest & open pixel_cloud, spatial
+      subset to the two channel polygons, geophysical WSE correction, Haversine
+      distance mapping, and the four ordered quality-control gates] -> daily-CSV
+      provenance checkpoint -> master aggregation with the documented known-bad-pass
+      exclusion -> the two data products (master parquet + per-pass reference
+      gradient) that feed the dashboard, the temporal analysis, and the thesis
+      figures. Category colours encode pipeline STAGE (not river), deliberately
+      distinct from the firebrick/dodgerblue river palette used elsewhere.
+    """
+    from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+
+    # Stage palette: soft fills + darker edges. Kept clearly apart from the
+    # firebrick/dodgerblue river palette -- here colour means pipeline stage.
+    C_SRC = ("#D9E1F2", "#2F5597")    # source
+    C_STEP = ("#FFFFFF", "#333333")   # per-pass processing step
+    C_QC = ("#FCE4D6", "#C55A11")     # quality-control gate
+    C_CHK = ("#FFF2CC", "#BF9000")    # daily-CSV checkpoint (provenance)
+    C_AGG = ("#E7E6F5", "#5B4FA0")    # aggregation
+    C_PROD = ("#E2EFDA", "#548235")   # data product
+    C_DOWN = ("#EDEDED", "#595959")   # downstream consumer
+    C_CONT = "#F7F8FA"                # per-pass container fill
+    C_QCONT = "#FBEEE6"               # QC sub-container fill
+    ARROW = "#555555"
+    REFARROW = "#7A9A5B"              # reference-gradient data-flow arrows
+
+    fig, ax = plt.subplots(figsize=(config.FIG_WIDTH_FULL, 9.6))
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 100)
+    ax.axis("off")
+
+    def box(cx, cy, w, h, text, fc, ec, *, fs=6.9, weight="normal",
+            tc="#111111", z=3):
+        ax.add_patch(FancyBboxPatch(
+            (cx - w / 2, cy - h / 2), w, h,
+            boxstyle="round,pad=0,rounding_size=0.7",
+            linewidth=1.1, edgecolor=ec, facecolor=fc, zorder=z))
+        ax.text(cx, cy, text, ha="center", va="center", fontsize=fs,
+                color=tc, weight=weight, zorder=z + 1, linespacing=1.35)
+        return {"top": (cx, cy + h / 2), "bot": (cx, cy - h / 2),
+                "lft": (cx - w / 2, cy), "rgt": (cx + w / 2, cy)}
+
+    def arrow(p0, p1, rad=0.0, color=ARROW, lw=1.3):
+        ax.add_patch(FancyArrowPatch(
+            p0, p1, arrowstyle="-|>", mutation_scale=13, lw=lw, color=color,
+            connectionstyle=f"arc3,rad={rad}", shrinkA=2, shrinkB=2, zorder=2.5))
+
+    # --- containers (behind everything) ---------------------------------------
+    ax.add_patch(FancyBboxPatch((2, 42), 96, 49.5,
+                 boxstyle="round,pad=0,rounding_size=1.0", linewidth=1.0,
+                 edgecolor="#C4CAD3", facecolor=C_CONT, zorder=0.5))
+    ax.text(4, 89.6, "Per-pass processing",
+            ha="left", va="center", fontsize=8.5, weight="bold", color="#5A6373",
+            zorder=1.0)
+    ax.add_patch(FancyBboxPatch((6, 43.5), 88, 13.5,
+                 boxstyle="round,pad=0,rounding_size=0.8", linewidth=1.0,
+                 edgecolor=C_QC[1], facecolor=C_QCONT, zorder=1.2))
+    ax.text(8, 55.5, "Quality-control filters",
+            ha="left", va="center", fontsize=7.6, style="italic",
+            color=C_QC[1], zorder=1.6)
+
+    # --- nodes ----------------------------------------------------------------
+    # Boxes carry short titles only; the mechanics live in the Methods text.
+    src = box(50, 96, 54, 5.4, "SWOT satellite data",
+              *C_SRC, fs=10, weight="bold", tc="#20375E")
+
+    ingest = box(50, 86, 50, 5.4, "Data ingest", *C_STEP, fs=9.5, weight="bold")
+    subset = box(50, 78.3, 50, 5.4, "Spatial subset", *C_STEP, fs=9.5, weight="bold")
+    wse = box(50, 70.6, 50, 5.4, "Elevation correction", *C_STEP, fs=9.5, weight="bold")
+    dist = box(50, 62.9, 50, 5.4, "Distance mapping", *C_STEP, fs=9.5, weight="bold")
+
+    qc_y, qc_w, qc_h = 49.0, 19.0, 6.0
+    qc_cx = [17.0, 39.0, 61.0, 83.0]
+    qc = [
+        box(qc_cx[0], qc_y, qc_w, qc_h, "Cross-track\nfilter", *C_QC, fs=8.5, weight="bold"),
+        box(qc_cx[1], qc_y, qc_w, qc_h, "Calibration\nfilter", *C_QC, fs=8.5, weight="bold"),
+        box(qc_cx[2], qc_y, qc_w, qc_h, "Classification\nfilter", *C_QC, fs=8.5, weight="bold"),
+        box(qc_cx[3], qc_y, qc_w, qc_h, "Outlier\nfilter", *C_QC, fs=8.5, weight="bold"),
+    ]
+
+    chk = box(50, 37, 54, 5.4, "Daily checkpoint", *C_CHK, fs=9.5, weight="bold")
+
+    agg = box(50, 27.8, 54, 5.4, "Aggregation", *C_AGG, fs=9.5, weight="bold", tc="#2E2760")
+
+    prod_m = box(27, 18.3, 40, 5.4, "Master dataset",
+                 *C_PROD, fs=9.5, weight="bold", tc="#33501F")
+    prod_r = box(73, 18.3, 40, 5.4, "Reference gradient",
+                 *C_PROD, fs=9.5, weight="bold", tc="#33501F")
+
+    d_temporal = box(18, 5.6, 28, 5.4, "Temporal analysis", *C_DOWN, fs=8.6, weight="bold")
+    d_dash = box(50, 5.6, 28, 5.4, "Interactive dashboard", *C_DOWN, fs=8.6, weight="bold")
+    d_figs = box(82, 5.6, 28, 5.4, "Thesis figures", *C_DOWN, fs=8.6, weight="bold")
+
+    # --- arrows ---------------------------------------------------------------
+    arrow(src["bot"], ingest["top"])
+    arrow(ingest["bot"], subset["top"])
+    arrow(subset["bot"], wse["top"])
+    arrow(wse["bot"], dist["top"])
+    arrow(dist["bot"], (50, 57.0))                     # into the QC container
+    for a, b in zip(qc[:-1], qc[1:]):
+        arrow(a["rgt"], b["lft"])                      # filter order, left → right
+    arrow((50, 43.5), chk["top"])                      # QC container out → checkpoint
+    arrow(chk["bot"], agg["top"])
+    arrow(agg["bot"], prod_m["top"], rad=0.12)
+    arrow(agg["bot"], prod_r["top"], rad=-0.12)
+    # master feeds all three consumers; reference gradient feeds dashboard + figures
+    arrow(prod_m["bot"], d_temporal["top"], rad=0.10)
+    arrow(prod_m["bot"], d_dash["top"], rad=0.0)
+    arrow(prod_m["bot"], d_figs["top"], rad=-0.16)
+    arrow(prod_r["bot"], d_dash["top"], rad=0.16, color=REFARROW)
+    arrow(prod_r["bot"], d_figs["top"], rad=-0.10, color=REFARROW)
 
     return fig
 
@@ -710,9 +830,10 @@ def build_fig8(smooth_km: float = 2.0):
     return fig
 
 
-# Registry: figure number -> (builder, short title). Fig 2 is external (flowchart).
+# Registry: figure number -> (builder, short title).
 FIGURES = {
     1: (build_fig1, "Study Area & Spatial Normalization Map"),
+    2: (build_fig2, "Custom Python Pipeline Flowchart"),
     3: (build_fig3, "Temporal Stability & Stage-Invariance"),
     4: (build_fig4, "Reference Hydraulic Gradient Distribution"),
     5: (build_fig5, "Absolute Spatial Gradient Profile"),
@@ -720,7 +841,7 @@ FIGURES = {
     7: (build_fig7, "Detrended Relative Elevation Profile"),
     8: (build_fig8, "Interval Slope Profile"),
 }
-EXTERNAL = {2: "Custom Python Pipeline Flowchart (drawn externally; no builder)"}
+EXTERNAL = {}  # all figures now have in-module builders
 
 
 # ---------------------------------------------------------------------------
