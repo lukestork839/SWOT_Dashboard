@@ -1534,44 +1534,42 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         if len(selected_reaches) != 2:
             st.warning("⚠️ This analysis requires both rivers to be selected. Please select both Kanektok River and Uyak Creek.")
         else:
-            # Query to bin distances and calculate average WSE per river
+            # Per-pass within-pass difference, then median across passes.
+            # Each SWOT pass images both channels near-simultaneously, so
+            # differencing WITHIN a pass cancels the shared water stage (a paired
+            # comparison); the per-(pass, bin) MEDIAN is robust to contaminated
+            # pixels. We keep only bins where BOTH rivers were imaged in that pass,
+            # difference Kanektok - Uyak, then report the median difference across
+            # passes per bin. (Replaces the older pooled-AVG difference, which mixed
+            # passes unpaired and used an outlier-sensitive mean.)
             diff_query = f"""
-                WITH binned_data AS (
+                WITH per_pass_bin AS (
                     SELECT
+                        CAST(Pass_Date AS DATE) AS pass,
                         ROUND(dist_km / 0.1) * 0.1 AS dist_bin,
                         Reach_Name,
-                        AVG(wse) AS avg_wse,
-                        COUNT(*) AS point_count
+                        median(wse) AS med_wse
                     FROM river_data
                     {where_clause}
-                    GROUP BY dist_bin, Reach_Name
+                    GROUP BY pass, dist_bin, Reach_Name
                 ),
-                kanektok AS (
+                paired AS (
                     SELECT
-                        dist_bin,
-                        avg_wse as kanektok_wse,
-                        point_count as kanektok_count
-                    FROM binned_data
-                    WHERE Reach_Name = 'Kanektok_River'
-                ),
-                uyak AS (
-                    SELECT
-                        dist_bin,
-                        avg_wse as uyak_wse,
-                        point_count as uyak_count
-                    FROM binned_data
-                    WHERE Reach_Name = 'Uyak_Creek'
+                        k.dist_bin,
+                        k.med_wse - u.med_wse AS diff
+                    FROM (SELECT * FROM per_pass_bin
+                          WHERE Reach_Name = 'Kanektok_River') k
+                    INNER JOIN (SELECT * FROM per_pass_bin
+                                WHERE Reach_Name = 'Uyak_Creek') u
+                      ON k.pass = u.pass AND k.dist_bin = u.dist_bin
                 )
                 SELECT
-                    k.dist_bin,
-                    k.kanektok_wse,
-                    u.uyak_wse,
-                    k.kanektok_wse - u.uyak_wse AS elevation_diff,
-                    k.kanektok_count,
-                    u.uyak_count
-                FROM kanektok k
-                INNER JOIN uyak u ON k.dist_bin = u.dist_bin
-                ORDER BY k.dist_bin
+                    dist_bin,
+                    median(diff) AS elevation_diff,
+                    COUNT(*) AS n_passes
+                FROM paired
+                GROUP BY dist_bin
+                ORDER BY dist_bin
             """
 
             try:
@@ -1631,7 +1629,10 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         - **On the zero line**: the two are at the same height.
 
                         ― Technical details ―
-                        Water heights are averaged in 100 m bins, then differenced (Kanektok − Uyak).
+                        Within each satellite pass, water heights are taken as the
+                        median per 100 m bin and differenced (Kanektok − Uyak) where
+                        both rivers were imaged; the line is the median of those
+                        per-pass differences across all passes.
                         """)
 
                     # Show summary statistics
@@ -1910,16 +1911,15 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     reach_all = baseline_df[baseline_df['Reach_Name'] == reach]
                     if len(reach_all) == 0:
                         continue
-                    residuals_all = reach_all['residual']
                     residuals_clean = reach_all.loc[~reach_all['residual_outlier'], 'residual']
-                    med = residuals_all.median()
-                    robust_sd = 1.4826 * (residuals_all - med).abs().median()
+                    med = residuals_clean.median()
+                    robust_sd = 1.4826 * (residuals_clean - med).abs().median()
                     stats_data.append({
                         "River": reach,
                         "Median (m)": med,
                         "Robust SD (m)": robust_sd,
-                        "P1 (m)": residuals_all.quantile(0.01),
-                        "P99 (m)": residuals_all.quantile(0.99),
+                        "P1 (m)": residuals_clean.quantile(0.01),
+                        "P99 (m)": residuals_clean.quantile(0.99),
                         "Mean (m)": residuals_clean.mean(),
                         "Std Dev (m)": residuals_clean.std(),
                         "N Flagged": int(reach_all['residual_outlier'].sum()),
@@ -1941,12 +1941,14 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         hide_index=True
                     )
                     st.caption(
-                        "**Median / Robust SD (1.4826·MAD) / P1 / P99** are outlier-resistant "
-                        "measures over all residuals. **Mean / Std Dev** exclude points flagged "
-                        f"by the residual Modified Z-Score (> {RESIDUAL_MAD_THRESHOLD}). "
-                        "**N Flagged** counts those points, retained in the data but excluded here "
-                        "and from the plot. Min/Max/Range were removed: a single contaminated "
-                        "pixel sets them, so they misrepresented the detrended spread."
+                        "All statistics are computed over the same residual set, with points "
+                        f"flagged by the residual Modified Z-Score (> {RESIDUAL_MAD_THRESHOLD}) "
+                        "excluded, so the extreme percentiles reflect structural deviation rather "
+                        "than contamination. **Median / Robust SD (1.4826·MAD) / P1 / P99** are "
+                        "outlier-resistant measures of centre and spread. **N Flagged** counts the "
+                        "excluded points, which are retained in the data but omitted here and from "
+                        "the plot. Min/Max/Range were removed: a single contaminated pixel sets "
+                        "them, so they misrepresented the detrended spread."
                     )
 
                 # Optional: Show baseline trend curve
