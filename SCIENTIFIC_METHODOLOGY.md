@@ -701,7 +701,7 @@ robust-estimator practice used in SWORD and in SWOT superelevation studies:
    rivers are strongly **concave** (steep near the confluence, ~210–240 cm/km in the first 6 km;
    gentle toward the mouth, ~80 cm/km in the last 6 km), so a per-pass slope depends entirely on
    *which* reach the pass imaged. SWOT swath geometry causes a substantial fraction of passes —
-   ~46 % for Uyak vs ~0 % for Kanektok — to clip the steep downstream reach; those partial passes
+   ~26 % for Uyak vs ~2 % for Kanektok — to clip the steep downstream reach; those partial passes
    report an artificially gentle slope. Requiring full coverage ensures every pass measures the
    same profile, making the two rivers directly comparable (see Verification 3).
 4. **Open-water only** (Apr–Nov). Dec–Mar are excluded: smooth river ice passes the Class 3–4
@@ -713,57 +713,57 @@ robust-estimator practice used in SWORD and in SWOT superelevation studies:
 
 | River | All open-water | High flow (May) | Low flow (Jul–Aug) | Pass-to-pass std | n passes |
 |---|---|---|---|---|---|
-| **Kanektok River** | **195.5 cm/km** | 195.7 | 195.2 | 3.3 | 88 |
-| **Uyak Creek** | **192.4 cm/km** | 193.0 | 190.5 | 8.2 | 48 |
+| **Kanektok River** | **195.4 cm/km** | 195.6 | 195.2 | 0.9 | 88 |
+| **Uyak Creek** | **191.7 cm/km** | 193.5 | 191.2 | 4.3 | 67 |
 
 **Verification 1 — the estimate is decomposable and each step is justified.** Building up from
 the old trendline to the proposed method, isolating one effect at a time (open-water data):
 
 | Step | Kanektok | Uyak | Effect added |
 |---|---|---|---|
-| [A] pooled OLS, raw pixels *(old trendline)* | 185.2 | 173.7 | — (density-biased baseline) |
+| [A] pooled OLS, raw pixels *(old trendline)* | 185.0 | 180.2 | — (density-biased baseline) |
 | [B] pooled OLS, global 1 km nodes | 191.0 | 187.6 | **removes density bias** (dominant correction) |
-| [C] per-pass OLS on nodes, mean | 191.4 | 188.7 | per-pass averaging (stage-robust) |
-| [D] per-pass Theil–Sen, mean | 195.9 | 192.8 | robustness to outliers |
-| **[D′] per-pass Theil–Sen, median ← reference** | **195.5** | **192.4** | robust cross-pass aggregation |
+| [C] per-pass OLS on nodes, mean | 190.8 | 187.4 | per-pass averaging (stage-robust) |
+| [D] per-pass Theil–Sen, mean | 195.5 | 191.7 | robustness to outliers |
+| **[D′] per-pass Theil–Sen, median ← reference** | **195.4** | **191.7** | robust cross-pass aggregation |
 
 The largest, most defensible correction is **[A]→[B]**: removing point-density bias (the SWOT
-node step) raises both rivers ~6–14 cm/km (the effect is larger for Uyak, whose raw pixels are
+node step) raises both rivers ~6–7 cm/km (the effect is larger for Uyak, whose raw pixels are
 more heavily concentrated at the gentle downstream end). Per-pass averaging and robust estimation
 are smaller refinements on top.
 
 **Verification 2 — season invariance.** High-flow (May) and low-flow (Jul–Aug) reference values
-differ by only 0.5 cm/km (Kanektok) and 2.5 cm/km (Uyak) — well within pass-to-pass scatter.
+differ by only 0.4 cm/km (Kanektok) and 2.3 cm/km (Uyak) — well within pass-to-pass scatter.
 Water-surface slope is therefore approximately stage-invariant here, so a single all-open-water
 number is well justified; the seasonal split is reported but adds little.
 
 **Verification 3 — coverage gate sensitivity (the dominant control on Uyak scatter).** The
-per-pass slope correlates **−0.94** with where a Uyak pass *starts* (`lo_km`) and **+0.90** with
-its span: partial passes that clip the steep downstream reach report gentle slopes (~148 cm/km),
+per-pass slope correlates **−0.97** with where a Uyak pass *starts* (`lo_km`) and **+0.81** with
+its span: partial passes that clip the steep downstream reach report gentle slopes (~151 cm/km),
 forming a long low tail. Season does *not* explain it (slope-vs-month correlation −0.14), and it
 is not measurement noise (the OLS R² is ≈ 1.0 for both the low- and high-slope passes — they fit
 clean lines, just through different reaches). Tightening from the old ≥ 20 km gate to the
-full-coverage gate (≥ 30 km span *and* start ≤ 3 km) collapses Uyak's scatter from **std 20.1 →
-8.2 cm/km** and shifts its median 189.0 → 192.4, toward the full-river slope; Kanektok is
+full-coverage gate (≥ 30 km span *and* start ≤ 3 km) collapses Uyak's scatter from **std 12.3 →
+4.3 cm/km** and shifts its median 191.2 → 191.7, toward the full-river slope; Kanektok is
 essentially unchanged (90 → 88 passes; ~100 % of its passes already image the full river). This
 is the clearest justification for the gate: the wide raw Uyak distribution was a *coverage
 artifact on a concave profile*, not real hydraulic variability.
 
-**Verification 4 — precision.** Standard error of the per-pass mean is 0.35 cm/km (Kanektok)
-and 1.18 cm/km (Uyak), far below the ~6–14 cm/km systematic corrections above, so the reference
+**Verification 4 — precision.** Standard error of the per-pass mean is 0.10 cm/km (Kanektok)
+and 0.53 cm/km (Uyak), far below the ~6–7 cm/km systematic corrections above, so the reference
 values are tightly determined. SWOT's design slope accuracy is 1.7 cm/km over a 10 km reach
 (Biancamaria et al., 2016), consistent with our reach-scale (~35 km) precision.
 
 **Scientific consequence.** The old pooled-OLS numbers made the two rivers look nearly identical
-(~182 cm/km each), masking a real difference. The de-biased, full-coverage reference gradient
-shows **Kanektok is consistently steeper than Uyak** (195.5 vs 192.4 cm/km, ≈ 3 cm/km), across
+(~185 and ~180 cm/km), masking a real difference. The de-biased, full-coverage reference gradient
+shows **Kanektok is consistently steeper than Uyak** (195.4 vs 191.7 cm/km, ≈ 3.6 cm/km), across
 every season — a genuine hydraulic-gradient signal relevant to avulsion susceptibility (a steeper
 competing path is more able to capture flow; Slingerland & Smith, 1998).
 
 **Caveats.**
-- Even after the full-coverage gate, Uyak Creek retains ~2.5× the pass-to-pass scatter of
-  Kanektok (std 8.2 vs 3.3 cm/km), reflecting its narrower channel and noisier WSE. The median
-  is reported as the robust headline; mean and median agree to within 0.4 cm/km once partial
+- Even after the full-coverage gate, Uyak Creek retains ~5× the pass-to-pass scatter of
+  Kanektok (std 4.3 vs 0.9 cm/km), reflecting its narrower channel and noisier WSE. The median
+  is reported as the robust headline; mean and median agree to within ~0.1 cm/km once partial
   passes are removed.
 - The reference gradient is a **whole-reach** quantity. Local steepening/flattening along the
   profile is a separate analysis (Slope Profile tab) and is not below SWOT's ~10 km slope-
@@ -817,7 +817,7 @@ coverage-sensitive: a per-year/per-season slice of only 3–5 passes is dominate
 marginal-coverage passes (a documented artifact — see the Q1/Q2 findings). Medians and
 Mann–Whitney U tests throughout.
 Reads the **full local record**
-(186 passes, 2023–2026; 136 full-coverage open-water passes). **Key design:** Q2 (change under
+(188 passes, 2023–2026; 155 full-coverage open-water passes). **Key design:** Q2 (change under
 no disturbance) is the **natural-variability baseline / control for Q3** — the storm counts as
 an impact only if its signal exceeds normal year-to-year variation.
 
@@ -825,9 +825,9 @@ an impact only if its signal exceeds normal year-to-year variation.
 
 | Question | Result |
 |---|---|
-| **Q1 Seasonal** (May vs Jul–Aug) | Small and **inconsistent**: slope ≈ season-invariant (pooled swing +0.5 Kanektok / +2.5 Uyak cm/km, neither significant, matching the reference gradient); WSE swings only ±0.2–0.5 m and *flips sign* between years. No repeatable seasonal profile shift. *(Slope pooled across years — a per-year slice gave a spurious +8.3 Uyak-2025 swing, same coverage artifact as Q2.)* |
-| **Q2 Interannual** (2024 vs 2025) | Both rivers stable. Slope change trivial (Kanektok +0.8, Uyak −0.7 cm/km); WSE movement ≈ **0.2 m (Kanektok) – 0.5 m (Uyak)**. Kanektok's changes are *statistically* significant only because variance is tiny — magnitude is geomorphically trivial. **Slope uses the full open-water year** (season-invariant per Q1): a Jul–Aug-only slice gave a −6.8 cm/km Uyak "drop" that is *largely* a coverage artifact (an independent fixed-window slope shrinks it to −2.0; annual medians flat at 192.4/191.7/192.4; residual non-robust) — see the adversarial check below. |
-| **Q3 Typhoon** (interim, Jun 2025 vs Jun 2026) | **No detectable signal.** WSE change +0.02 m (Kanektok) / −0.33 m (Uyak) — both **within (below) the normal baseline**; slope change ≤ 0.4 cm/km; along-river change flat. Storm damage was coastal; upstream profile unchanged beyond normal noise. |
+| **Q1 Seasonal** (May vs Jul–Aug) | Small and **inconsistent**: slope ≈ season-invariant (pooled swing +0.3 Kanektok / +2.3 Uyak cm/km, neither significant, matching the reference gradient); WSE swings only ±0.2–0.5 m and *flips sign* between years. No repeatable seasonal profile shift. *(Slope pooled across years — a per-year slice gave a spurious +8.3 Uyak-2025 swing, same coverage artifact as Q2.)* |
+| **Q2 Interannual** (2024 vs 2025) | Both rivers stable. Slope change trivial (Kanektok +0.8, Uyak −1.0 cm/km); WSE movement ≈ **0.2 m (Kanektok) – 0.4 m (Uyak)**. Kanektok's changes are *statistically* significant only because variance is tiny — magnitude is geomorphically trivial. **Slope uses the full open-water year** (season-invariant per Q1): a Jul–Aug-only slice gave a −6.8 cm/km Uyak "drop" that is *largely* a coverage artifact (an independent fixed-window slope shrinks it to −2.0; annual medians flat at 191.9/190.9/192.6; residual non-robust) — see the adversarial check below. |
+| **Q3 Typhoon** (interim, Jun 2025 vs Jun 2026) | **No detectable signal.** WSE change −0.09 m (Kanektok) / −0.29 m (Uyak) — both **within (below) the normal baseline**; slope change ≤ 0.55 cm/km; along-river change flat. Storm damage was coastal; upstream profile unchanged beyond normal noise. |
 
 **Why the dedicated analysis matters.** The retired Seasonal/Typhoon tabs used
 density-biased pooled OLS on raw pixels with no coverage gate, and compared genuine

@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy import stats
 from scipy.ndimage import gaussian_filter1d
+from scipy.signal import savgol_filter
 import numpy as np
 import duckdb
 import os
@@ -274,6 +275,128 @@ def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
     slope_cm_km = np.gradient(y_fitted, x_eval) * 100
 
     return x_eval, slope_cm_km, y_fitted
+
+
+# ---------------------------------------------------------------------------
+# FINE-SCALE SLOPE (per-pass then aggregate) -- Fine-Scale Slope tab
+# ---------------------------------------------------------------------------
+# The legacy Slope Profile tab (calculate_slope_profile) POOLS all passes before
+# differencing, which mixes stage differences into the slope and forces a coarse
+# 2 km Gaussian (sigma -> ~4.7 km FWHM). The fine-scale method computes the slope
+# WITHIN each pass (stage is constant within a pass), then aggregates the median
+# across passes with a robust band -- so we can resolve backwater-scale (~0.5 km)
+# structure near the bifurcation. Ported from slope_finescale_prototype.py.
+FINE_BASE_BIN_KM = 0.1          # base grid for per-pass profiles
+FINE_MIN_PIX_BIN = 30           # trust a bin's median only with >= this many pixels
+FINE_FILL_GAP_KM = 0.3          # per pass, interpolate internal gaps up to this wide
+
+
+def _fine_slope_savgol(x, y, res_km):
+    """Savitzky-Golay 1st-derivative slope (cm/km); window ~= res_km."""
+    win = max(3, int(round(res_km / FINE_BASE_BIN_KM)))
+    if win % 2 == 0:
+        win += 1
+    if win > len(y):
+        return np.full_like(y, np.nan)
+    dydx = savgol_filter(y, window_length=win, polyorder=2, deriv=1,
+                         delta=FINE_BASE_BIN_KM, mode="interp")
+    return dydx * 100.0
+
+
+def _fine_slope_gaussian(x, y, res_km):
+    """Current Fig-8 method (Gaussian smooth + np.gradient), matched so FWHM == res_km."""
+    sigma_bins = (res_km / 2.355) / FINE_BASE_BIN_KM
+    ys = gaussian_filter1d(y, sigma=sigma_bins, mode="nearest")
+    return np.gradient(ys, x) * 100.0
+
+
+def _fine_slope_theilsen(x, y, res_km):
+    """Robust sliding Theil-Sen slope (cm/km); window width = res_km."""
+    half = res_km / 2.0
+    out = np.full_like(y, np.nan)
+    for i, xc in enumerate(x):
+        m = np.abs(x - xc) <= half
+        if m.sum() >= 3:
+            xs, ys = x[m], y[m]
+            good = np.isfinite(ys)
+            if good.sum() >= 3:
+                out[i] = stats.theilslopes(ys[good], xs[good])[0] * 100.0
+    return out
+
+
+_FINE_ESTIMATORS = {
+    "Sliding Theil–Sen (robust)": _fine_slope_theilsen,
+    "Savitzky–Golay derivative": _fine_slope_savgol,
+    "Gaussian + gradient (Fig 8 method)": _fine_slope_gaussian,
+}
+
+
+def _fine_regular_grid(sub):
+    """One pass -> (integer 0.1 km index, wse) on a regular grid, short gaps filled."""
+    sub = sub.sort_values("ibin")
+    i0, i1 = int(sub["ibin"].min()), int(sub["ibin"].max())
+    idx = np.arange(i0, i1 + 1)
+    s = pd.Series(np.nan, index=idx, dtype=float)
+    s.loc[sub["ibin"].values] = sub["wse"].values
+    max_gap = int(round(FINE_FILL_GAP_KM / FINE_BASE_BIN_KM))
+    s = s.interpolate(limit=max_gap, limit_area="inside")
+    return idx.astype(int), s.to_numpy(dtype=float)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def compute_finescale_slope(_con, url_version, where_clause, res_km, method, xmax):
+    """Per-pass-then-aggregate fine-scale slope for each river.
+
+    Returns {reach: dict(grid, med, q25, q75, n)}. Cached on the selection +
+    controls so slider moves are instant after the first compute. `url_version`
+    keys the cache to the deployed data version (same idiom as other loaders).
+    """
+    df = _con.execute(f"""
+        SELECT CAST(Pass_Date AS DATE) AS pass,
+               Reach_Name AS reach,
+               ROUND(dist_km / {FINE_BASE_BIN_KM}) * {FINE_BASE_BIN_KM} AS bin,
+               MEDIAN(wse) AS wse,
+               COUNT(*) AS npix
+        FROM river_data
+        {where_clause}
+        GROUP BY pass, reach, bin
+    """).fetchdf()
+    if len(df) == 0:
+        return {}
+    df = df[df["npix"] >= FINE_MIN_PIX_BIN].copy()
+    df["ibin"] = (df["bin"] / FINE_BASE_BIN_KM).round().astype(int)
+    fn = _FINE_ESTIMATORS[method]
+
+    out = {}
+    for reach, d in df.groupby("reach"):
+        d = d[d["bin"] <= xmax]
+        if len(d) == 0:
+            continue
+        imax = int(d["ibin"].max())
+        grid = np.arange(1, imax + 1) * FINE_BASE_BIN_KM
+        passes = d["pass"].unique()
+        mat = np.full((len(grid), len(passes)), np.nan)
+        for j, p in enumerate(passes):
+            ix, y = _fine_regular_grid(d[d["pass"] == p])
+            if len(ix) < 5:
+                continue
+            sl = fn(ix * FINE_BASE_BIN_KM, y, res_km)
+            pos = ix - 1
+            ok = (pos >= 0) & (pos < len(grid))
+            mat[pos[ok], j] = sl[ok]
+        with np.errstate(all="ignore"):
+            med = np.nanmedian(mat, axis=1)
+            q25 = np.nanquantile(mat, 0.25, axis=1)
+            q75 = np.nanquantile(mat, 0.75, axis=1)
+            n = np.sum(np.isfinite(mat), axis=1)
+        # Slopes are negative (downhill); plot steepness = |slope|. abs() flips the
+        # band order, so re-derive lo/hi as the min/max of the absolute quartiles.
+        a25, a75 = np.abs(q25), np.abs(q75)
+        out[str(reach)] = dict(grid=grid, med=np.abs(med),
+                               lo=np.minimum(a25, a75), hi=np.maximum(a25, a75),
+                               n=n, n_passes=len(passes))
+    return out
+
 
 class VerticalColorbar(MacroElement):
     """Vertical colorbar legend as a Leaflet control on the left side of the map."""
@@ -814,10 +937,11 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         # pre-computed conclusions and is available on both local and Streamlit Cloud.
         swot_tab_names = [
             "📈 Gradient Profile", "📏 Hydraulic Gradient", "🎯 Detrended Profile", "🗺️ Map View",
-            "🔀 Elevation Difference", "📐 Slope Profile", "📄 Raw Data", "⏳ Temporal Results",
+            "🔀 Elevation Difference", "📐 Slope Profile", "🔬 Fine-Scale Slope", "📄 Raw Data",
+            "⏳ Temporal Results",
         ]
         swot_tabs = st.tabs(swot_tab_names)
-        tab1, tab_grad, tab3, tab5, tab2, tab4, tab6, tab_temporal = swot_tabs
+        tab1, tab_grad, tab3, tab5, tab2, tab4, tab_fine, tab6, tab_temporal = swot_tabs
 
     with tab1:
         st.subheader("River Profile")
@@ -2097,6 +2221,151 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
         except Exception as e:
             st.error(f"Error calculating slope profile: {e}")
+
+    with tab_fine:
+        st.subheader("🔬 Fine-Scale Slope Profile")
+        st.markdown(
+            "The steepness of the water surface at **backwater scale**, instead of one "
+            "smoothed average. Slope is computed *within each satellite pass* (so river "
+            "stage is held constant), then the **median across passes** is shown with a "
+            "shaded pass-to-pass band. This resolves ~0.5 km structure near the "
+            "bifurcation that the standard Slope Profile tab blurs away."
+        )
+
+        @st.fragment
+        def render_finescale():
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                res_km = st.select_slider(
+                    "Resolution (km)", options=[0.25, 0.5, 1.0, 2.0], value=0.5,
+                    key="fine_res",
+                    help="Effective slope resolution. ~0.5 km is the backwater length here; "
+                         "0.25 km is still resolvable given the pixel density.")
+            with c2:
+                method = st.selectbox(
+                    "Estimator", options=list(_FINE_ESTIMATORS.keys()), index=0,
+                    key="fine_method",
+                    help="Sliding Theil–Sen matches the reference-gradient method (robust). "
+                         "All three estimators agree at 0.5 km — switch to confirm.")
+            with c3:
+                xmax = st.slider(
+                    "Max distance (km)", min_value=10, max_value=36, value=34,
+                    key="fine_xmax",
+                    help="Trim the tidal mouth: cross-pass WSE spread rises only in the "
+                         "final ~1–2 km at each river's outlet (see coastal-noise diagnostic).")
+
+            zoom = st.checkbox("Zoom to the bifurcation region (0–8 km)", value=False,
+                               key="fine_zoom")
+
+            with st.spinner("Computing per-pass slopes…"):
+                data = compute_finescale_slope(
+                    con, REMOTE_PARQUET_URL, where_clause, float(res_km), method, float(xmax))
+
+            if not data:
+                st.warning("No data available for the selected filters.")
+                return
+
+            # Guard: this per-pass-then-aggregate method needs many overlapping passes.
+            # With only a handful (e.g. the welcome-page quick-start, which loads just the
+            # most-recent passes), the n>=3 display gate starves -- the profile degrades
+            # into straight-line interpolation across dropped bins and the estimators
+            # diverge. That is a SELECTION artifact, not real slope structure.
+            MIN_PASSES_RELIABLE = 10
+            pass_counts = {r: data[r]["n_passes"] for r in selected_reaches if r in data}
+            if pass_counts and min(pass_counts.values()) < MIN_PASSES_RELIABLE:
+                worst = ", ".join(f"{r.replace('_', ' ')}: {n} pass{'es' if n != 1 else ''}"
+                                  for r, n in pass_counts.items())
+                st.warning(
+                    f"⚠️ **Too few passes for a reliable fine-scale slope** ({worst}). "
+                    "This method aggregates a slope computed *within each pass*, so it needs "
+                    "many overlapping passes; with only a handful the profile breaks into "
+                    "interpolated straight segments and the estimators disagree — a selection "
+                    "artifact, not real structure. Return to the homepage and select the "
+                    "**full pass record** (not the quick-start subset) for a trustworthy result."
+                )
+
+            fig_fine = go.Figure()
+            near_rows = []
+            for reach in selected_reaches:
+                r = data.get(reach)
+                if not r:
+                    continue
+                grid, med, lo, hi, n = r["grid"], r["med"], r["lo"], r["hi"], r["n"]
+                core = n >= 3  # only trust bins imaged by >= 3 passes
+                if not core.any():
+                    continue
+                color = COLOR_MAP.get(reach, "black")
+                rr, gg, bb, _ = mcolors.to_rgba(color)
+                fill = f"rgba({int(rr*255)},{int(gg*255)},{int(bb*255)},0.15)"
+
+                # IQR band (across passes)
+                fig_fine.add_trace(go.Scatter(
+                    x=np.concatenate([grid[core], grid[core][::-1]]),
+                    y=np.concatenate([hi[core], lo[core][::-1]]),
+                    fill="toself", fillcolor=fill, line=dict(width=0),
+                    name=f"{reach} IQR", showlegend=False, hoverinfo="skip"))
+                # median line
+                fig_fine.add_trace(go.Scatter(
+                    x=grid[core], y=med[core], mode="lines",
+                    line=dict(color=color, width=3),
+                    name=f"{reach} ({r['n_passes']} passes)",
+                    hovertemplate="<b>" + reach + "</b><br>Distance: %{x:.2f} km<br>"
+                                  "Slope: %{y:.1f} cm/km<extra></extra>"))
+
+                nb = core & (grid >= 1.0) & (grid <= 5.0)
+                near_rows.append({
+                    "River": reach,
+                    "Near-bifurcation slope (1–5 km)": float(np.nanmedian(med[nb])) if nb.any() else np.nan,
+                    "Passes": int(r["n_passes"]),
+                })
+
+            add_bifurcation_line(fig_fine)
+            fig_fine.update_layout(
+                xaxis_title="Distance from Anchor Point (km)",
+                yaxis_title="Interval Slope (cm/km)",
+                height=600, template=plotly_template, hovermode="x unified",
+                showlegend=True)
+            fig_fine.update_xaxes(autorange="reversed")
+            if zoom:
+                fig_fine.update_xaxes(range=[8, 0])  # reversed axis: [max, min]
+
+            st.plotly_chart(fig_fine, width="stretch", theme=None)
+
+            # Near-bifurcation contrast (the headline of the re-analysis)
+            if len(near_rows) == 2 and all(np.isfinite(x["Near-bifurcation slope (1–5 km)"]) for x in near_rows):
+                k = next((x for x in near_rows if x["River"] == "Kanektok_River"), None)
+                u = next((x for x in near_rows if x["River"] == "Uyak_Creek"), None)
+                if k and u:
+                    adv = k["Near-bifurcation slope (1–5 km)"] - u["Near-bifurcation slope (1–5 km)"]
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Kanektok @ bifurcation (1–5 km)",
+                              f"{k['Near-bifurcation slope (1–5 km)']:.0f} cm/km")
+                    m2.metric("Uyak @ bifurcation (1–5 km)",
+                              f"{u['Near-bifurcation slope (1–5 km)']:.0f} cm/km")
+                    m3.metric("Kanektok advantage here", f"{adv:+.0f} cm/km",
+                              help="Reach-averaged, the two gradients differ by only ~3.6 cm/km; "
+                                   "near the bifurcation the local advantage is far larger.")
+
+            with st.expander("How to read this graph"):
+                st.markdown("""
+                **What this shows:** the water-surface steepness *along* the river at fine
+                resolution — the higher the line, the steeper the water there.
+
+                - Each satellite pass is fit to its own local slope (stage held constant),
+                  then we plot the **median across passes** (solid line) and the
+                  **25–75% pass-to-pass band** (shading).
+                - The dashed line marks the **bifurcation** (2.5 km). The whole point of the
+                  re-analysis is to see the slope *right there*, which the standard Slope
+                  Profile tab's 2 km smoothing (≈ 4.7 km effective resolution) blurs out.
+
+                ― Technical details ―
+                WSE binned to 100 m medians per pass (≥ 30 pixels/bin); slope via the selected
+                estimator at the chosen effective resolution; median + IQR aggregated across
+                passes; bins with < 3 passes hidden. The tidal mouth (final ~1–2 km) is trimmed
+                via *Max distance*.
+                """)
+
+        render_finescale()
 
     with tab5:
         @st.fragment

@@ -29,8 +29,8 @@ import matplotlib as mpl
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Default data source = the FULL local archive (2023-2026), NOT the deployment
-# subset. The thesis methodology cites "121 open-water overpasses", which is the
-# full archive; dashboard_data.parquet holds only ~60. Figures must match the text.
+# subset. The thesis uses 123 open-water passes (155 gated for the reference gradient)
+# from the full archive; dashboard_data.parquet holds only ~60. Figures must match the text.
 FULL_DATA_PATH = os.path.join(REPO_ROOT, "batch_outputs", "master_all_data.parquet")
 DEPLOY_DATA_PATH = os.path.join(REPO_ROOT, "dashboard_data.parquet")  # deployment subset
 DATA_PATH = FULL_DATA_PATH

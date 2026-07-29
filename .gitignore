@@ -25,6 +25,11 @@ ENV/
 # (regenerable from the scripts; re-rendered on each clean-data refresh)
 thesis_figures/output/
 
+# Slope re-analysis: commit the generator scripts, not the rendered PNGs
+# (regenerable from slope_finescale_prototype.py / coastal_noise_diagnostic.py)
+slope_finescale_prototype/
+coastal_noise_diagnostic/
+
 # Project-specific: Large data files
 batch_outputs/
 # Deployment data lives on the GitHub Release (v2.0-data), not in git

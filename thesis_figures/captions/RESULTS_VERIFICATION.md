@@ -59,7 +59,7 @@ Typhoon window (June 2025 vs June 2026, interim):
 
 Median of per-pass |Theil–Sen| slopes over gated full-coverage open-water passes:
 - Kanektok: **195.4 cm/km** (was 195.5). ✓
-- Uyak: **191.8 cm/km** (was 192.4). ⚠
+- Uyak: **191.7 cm/km** (was 192.4). ⚠  [exact median 191.749 → rounds to 191.7; earlier 191.8 was an over-round]
 - Core finding intact: the two gradients agree to within ~3.6 cm/km.
 
 ---

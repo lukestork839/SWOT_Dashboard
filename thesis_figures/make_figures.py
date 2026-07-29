@@ -558,7 +558,7 @@ def build_fig5(node_km: float = 0.5, band=(5, 95), band_alpha: float = 0.30,
     """Fig 5 -- Absolute Spatial Gradient Profile (Results 5.3).
 
     CONTEXT figure: median WSE profile per river with a shaded percentile band
-    showing the spread across all 121 open-water passes. This is the canonical
+    showing the spread across all open-water passes (123: Kanektok 123, Uyak 115). This is the canonical
     line+ribbon treatment for dense, heavily-overlapping distributions (Wilke,
     Fundamentals of Data Visualization, ch. 18) and the SWOT convention of
     aggregating repeat passes by median. It shows the concave-up longitudinal shape
