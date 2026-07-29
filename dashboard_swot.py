@@ -290,15 +290,17 @@ FINE_MIN_PIX_BIN = 30           # trust a bin's median only with >= this many pi
 FINE_FILL_GAP_KM = 0.3          # per pass, interpolate internal gaps up to this wide
 
 
-def _fine_slope_gaussian(x, y, res_km):
-    """Current Fig-8 method (Gaussian smooth + np.gradient), matched so FWHM == res_km."""
-    sigma_bins = (res_km / 2.355) / FINE_BASE_BIN_KM
-    ys = gaussian_filter1d(y, sigma=sigma_bins, mode="nearest")
-    return np.gradient(ys, x) * 100.0
-
-
 def _fine_slope_theilsen(x, y, res_km):
-    """Robust sliding Theil-Sen slope (cm/km); window width = res_km."""
+    """Robust sliding Theil-Sen slope (cm/km); window width = res_km.
+
+    At each grid point xc, take every pair of binned elevations within +/- res_km/2
+    of xc, compute each pair's slope, and use the MEDIAN of those pairwise slopes
+    (Theil-Sen). Median-of-pairs is robust: a contaminated bin only taints the pairs
+    that include it, so it is outvoted. This is the same estimator as the reference
+    gradient, applied at fine resolution. It is the sole fine-scale estimator (the
+    Gaussian/Sav-Gol alternatives were dropped -- they agree at 0.5 km and Theil-Sen
+    is the defensible choice).
+    """
     half = res_km / 2.0
     out = np.full_like(y, np.nan)
     for i, xc in enumerate(x):
@@ -309,12 +311,6 @@ def _fine_slope_theilsen(x, y, res_km):
             if good.sum() >= 3:
                 out[i] = stats.theilslopes(ys[good], xs[good])[0] * 100.0
     return out
-
-
-_FINE_ESTIMATORS = {
-    "Sliding Theil–Sen (robust)": _fine_slope_theilsen,
-    "Gaussian + gradient (Fig 8 method)": _fine_slope_gaussian,
-}
 
 
 def _fine_regular_grid(sub):
@@ -330,8 +326,8 @@ def _fine_regular_grid(sub):
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def compute_finescale_slope(_con, url_version, where_clause, res_km, method, xmax):
-    """Per-pass-then-aggregate fine-scale slope for each river.
+def compute_finescale_slope(_con, url_version, where_clause, res_km, xmax):
+    """Per-pass-then-aggregate fine-scale slope for each river (robust Theil-Sen).
 
     Returns {reach: dict(grid, med, q25, q75, n)}. Cached on the selection +
     controls so slider moves are instant after the first compute. `url_version`
@@ -351,7 +347,7 @@ def compute_finescale_slope(_con, url_version, where_clause, res_km, method, xma
         return {}
     df = df[df["npix"] >= FINE_MIN_PIX_BIN].copy()
     df["ibin"] = (df["bin"] / FINE_BASE_BIN_KM).round().astype(int)
-    fn = _FINE_ESTIMATORS[method]
+    fn = _fine_slope_theilsen
 
     out = {}
     for reach, d in df.groupby("reach"):
@@ -2220,7 +2216,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
         @st.fragment
         def render_finescale():
-            c1, c2, c3 = st.columns(3)
+            c1, c2 = st.columns(2)
             with c1:
                 res_km = st.select_slider(
                     "Resolution (km)", options=[0.25, 0.5, 1.0, 2.0], value=0.5,
@@ -2228,12 +2224,6 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     help="Effective slope resolution. ~0.5 km is the backwater length here; "
                          "0.25 km is still resolvable given the pixel density.")
             with c2:
-                method = st.selectbox(
-                    "Estimator", options=list(_FINE_ESTIMATORS.keys()), index=0,
-                    key="fine_method",
-                    help="Sliding Theil–Sen matches the reference-gradient method (robust). "
-                         "Both estimators agree at 0.5 km — switch to confirm.")
-            with c3:
                 xmax = st.slider(
                     "Max distance (km)", min_value=10, max_value=36, value=34,
                     key="fine_xmax",
@@ -2245,7 +2235,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
             with st.spinner("Computing per-pass slopes…"):
                 data = compute_finescale_slope(
-                    con, REMOTE_PARQUET_URL, where_clause, float(res_km), method, float(xmax))
+                    con, REMOTE_PARQUET_URL, where_clause, float(res_km), float(xmax))
 
             if not data:
                 st.warning("No data available for the selected filters.")
@@ -2254,8 +2244,8 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             # Guard: this per-pass-then-aggregate method needs many overlapping passes.
             # With only a handful (e.g. the welcome-page quick-start, which loads just the
             # most-recent passes), the n>=3 display gate starves -- the profile degrades
-            # into straight-line interpolation across dropped bins and the estimators
-            # diverge. That is a SELECTION artifact, not real slope structure.
+            # into straight-line interpolation across dropped bins. That is a SELECTION
+            # artifact, not real slope structure.
             MIN_PASSES_RELIABLE = 10
             pass_counts = {r: data[r]["n_passes"] for r in selected_reaches if r in data}
             if pass_counts and min(pass_counts.values()) < MIN_PASSES_RELIABLE:
@@ -2265,9 +2255,9 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     f"⚠️ **Too few passes for a reliable fine-scale slope** ({worst}). "
                     "This method aggregates a slope computed *within each pass*, so it needs "
                     "many overlapping passes; with only a handful the profile breaks into "
-                    "interpolated straight segments and the estimators disagree — a selection "
-                    "artifact, not real structure. Return to the homepage and select the "
-                    "**full pass record** (not the quick-start subset) for a trustworthy result."
+                    "interpolated straight segments — a selection artifact, not real "
+                    "structure. Return to the homepage and select the **full pass record** "
+                    "(not the quick-start subset) for a trustworthy result."
                 )
 
             fig_fine = go.Figure()
@@ -2345,10 +2335,10 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                   Profile tab's 2 km smoothing (≈ 4.7 km effective resolution) blurs out.
 
                 ― Technical details ―
-                WSE binned to 100 m medians per pass (≥ 30 pixels/bin); slope via the selected
-                estimator at the chosen effective resolution; median + IQR aggregated across
-                passes; bins with < 3 passes hidden. The tidal mouth (final ~1–2 km) is trimmed
-                via *Max distance*.
+                WSE binned to 100 m medians per pass (≥ 30 pixels/bin); slope via a robust
+                sliding **Theil–Sen** fit at the chosen effective resolution; median + IQR
+                aggregated across passes; bins with < 3 passes hidden. The tidal mouth
+                (final ~1–2 km) is trimmed via *Max distance*.
                 """)
 
         render_finescale()
