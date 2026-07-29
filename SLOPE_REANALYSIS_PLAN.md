@@ -162,8 +162,15 @@ Revised so we **build an interactive dashboard tab first**, use it to choose the
      estimators reconverge (Uyak 1–5 km |slope| ≈ 228 for all three). The near-coast steepening at
      ~26–30 km is a **real, repeatable** WSE feature (present in dozens of independent passes at
      ~300–360 cm/km), distinct from the tidal flattening in the final ~1 km.
-4. **New/revised Figure 8** (after we pick the window from the tab). Fine-scale profile + bifurcation
-   zoom; correct the caption (σ → FWHM).
+4. ~~**New/revised Figure 8.**~~ ✓ **DONE 2026-07-29** — added a *fresh* **Figure 9** (kept Fig 8 as
+   the reach-scale envelope) rather than reworking Fig 8. `core.finescale_slope_profile` (ported from
+   the tab) + `build_fig9`: two stacked panels (full reach + 0–8 km bifurcation zoom), median line +
+   25–75 % pass band, dashed reach-average reference overlay (195/192), sliding Theil–Sen at **0.5 km**
+   (backwater scale — chosen over the cleaner 1.0 km for physical fidelity; advantage is +31 vs +27, so
+   resolution-robust). **Key result:** near the bifurcation both channels steepen to ~250–300 cm/km,
+   far above their ~195/192 reach averages — the reach-average understates the local gradient; Kanektok
+   modestly steeper (1–5 km median 259 vs 228, +31 cm/km) but the profiles interweave (a tendency, not
+   a persistent separation). Fig 8 caption corrected (σ=2 km → ~4.7 km FWHM; now cross-refs Fig 9).
 5. **Temporal fine-scale result.** Near-bifurcation advantage over time as a supporting figure.
 6. **Legacy cleanup.** Retire/relabel `slope_calc` (still shown as a biased number on the dashboard
    summary table; not used in any thesis figure).

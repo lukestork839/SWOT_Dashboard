@@ -4,7 +4,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy import stats
 from scipy.ndimage import gaussian_filter1d
-from scipy.signal import savgol_filter
 import numpy as np
 import duckdb
 import os
@@ -291,18 +290,6 @@ FINE_MIN_PIX_BIN = 30           # trust a bin's median only with >= this many pi
 FINE_FILL_GAP_KM = 0.3          # per pass, interpolate internal gaps up to this wide
 
 
-def _fine_slope_savgol(x, y, res_km):
-    """Savitzky-Golay 1st-derivative slope (cm/km); window ~= res_km."""
-    win = max(3, int(round(res_km / FINE_BASE_BIN_KM)))
-    if win % 2 == 0:
-        win += 1
-    if win > len(y):
-        return np.full_like(y, np.nan)
-    dydx = savgol_filter(y, window_length=win, polyorder=2, deriv=1,
-                         delta=FINE_BASE_BIN_KM, mode="interp")
-    return dydx * 100.0
-
-
 def _fine_slope_gaussian(x, y, res_km):
     """Current Fig-8 method (Gaussian smooth + np.gradient), matched so FWHM == res_km."""
     sigma_bins = (res_km / 2.355) / FINE_BASE_BIN_KM
@@ -326,7 +313,6 @@ def _fine_slope_theilsen(x, y, res_km):
 
 _FINE_ESTIMATORS = {
     "Sliding Theil–Sen (robust)": _fine_slope_theilsen,
-    "Savitzky–Golay derivative": _fine_slope_savgol,
     "Gaussian + gradient (Fig 8 method)": _fine_slope_gaussian,
 }
 
@@ -2246,7 +2232,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     "Estimator", options=list(_FINE_ESTIMATORS.keys()), index=0,
                     key="fine_method",
                     help="Sliding Theil–Sen matches the reference-gradient method (robust). "
-                         "All three estimators agree at 0.5 km — switch to confirm.")
+                         "Both estimators agree at 0.5 km — switch to confirm.")
             with c3:
                 xmax = st.slider(
                     "Max distance (km)", min_value=10, max_value=36, value=34,

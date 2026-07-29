@@ -19,6 +19,7 @@ import pandas as pd
 import duckdb
 from scipy import stats
 from scipy.ndimage import gaussian_filter1d
+from scipy.signal import savgol_filter
 
 from . import config
 
@@ -202,6 +203,143 @@ def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
     slope_cm_km = np.gradient(y_fitted, x_eval) * 100
 
     return x_eval, slope_cm_km, y_fitted
+
+
+# ---------------------------------------------------------------------------
+# FINE-SCALE SLOPE (per-pass then aggregate)
+# ---------------------------------------------------------------------------
+# Ported VERBATIM from dashboard_swot.py's compute_finescale_slope + _fine_slope_*.
+# Unlike calculate_slope_profile (which POOLS all passes then Gaussian-smooths at
+# ~2 km, mixing stage into the slope), this computes the slope WITHIN each pass
+# (stage constant), then aggregates the median across passes -- resolving the
+# backwater-scale (~0.5 km) structure near the bifurcation. Requires the FULL
+# multi-pass record; a handful of passes starves the >=3-pass gate.
+FINE_BASE_BIN_KM = 0.1          # base grid for per-pass profiles
+FINE_MIN_PIX_BIN = 30           # trust a bin's median only with >= this many pixels
+FINE_FILL_GAP_KM = 0.3          # per pass, interpolate internal gaps up to this wide
+
+
+def _fine_slope_savgol(x, y, res_km):
+    """Savitzky-Golay 1st-derivative slope (cm/km); window ~= res_km."""
+    win = max(3, int(round(res_km / FINE_BASE_BIN_KM)))
+    if win % 2 == 0:
+        win += 1
+    if win > len(y):
+        return np.full_like(y, np.nan)
+    dydx = savgol_filter(y, window_length=win, polyorder=2, deriv=1,
+                         delta=FINE_BASE_BIN_KM, mode="interp")
+    return dydx * 100.0
+
+
+def _fine_slope_gaussian(x, y, res_km):
+    """Fig-8 method (Gaussian smooth + np.gradient), matched so FWHM == res_km."""
+    sigma_bins = (res_km / 2.355) / FINE_BASE_BIN_KM
+    ys = gaussian_filter1d(y, sigma=sigma_bins, mode="nearest")
+    return np.gradient(ys, x) * 100.0
+
+
+def _fine_slope_theilsen(x, y, res_km):
+    """Robust sliding Theil-Sen slope (cm/km); window width = res_km."""
+    half = res_km / 2.0
+    out = np.full_like(y, np.nan)
+    for i, xc in enumerate(x):
+        m = np.abs(x - xc) <= half
+        if m.sum() >= 3:
+            xs, ys = x[m], y[m]
+            good = np.isfinite(ys)
+            if good.sum() >= 3:
+                out[i] = stats.theilslopes(ys[good], xs[good])[0] * 100.0
+    return out
+
+
+_FINE_ESTIMATORS = {
+    "theilsen": _fine_slope_theilsen,
+    "savgol": _fine_slope_savgol,
+    "gaussian": _fine_slope_gaussian,
+}
+
+
+def _fine_regular_grid(sub):
+    """One pass -> (integer 0.1 km index, wse) on a regular grid, short gaps filled."""
+    sub = sub.sort_values("ibin")
+    i0, i1 = int(sub["ibin"].min()), int(sub["ibin"].max())
+    idx = np.arange(i0, i1 + 1)
+    s = pd.Series(np.nan, index=idx, dtype=float)
+    s.loc[sub["ibin"].values] = sub["wse"].values
+    max_gap = int(round(FINE_FILL_GAP_KM / FINE_BASE_BIN_KM))
+    s = s.interpolate(limit=max_gap, limit_area="inside")
+    return idx.astype(int), s.to_numpy(dtype=float)
+
+
+def finescale_slope_profile(con, reaches=("Kanektok_River", "Uyak_Creek"),
+                            res_km: float = 0.5, method: str = "theilsen",
+                            xmax: float = 34.0, open_water_only: bool = True,
+                            min_passes: int = 3):
+    """Per-pass-then-aggregate fine-scale slope for each river.
+
+    Returns {reach: dict(grid, med, lo, hi, n, n_passes)} where med/lo/hi are the
+    across-pass median and 25/75-percentile ABSOLUTE slope (cm/km, steepness) and
+    `n` is the per-bin pass count. Bins with n < `min_passes` are set to NaN so a
+    caller can plot them as gaps rather than interpolate across them.
+    """
+    where = []
+    rlist = "'" + "','".join(reaches) + "'"
+    where.append(f"Reach_Name IN ({rlist})")
+    if open_water_only:
+        months = ",".join(str(m) for m in OPEN_WATER_MONTHS)
+        where.append(f"EXTRACT(MONTH FROM CAST(Pass_Date AS DATE)) IN ({months})")
+    excl = _exclusion_condition()
+    if excl:
+        where.append(excl)
+    clause = "WHERE " + " AND ".join(where)
+
+    df = con.execute(f"""
+        SELECT CAST(Pass_Date AS DATE) AS pass,
+               Reach_Name AS reach,
+               ROUND(dist_km / {FINE_BASE_BIN_KM}) * {FINE_BASE_BIN_KM} AS bin,
+               MEDIAN(wse) AS wse,
+               COUNT(*) AS npix
+        FROM river_data
+        {clause}
+        GROUP BY pass, reach, bin
+    """).fetchdf()
+    if len(df) == 0:
+        return {}
+    df = df[df["npix"] >= FINE_MIN_PIX_BIN].copy()
+    df["ibin"] = (df["bin"] / FINE_BASE_BIN_KM).round().astype(int)
+    fn = _FINE_ESTIMATORS[method]
+
+    out = {}
+    for reach, d in df.groupby("reach"):
+        d = d[d["bin"] <= xmax]
+        if len(d) == 0:
+            continue
+        imax = int(d["ibin"].max())
+        grid = np.arange(1, imax + 1) * FINE_BASE_BIN_KM
+        passes = d["pass"].unique()
+        mat = np.full((len(grid), len(passes)), np.nan)
+        for j, p in enumerate(passes):
+            ix, y = _fine_regular_grid(d[d["pass"] == p])
+            if len(ix) < 5:
+                continue
+            sl = fn(ix * FINE_BASE_BIN_KM, y, res_km)
+            pos = ix - 1
+            ok = (pos >= 0) & (pos < len(grid))
+            mat[pos[ok], j] = sl[ok]
+        with np.errstate(all="ignore"):
+            med = np.nanmedian(mat, axis=1)
+            q25 = np.nanquantile(mat, 0.25, axis=1)
+            q75 = np.nanquantile(mat, 0.75, axis=1)
+            n = np.sum(np.isfinite(mat), axis=1)
+        # Slopes are negative (downhill); plot steepness = |slope|. abs() flips the
+        # band order, so re-derive lo/hi as the min/max of the absolute quartiles.
+        a25, a75 = np.abs(q25), np.abs(q75)
+        med, lo, hi = np.abs(med), np.minimum(a25, a75), np.maximum(a25, a75)
+        gap = n < min_passes            # honest gaps: don't interpolate sparse bins
+        med[gap] = lo[gap] = hi[gap] = np.nan
+        out[str(reach)] = dict(grid=grid, med=med, lo=lo, hi=hi,
+                               n=n, n_passes=len(passes))
+    return out
 
 
 def elevation_difference(con, reaches=("Kanektok_River", "Uyak_Creek"),
