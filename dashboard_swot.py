@@ -2265,6 +2265,25 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 st.warning("No data available for the selected filters.")
                 return
 
+            # Guard: this per-pass-then-aggregate method needs many overlapping passes.
+            # With only a handful (e.g. the welcome-page quick-start, which loads just the
+            # most-recent passes), the n>=3 display gate starves -- the profile degrades
+            # into straight-line interpolation across dropped bins and the estimators
+            # diverge. That is a SELECTION artifact, not real slope structure.
+            MIN_PASSES_RELIABLE = 10
+            pass_counts = {r: data[r]["n_passes"] for r in selected_reaches if r in data}
+            if pass_counts and min(pass_counts.values()) < MIN_PASSES_RELIABLE:
+                worst = ", ".join(f"{r.replace('_', ' ')}: {n} pass{'es' if n != 1 else ''}"
+                                  for r, n in pass_counts.items())
+                st.warning(
+                    f"⚠️ **Too few passes for a reliable fine-scale slope** ({worst}). "
+                    "This method aggregates a slope computed *within each pass*, so it needs "
+                    "many overlapping passes; with only a handful the profile breaks into "
+                    "interpolated straight segments and the estimators disagree — a selection "
+                    "artifact, not real structure. Return to the homepage and select the "
+                    "**full pass record** (not the quick-start subset) for a trustworthy result."
+                )
+
             fig_fine = go.Figure()
             near_rows = []
             for reach in selected_reaches:
