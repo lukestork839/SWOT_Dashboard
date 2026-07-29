@@ -830,6 +830,101 @@ def build_fig8(smooth_km: float = 2.0):
     return fig
 
 
+def build_fig9(res_km: float = 0.5, method: str = "theilsen",
+               xmax: float = 34.0, zoom_km: float = 8.0, band=(25, 75)):
+    """Fig 9 -- Fine-Scale (Backwater-Scale) Slope Profile (Results 5.3 / Discussion).
+
+    The reach-average gradients differ by only ~3.6 cm/km, which hides where the
+    hydraulic contrast actually lives. This figure computes the slope WITHIN each
+    pass (stage constant) at ~`res_km` resolution, then aggregates the median across
+    passes with a 25-75% pass-to-pass band (core.finescale_slope_profile, robust
+    Theil-Sen) -- resolving the ~0.5 km structure that Fig 8's 2 km Gaussian
+    (~4.7 km FWHM) smooths away. Two panels: (a) the full reach, (b) a zoom on the
+    bifurcation. Dashed horizontal lines mark each river's reach-average reference
+    gradient; near the bifurcation the local slope towers well above it, and Kanektok
+    sits clearly above Uyak. Source: Fine-Scale Slope tab.
+    """
+    con = core.connect()
+    data = core.finescale_slope_profile(
+        con, reaches=tuple(config.COLOR_MAP), res_km=res_km, method=method, xmax=xmax)
+
+    # Reach-average reference gradient (canonical, gated open-water Theil-Sen median).
+    ref = core.load_reference_gradient()
+    ow = ref[(ref["open_water"]) & (ref["gated"])]
+    ref_grad = {r: ow[ow["Reach_Name"] == r]["theilsen_cm_km"].abs().median()
+                for r in config.COLOR_MAP}
+
+    plot_order = sorted(config.COLOR_MAP, key=lambda r: r == "Uyak_Creek")
+
+    fig, (ax_full, ax_zoom) = plt.subplots(
+        2, 1, figsize=(config.FIG_WIDTH_FULL, config.FIG_HEIGHT_DEFAULT * 1.7))
+
+    def _draw(ax, xlim_hi):
+        ymax = 0.0
+        for reach in plot_order:
+            r = data.get(reach)
+            if not r:
+                continue
+            g, med, lo, hi = r["grid"], r["med"], r["lo"], r["hi"]
+            m = g <= xlim_hi
+            col = config.river_color(reach)
+            ax.fill_between(g[m], lo[m], hi[m], color=col, alpha=0.15,
+                            linewidth=0, zorder=2)
+            ax.plot(g[m], med[m], color=col, lw=2.0, solid_capstyle="round",
+                    label=config.river_label(reach), zorder=4)
+            finite = med[m][np.isfinite(med[m])]
+            if finite.size:
+                ymax = max(ymax, float(np.nanmax(hi[m])))
+            # reach-average reference gradient (dashed)
+            rg = ref_grad.get(reach)
+            if rg is not None and np.isfinite(rg):
+                ax.axhline(rg, color=col, ls=(0, (5, 3)), lw=1.0, alpha=0.9, zorder=3)
+        add_bifurcation_line(ax)
+        ax.set_ylabel("Interval Slope (cm/km)")
+        ax.set_xlim(xlim_hi + 1.0, -1.0)     # reversed: anchor (0) on the right
+        ax.set_ylim(0.0, ymax + 25)
+        return ymax
+
+    # (a) Full reach
+    _draw(ax_full, xmax)
+    ax_full.legend(loc="upper left")
+    # The two reach-average reference gradients (~195 / ~192) nearly coincide, so a
+    # single note in clear low-slope space beats two overlapping per-line labels.
+    rgk, rgu = ref_grad.get("Kanektok_River"), ref_grad.get("Uyak_Creek")
+    ax_full.annotate(
+        f"dashed = reach-average reference gradient (Kanektok {rgk:.0f}, Uyak {rgu:.0f} cm/km)",
+        xy=(0.5, 0.04), xycoords="axes fraction", fontsize=7, style="italic",
+        color="#555555", ha="center", va="bottom")
+    ax_full.set_title("(a) Full reach", fontsize=10, loc="left", color="#333333")
+
+    # (b) Bifurcation zoom
+    _draw(ax_zoom, zoom_km)
+    ax_zoom.set_title(f"(b) Bifurcation zoom (0–{zoom_km:.0f} km)",
+                      fontsize=10, loc="left", color="#333333")
+    ax_zoom.set_xlabel("Distance Downriver from Anchor (km)")
+    ax_zoom.annotate("Anchor point (0 km)", xy=(1.0, -0.14), xycoords="axes fraction",
+                     fontsize=8, style="italic", color="#666666", ha="right", va="top")
+
+    # Near-bifurcation contrast annotation (the headline of the re-analysis).
+    def _near(reach):
+        r = data.get(reach)
+        if not r:
+            return np.nan
+        nb = (r["grid"] >= 1.0) & (r["grid"] <= 5.0)
+        return float(np.nanmedian(r["med"][nb])) if nb.any() else np.nan
+    k, u = _near("Kanektok_River"), _near("Uyak_Creek")
+    if np.isfinite(k) and np.isfinite(u):
+        ax_zoom.annotate(
+            f"1–5 km median slope:\nKanektok {k:.0f}, Uyak {u:.0f} cm/km "
+            f"(+{k - u:.0f})",
+            xy=(0.03, 0.95), xycoords="axes fraction", fontsize=8,
+            ha="left", va="top", color="#333333",
+            bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="#CCCCCC", lw=0.8))
+
+    fig.tight_layout()
+    return fig
+
+
 # Registry: figure number -> (builder, short title).
 FIGURES = {
     1: (build_fig1, "Study Area & Spatial Normalization Map"),
@@ -840,6 +935,7 @@ FIGURES = {
     6: (build_fig6, "Localized Elevation Difference"),
     7: (build_fig7, "Detrended Relative Elevation Profile"),
     8: (build_fig8, "Interval Slope Profile"),
+    9: (build_fig9, "Fine-Scale Slope Profile"),
 }
 EXTERNAL = {}  # all figures now have in-module builders
 
