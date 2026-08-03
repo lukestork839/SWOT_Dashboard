@@ -554,47 +554,76 @@ def render_cross_sections(chB, profB, plotly_template):
     crow = chB[chB["R_km"] == R].iloc[0]
     g = profB[profB["R_km"] == R].sort_values("arc_m")
 
+    # Re-center the cross-valley axis on the Kanektok channel (x = 0), increasing toward the Uyak,
+    # so every arc reads "stand in the Kanektok, walk the spill path toward the Uyak" and the β
+    # anatomy (bed / crest / floodplain) hangs directly off the would-be avulsing channel at x = 0.
+    kcm, ucm = crow["kan_arc_m"], crow["uyak_arc_m"]
+    recentered = np.isfinite(kcm) and np.isfinite(ucm)
+    sgn = float(np.sign(ucm - kcm)) if recentered else 1.0
+    if sgn == 0:
+        sgn = 1.0
+    origin = kcm if np.isfinite(kcm) else 0.0
+
+    def _x(arc_m):  # metres on the along-arc axis -> km on the Kanektok-centered axis
+        return (np.asarray(arc_m, float) - origin) * sgn / 1000.0
+
+    KAN, UYAK = COLOR_MAP["Kanektok_River"], COLOR_MAP["Uyak_Creek"]
+    x_kan = _x(kcm) if np.isfinite(kcm) else None      # 0.0 when the Kanektok is located
+    x_uyak = _x(ucm) if np.isfinite(ucm) else None     # > 0 (Uyak direction)
+    bed, crest, fp = crow.get("kan_bed_m", np.nan), crow.get("kan_crest_m", np.nan), crow.get("fp_ref_m", np.nan)
+
+    # Trim the view to the Kanektok→Uyak span plus a little context. The outward arc sweep runs
+    # well past the Uyak (increasingly so at large radius) over terrain outside the two-river
+    # system, which is nothing we're reading here — so cut the section a fixed distance past each
+    # channel. Filtering the terrain (not just the axis range) also lets the y-axis fit the reach.
+    PAD_KM = 0.75
+    xr_all = _x(g["arc_m"])
+    left = (x_kan if x_kan is not None else float(np.min(xr_all))) - PAD_KM
+    right = (x_uyak if x_uyak is not None else float(np.max(xr_all))) + PAD_KM
+    win = (xr_all >= left) & (xr_all <= right)
+    gx, gy = xr_all[win], g["elevation_m"].to_numpy()[win]
+
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=g["arc_m"] / 1000.0, y=g["elevation_m"], mode="lines",
+        x=gx, y=gy, mode="lines",
         line=dict(color="#555", width=1.3), name="terrain",
-        hovertemplate="along-arc: %{x:.2f} km<br>elevation: %{y:.2f} m<extra></extra>"))
-    if np.isfinite(crow["kan_arc_m"]):
-        fig.add_vline(x=crow["kan_arc_m"] / 1000.0, line_color=COLOR_MAP["Kanektok_River"],
-                      line_width=2, annotation_text="Kanektok", annotation_position="top",
-                      annotation_font_color=COLOR_MAP["Kanektok_River"])
-    if np.isfinite(crow["uyak_arc_m"]):
-        fig.add_vline(x=crow["uyak_arc_m"] / 1000.0, line_color=COLOR_MAP["Uyak_Creek"],
-                      line_width=2, annotation_text="Uyak", annotation_position="top",
-                      annotation_font_color=COLOR_MAP["Uyak_Creek"])
+        hovertemplate="from Kanektok: %{x:+.2f} km<br>elevation: %{y:.2f} m<extra></extra>"))
+    if x_kan is not None:
+        fig.add_vline(x=x_kan, line_color=KAN, line_width=2,
+                      annotation_text="Kanektok", annotation_position="top",
+                      annotation_font_color=KAN)
+    if x_uyak is not None:
+        fig.add_vline(x=x_uyak, line_color=UYAK, line_width=2,
+                      annotation_text="Uyak", annotation_position="top",
+                      annotation_font_color=UYAK)
     # Inter-channel floodplain corridor (the avulsion pathway) + its reference elevation.
     CH_WIN_M = 250.0  # matches build_arc_B.py
-    if (np.isfinite(crow.get("fp_ref_m", np.nan)) and np.isfinite(crow["kan_arc_m"])
-            and np.isfinite(crow["uyak_arc_m"])):
-        lo, hi = sorted([crow["kan_arc_m"], crow["uyak_arc_m"]])
-        fig.add_vrect(x0=(lo + CH_WIN_M) / 1000.0, x1=(hi - CH_WIN_M) / 1000.0,
+    if np.isfinite(fp) and x_kan is not None and x_uyak is not None:
+        lo, hi = sorted([x_kan, x_uyak])
+        fig.add_vrect(x0=lo + CH_WIN_M / 1000.0, x1=hi - CH_WIN_M / 1000.0,
                       fillcolor="#31a354", opacity=0.08, line_width=0,
                       annotation_text="floodplain corridor", annotation_position="top left",
                       annotation_font_size=10, annotation_font_color="#31a354")
-        fig.add_hline(y=crow["fp_ref_m"], line_dash="dash", line_color="#31a354", line_width=1.5,
-                      annotation_text=f"floodplain ref ({crow['fp_ref_m']:.1f} m)",
+        fig.add_hline(y=fp, line_dash="dash", line_color="#31a354", line_width=1.5,
+                      annotation_text=f"floodplain ref ({fp:.1f} m)",
                       annotation_position="right", annotation_font_size=10,
                       annotation_font_color="#31a354")
-    # Kanektok ADCP bed + ridge crest (the Gearon β geometry): H_M spans crest→bed, H_AR crest→floodplain.
-    kx = crow["kan_arc_m"] / 1000.0 if np.isfinite(crow["kan_arc_m"]) else None
-    if kx is not None and np.isfinite(crow.get("kan_bed_m", np.nan)):
+    # Kanektok ADCP bed ▼ + ridge crest ▲ at x = 0 (the β geometry — H_M = crest→bed, H_AR =
+    # crest→floodplain — but the actual β / H_M / H_AR values live in the metrics below, not on-plot).
+    if x_kan is not None and np.isfinite(bed):
         fig.add_trace(go.Scatter(
-            x=[kx], y=[crow["kan_bed_m"]], mode="markers", name="Kanektok bed (ADCP)",
-            marker=dict(symbol="triangle-down", size=12, color=COLOR_MAP["Kanektok_River"]),
+            x=[x_kan], y=[bed], mode="markers", name="Kanektok bed (ADCP)",
+            marker=dict(symbol="triangle-down", size=12, color=KAN),
             hovertemplate=f"Kanektok bed: %{{y:.2f}} m<br>ADCP depth: {crow.get('kan_depth_m', np.nan):.2f} m<extra></extra>"))
-    if kx is not None and np.isfinite(crow.get("kan_crest_m", np.nan)):
+    if x_kan is not None and np.isfinite(crest):
         fig.add_trace(go.Scatter(
-            x=[kx], y=[crow["kan_crest_m"]], mode="markers", name="Kanektok ridge crest",
-            marker=dict(symbol="triangle-up", size=12, color=COLOR_MAP["Kanektok_River"]),
+            x=[x_kan], y=[crest], mode="markers", name="Kanektok ridge crest",
+            marker=dict(symbol="triangle-up", size=12, color=KAN),
             hovertemplate="Kanektok ridge crest: %{y:.2f} m<extra></extra>"))
     fig.update_layout(
         title=f"Arc at {R:.1f} km from anchor  (Kanektok → floodplain → Uyak)",
-        xaxis_title="Along-arc distance (km)", yaxis_title="Elevation (m, EGM2008)",
+        xaxis=dict(title="Distance from Kanektok toward Uyak (km)", range=[left, right]),
+        yaxis_title="Elevation (m, EGM2008)",
         height=460, template=plotly_template, showlegend=True, margin=dict(r=150),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     st.plotly_chart(fig, use_container_width=True, theme=None)
@@ -678,18 +707,24 @@ def render_cross_sections(chB, profB, plotly_template):
             (the fan/delta radial-distance convention). One arc spans **Kanektok → floodplain →
             Uyak**, letting the two water surfaces be compared at a matched downstream position.
 
+            - The **x-axis is re-centered on the Kanektok (x = 0), increasing toward the Uyak**, so
+              the plot reads *"stand in the Kanektok, walk the spill path toward the Uyak."* The
+              Uyak line therefore sits at the channel separation (~3 km) on the right. The view is
+              **trimmed a short distance past the Uyak** — the outward arc sweep runs on over terrain
+              outside the two-river system, which isn't part of the avulsion question.
             - The two **vertical lines** mark each channel; the **green band** is the inter-channel
               floodplain corridor (the pathway a Kanektok → Uyak avulsion would drain across),
               excluding each channel's ±250 m notch; the **green dashed line** is its median elevation.
             - **Superelevation** = channel water surface − corridor elevation. *Negative* means the
               channel is incised below the floodplain (the safe, usual case); *positive* means it is
               perched above the corridor and could spill toward the other river.
-            - **Gearon β = H_AR / H_M** (▲ ridge crest, ▼ bed on the Kanektok): the alluvial-ridge
-              height above the floodplain (H_AR = crest − floodplain) divided by the channel depth
-              (H_M = crest − bed). The **bed comes from the boat-ADCP depth** (bed = water surface −
-              measured depth), so H_M is measured, not DEM-guessed. **β ≥ 1** means the bed has
-              aggraded up to floodplain level → perched and avulsion-prone; the Kanektok's β ≈ 0.24
-              is well below that. (Kanektok only — the Uyak has ADCP depth near its mouth only.)
+            - **Gearon β = H_AR / H_M** — on the Kanektok at x = 0, ▲ marks the ridge crest and ▼ the
+              bed; H_M = crest − bed (channel depth) and H_AR = crest − floodplain (ridge height), and
+              the **β / H_AR / H_M values are listed in the metrics below the plot**. The **bed comes
+              from the boat-ADCP depth** (bed = water surface − measured depth), so H_M is measured,
+              not DEM-guessed. **β ≥ 1** means the bed has aggraded up to floodplain level → perched
+              and avulsion-prone; the Kanektok's β ≈ 0.24 is well below that. (Kanektok only — the
+              Uyak has ADCP depth near its mouth only.)
             - Each channel is located by **snapping to the actual DEM channel** from a centerline
               prior. Both priors are **official field-surveyed centerlines** accurate to ~20–50 m —
               the Uyak from a hunter's boat GPS, the Kanektok from a coworker boat-ADCP thalweg run —
