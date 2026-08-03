@@ -20,6 +20,7 @@ Run:  python3 DEM_Transects/map_transects.py   ->  outputs/transect_map.html
 
 from __future__ import annotations
 
+import json
 import os
 
 import folium
@@ -32,7 +33,12 @@ import build_arc_B as B
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "outputs")
+DATA = os.path.join(HERE, "data")
 CENTERLINE = B.CENTERLINE
+# Lightweight overlay the dashboard's DEM Map View renders as toggle layers. Committed (data/), and
+# read with plain json there so the dashboard needs no geopandas — same geometry as this map, one
+# source of truth, rebuilt whenever this script runs.
+OVERLAY = os.path.join(DATA, "transect_map_overlay.geojson")
 
 # Match the dashboard COLOR_MAP (Kanektok firebrick, Uyak dodgerblue).
 KAN, UYAK = "#b22222", "#1e90ff"
@@ -72,11 +78,48 @@ def distance_bands(radii) -> list:
     slider scrubs, so each ring == one slider position in km from the anchor.
     """
     bands = []
-    bearings = np.linspace(B.BEAR_MIN, B.BEAR_MAX, 240)
+    bearings = np.linspace(B.BEAR_MIN, B.BEAR_MAX, 96)   # smooth enough for a reference arc
     for R in radii:
         lat, lon = B.dest(B.ANCHOR[0], B.ANCHOR[1], R, bearings)
         bands.append((R, LineString(np.column_stack([lon, lat]))))
     return bands
+
+
+def export_overlay(kan_hand, uyak_hand, bands_minor, bands_major, arcsB, path):
+    """Write the transect geometry as a GeoJSON FeatureCollection for the dashboard to render.
+
+    Each feature carries a `kind` (centerline / band / transect / crossing / anchor) plus the props
+    the dashboard styles by, so it can group them into toggle layers with no geopandas dependency.
+    Coordinates are GeoJSON order [lon, lat] throughout.
+    """
+    feats = []
+
+    def line(coords_xy, props):  # round to 6 dp (~0.1 m) to keep the committed file small
+        feats.append({"type": "Feature", "properties": props, "geometry": {
+            "type": "LineString", "coordinates": [[round(float(x), 6), round(float(y), 6)]
+                                                   for x, y in coords_xy]}})
+
+    def point(lon, lat, props):
+        feats.append({"type": "Feature", "properties": props, "geometry": {
+            "type": "Point", "coordinates": [round(float(lon), 6), round(float(lat), 6)]}})
+
+    for _, r in kan_hand.iterrows():
+        line(r.geometry.coords, {"kind": "centerline", "reach": "Kanektok_River"})
+    for _, r in uyak_hand.iterrows():
+        line(r.geometry.coords, {"kind": "centerline", "reach": "Uyak_Creek"})
+    for R, geom in bands_minor:
+        line(geom.coords, {"kind": "band", "r_km": float(R), "major": False})
+    for R, geom in bands_major:
+        line(geom.coords, {"kind": "band", "r_km": float(R), "major": True})
+    for R, geom, kpt, upt in arcsB:
+        line(geom.coords, {"kind": "transect", "r_km": float(R)})
+        point(kpt[1], kpt[0], {"kind": "crossing", "reach": "Kanektok_River", "r_km": float(R)})
+        point(upt[1], upt[0], {"kind": "crossing", "reach": "Uyak_Creek", "r_km": float(R)})
+    point(B.ANCHOR[1], B.ANCHOR[0], {"kind": "anchor"})
+
+    with open(path, "w") as f:
+        json.dump({"type": "FeatureCollection", "features": feats}, f)
+    return len(feats)
 
 
 def main():
@@ -166,9 +209,11 @@ def main():
 
     out = os.path.join(OUT, "transect_map.html")
     m.save(out)
+    n_feat = export_overlay(kan_hand, uyak_hand, bands_minor, bands_major, arcsB, OVERLAY)
     print(f"{len(arcsB)} trimmed transects, {len(bands_minor)} distance bands "
           f"({len(bands_major)} labelled), {len(centerlines)} SWOT centerlines + field lines")
     print(f"wrote {out}")
+    print(f"wrote {OVERLAY} ({n_feat} features)")
 
 
 if __name__ == "__main__":
