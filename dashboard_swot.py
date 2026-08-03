@@ -512,6 +512,21 @@ def load_dem_points(_con):
 # These parquets are not in the Streamlit-Cloud data release, so the Cross-Sections tab
 # only appears when they are present on disk (local runs). See DEM_Transects/AVULSION_ANALYSIS.md.
 _XSEC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DEM_Transects", "outputs")
+# The transect-map overlay (field centerlines, distance bands, transects) IS committed under data/,
+# so the DEM Map View can draw it even on Streamlit Cloud. Rebuilt by DEM_Transects/map_transects.py.
+_XSEC_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DEM_Transects", "data")
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_transect_overlay():
+    """The transect-map geometry as a GeoJSON dict (or None): field centerlines, distance-from-anchor
+    bands, trimmed transects, channel crossings, anchor. Rendered as toggle layers in the DEM Map View."""
+    import json
+    try:
+        with open(os.path.join(_XSEC_DATA_DIR, "transect_map_overlay.geojson")) as f:
+            return json.load(f)
+    except Exception:
+        return None
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -530,6 +545,64 @@ def load_xsec_B():
         return channels, profiles
     except Exception:
         return None, None
+
+
+def add_transect_overlay(m, overlay):
+    """Draw the DEM-transect geometry on a folium map as toggleable FeatureGroups: the field
+    centerlines, the distance-from-anchor bands (radar grid), the trimmed transects + channel
+    crossings, and the anchor. `overlay` is the GeoJSON dict from load_transect_overlay()."""
+    feats = overlay.get("features", [])
+
+    def of_kind(k):
+        return [f for f in feats if f["properties"].get("kind") == k]
+
+    def latlon(coords):  # GeoJSON [lon,lat] -> folium (lat,lon)
+        return [(y, x) for x, y in coords]
+
+    KAN, UYAK, BAND = COLOR_MAP["Kanektok_River"], COLOR_MAP["Uyak_Creek"], "#17becf"
+
+    fg_cl = folium.FeatureGroup(name="Field centerlines (ADCP/GPS)", show=True)
+    for f in of_kind("centerline"):
+        is_kan = f["properties"]["reach"] == "Kanektok_River"
+        folium.PolyLine(latlon(f["geometry"]["coordinates"]), color=KAN if is_kan else UYAK,
+                        weight=3, opacity=0.95,
+                        tooltip=f"{'Kanektok' if is_kan else 'Uyak'} centerline (field)").add_to(fg_cl)
+    fg_cl.add_to(m)
+
+    # Distance-from-anchor bands: dense thin "radar" arcs, labelled every 5 km. Off by default.
+    fg_band = folium.FeatureGroup(name="Distance-from-anchor bands (km)", show=False)
+    for f in of_kind("band"):
+        p, coords = f["properties"], latlon(f["geometry"]["coordinates"])
+        major = p.get("major")
+        folium.PolyLine(coords, color=BAND, weight=1.8 if major else 0.8,
+                        opacity=0.85 if major else 0.35,
+                        tooltip=f"{p['r_km']:.0f} km from anchor" if major else None).add_to(fg_band)
+        if major:
+            folium.map.Marker(coords[-1], icon=folium.DivIcon(
+                html=f'<div style="font-size:11px;color:#0e7c7b;font-weight:bold;'
+                     f'text-shadow:0 0 2px #fff">{p["r_km"]:.0f} km</div>')).add_to(fg_band)
+    fg_band.add_to(m)
+
+    fg_tr = folium.FeatureGroup(name="Transects (trimmed to reach)", show=True)
+    for f in of_kind("transect"):
+        p = f["properties"]
+        folium.PolyLine(latlon(f["geometry"]["coordinates"]), color="#6a51a3", weight=2,
+                        opacity=0.85, dash_array="6,6",
+                        tooltip=f"Transect at {p['r_km']:.0f} km").add_to(fg_tr)
+    for f in of_kind("crossing"):
+        p = f["properties"]
+        is_kan = p["reach"] == "Kanektok_River"
+        lon, lat = f["geometry"]["coordinates"]
+        folium.CircleMarker((lat, lon), radius=4, color=KAN if is_kan else UYAK, fill=True,
+                            fill_color=KAN if is_kan else UYAK, fill_opacity=1.0,
+                            tooltip=f"{'Kanektok' if is_kan else 'Uyak'} crossing @ {p['r_km']:.0f} km"
+                            ).add_to(fg_tr)
+    fg_tr.add_to(m)
+
+    for f in of_kind("anchor"):
+        lon, lat = f["geometry"]["coordinates"]
+        folium.Marker((lat, lon), tooltip="Anchor (distance origin)",
+                      icon=folium.Icon(color="red", icon="star")).add_to(m)
 
 
 def render_cross_sections(chB, profB, plotly_template):
@@ -1814,6 +1887,9 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         ).add_to(m)
 
                     add_bifurcation_marker(m)
+                    overlay = load_transect_overlay()
+                    if overlay is not None:
+                        add_transect_overlay(m, overlay)
                     folium.LayerControl().add_to(m)
                     st_folium(m, width=1400, height=600, key="dem_river_map", returned_objects=[])
 
@@ -1826,6 +1902,15 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         - **By elevation**: purple is low ground, yellow is high ground.
                         - **Click any point** to see its exact height and distance.
                         - Use the ruler tool (top-left) to measure distances and areas.
+
+                        **DEM-transect overlay** (toggle in the layer control, top-right) — the exact
+                        geometry behind the ✂️ Cross-Sections tab:
+                        - **Field centerlines** — the boat-ADCP Kanektok and boat-GPS Uyak lines that
+                          drive the channel picks.
+                        - **Distance-from-anchor bands** — concentric arcs every 1 km (labelled every
+                          5 km); each ring is one Cross-Sections slider position. *Off by default.*
+                        - **Transects** — each cross-section arc, trimmed to the Kanektok→Uyak reach and
+                          dotted where it crosses each channel.
 
                         ― Technical details ―
                         Each point is a 10 m ArcticDEM V4 pixel within the river polygons,
