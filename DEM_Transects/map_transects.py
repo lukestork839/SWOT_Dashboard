@@ -4,7 +4,9 @@ Placement sanity-check map.
 Overlays, on a satellite basemap, the exact geometry the Approach-B analysis uses:
   - the official field centerlines that drive the channel picks: boat-GPS Uyak + boat-ADCP Kanektok,
   - the SWOT channel centerlines (now only a comparison overlay, no longer a prior),
-  - the Approach-B iso-distance-from-anchor arcs,
+  - the Approach-B iso-distance-from-anchor transects, each TRIMMED to the Kanektok->Uyak reach
+    (+0.75 km past each channel — the same span the cross-section figure shows) and dotted where it
+    crosses each field centerline, so the map transect and the plotted section line up,
   - the shared anchor and the bifurcation point.
 
 Everything is rebuilt by importing build_arc_B, so the map shows precisely what the analysis
@@ -32,21 +34,39 @@ CENTERLINE = B.CENTERLINE
 # Match the dashboard COLOR_MAP (Kanektok firebrick, Uyak dodgerblue).
 KAN, UYAK = "#b22222", "#1e90ff"
 BIFURCATION = (59.828886, -161.377778)
+PAD_KM = 0.75    # context past each channel — matches the cross-section trim in build_arc_B.py
 
 
-def approach_B_arcs(radii) -> list:
-    """Rebuild the Approach-B arcs (constant distance-from-anchor) as WGS84 LineStrings."""
+def approach_B_arcs(radii, kd, kb, ud, ub) -> list:
+    """Approach-B transects, each TRIMMED to the Kanektok->Uyak reach it actually samples.
+
+    For each radius the two field centerlines are crossed at bearings `kbr` (Kanektok) and `ubr`
+    (Uyak); the transect is drawn only between them, plus PAD_KM past each channel (converted to a
+    bearing span, degrees(pad/R)). Returns (R, arc LineString, Kanektok crossing, Uyak crossing);
+    radii where either centerline has no crossing within tolerance are skipped.
+    """
     arcs = []
     for R in radii:
-        bearings = np.linspace(B.BEAR_MIN, B.BEAR_MAX, 240)
+        kbr = B.nearest_bearing(kd, kb, R)
+        ubr = B.nearest_bearing(ud, ub, R)
+        if not (np.isfinite(kbr) and np.isfinite(ubr)):
+            continue
+        pad_deg = np.degrees(PAD_KM / R)
+        b0, b1 = sorted([kbr, ubr])
+        bearings = np.linspace(b0 - pad_deg, b1 + pad_deg, 240)
         lat, lon = B.dest(B.ANCHOR[0], B.ANCHOR[1], R, bearings)
-        arcs.append((R, LineString(np.column_stack([lon, lat]))))
+        klat, klon = B.dest(B.ANCHOR[0], B.ANCHOR[1], R, kbr)
+        ulat, ulon = B.dest(B.ANCHOR[0], B.ANCHOR[1], R, ubr)
+        arcs.append((R, LineString(np.column_stack([lon, lat])),
+                     (float(klat), float(klon)), (float(ulat), float(ulon))))
     return arcs
 
 
 def main():
     centerlines = gpd.read_file(CENTERLINE).to_crs(4326)
-    arcsB = approach_B_arcs(np.arange(4.0, 33.0, 4.0))
+    kd, kb = B.hand_centerline_dbr(B.KAN_CL)
+    ud, ub = B.hand_centerline_dbr(B.UYAK_CL)
+    arcsB = approach_B_arcs(np.arange(4.0, 33.0, 4.0), kd, kb, ud, ub)
 
     # Map centred on the centerlines' bounding box.
     minx, miny, maxx, maxy = centerlines.total_bounds
@@ -82,14 +102,20 @@ def main():
                         tooltip="Kanektok centerline (field boat ADCP thalweg)").add_to(fg_kan)
     fg_kan.add_to(m)
 
-    # --- Approach-B arcs ---
-    fg_arc = folium.FeatureGroup(name="B iso-distance arcs", show=True)
-    for R, geom in arcsB:
+    # --- Approach-B transects (trimmed to the Kanektok->Uyak reach) + channel crossings ---
+    fg_arc = folium.FeatureGroup(name="B transects (trimmed to reach)", show=True)
+    for R, geom, kpt, upt in arcsB:
         coords = [(y, x) for x, y in geom.coords]
         folium.PolyLine(coords, color="#6a51a3", weight=2, opacity=0.85, dash_array="6,6",
-                        tooltip=f"Arc {R:.0f} km from anchor").add_to(fg_arc)
+                        tooltip=f"Transect at {R:.0f} km from anchor "
+                                f"(Kanektok -> floodplain -> Uyak, +{PAD_KM:g} km each end)"
+                        ).add_to(fg_arc)
+        folium.CircleMarker(kpt, radius=4, color=KAN, fill=True, fill_color=KAN, fill_opacity=1.0,
+                            tooltip=f"Kanektok crossing @ {R:.0f} km").add_to(fg_arc)
+        folium.CircleMarker(upt, radius=4, color=UYAK, fill=True, fill_color=UYAK, fill_opacity=1.0,
+                            tooltip=f"Uyak crossing @ {R:.0f} km").add_to(fg_arc)
         folium.map.Marker(
-            coords[len(coords) // 2],
+            coords[0],
             icon=folium.DivIcon(html=f'<div style="font-size:11px;color:#6a51a3;'
                                      f'font-weight:bold">{R:.0f} km</div>')).add_to(fg_arc)
     fg_arc.add_to(m)
