@@ -508,6 +508,205 @@ def load_dem_points(_con):
         return None
 
 
+# --- DEM CROSS-SECTION ARTIFACTS (local only; produced by DEM_Transects/*.py) ---
+# These parquets are not in the Streamlit-Cloud data release, so the Cross-Sections tab
+# only appears when they are present on disk (local runs). See DEM_Transects/AVULSION_ANALYSIS.md.
+_XSEC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DEM_Transects", "outputs")
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_xsec_B():
+    """Approach B — iso-distance-from-anchor arc transects (Kanektok vs Uyak).
+
+    Returns (channels, profiles) or (None, None). channels: one row per radius
+    (R_km, kan_wse_m, uyak_wse_m, kan_arc_m, uyak_arc_m, diff_uyak_minus_kan, fp_ref_m,
+    kan/uyak_superelev_m, and the Kanektok β geometry kan_depth_m/kan_bed_m/kan_crest_m/
+    kan_HAR_m/kan_HM_m/kan_beta, n_valid, n_tot). profiles: full arc cross-sections
+    (R_km, arc_m, elevation_m).
+    """
+    try:
+        channels = pd.read_parquet(os.path.join(_XSEC_DIR, "arcB_channels.parquet"))
+        profiles = pd.read_parquet(os.path.join(_XSEC_DIR, "arcB_profiles.parquet"))
+        return channels, profiles
+    except Exception:
+        return None, None
+
+
+def render_cross_sections(chB, profB, plotly_template):
+    """Interactive DEM cross-section viewer — Approach B iso-distance-from-anchor arcs
+    (Kanektok vs Uyak water surfaces at a matched downstream position).
+    See DEM_Transects/AVULSION_ANALYSIS.md."""
+    st.subheader("DEM Cross-Sections")
+    st.caption(
+        "Scrub through the individual DEM cross-sections behind the avulsion analysis. Each cut "
+        "follows an **arc of constant distance-from-anchor**, spanning Kanektok → floodplain → Uyak, "
+        "so the two rivers are compared at a matched downstream position."
+    )
+    if chB is None or profB is None:
+        st.warning("Cross-section artifacts not found. Run the DEM_Transects scripts locally.")
+        return
+
+    radii = chB["R_km"].tolist()
+    default_R = min(radii, key=lambda r: abs(r - 16.0))
+    R = st.select_slider(
+        "Distance from anchor (km, ≈ downstream)", options=radii, value=default_R,
+        key="xsecB_R")
+    crow = chB[chB["R_km"] == R].iloc[0]
+    g = profB[profB["R_km"] == R].sort_values("arc_m")
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=g["arc_m"] / 1000.0, y=g["elevation_m"], mode="lines",
+        line=dict(color="#555", width=1.3), name="terrain",
+        hovertemplate="along-arc: %{x:.2f} km<br>elevation: %{y:.2f} m<extra></extra>"))
+    if np.isfinite(crow["kan_arc_m"]):
+        fig.add_vline(x=crow["kan_arc_m"] / 1000.0, line_color=COLOR_MAP["Kanektok_River"],
+                      line_width=2, annotation_text="Kanektok", annotation_position="top",
+                      annotation_font_color=COLOR_MAP["Kanektok_River"])
+    if np.isfinite(crow["uyak_arc_m"]):
+        fig.add_vline(x=crow["uyak_arc_m"] / 1000.0, line_color=COLOR_MAP["Uyak_Creek"],
+                      line_width=2, annotation_text="Uyak", annotation_position="top",
+                      annotation_font_color=COLOR_MAP["Uyak_Creek"])
+    # Inter-channel floodplain corridor (the avulsion pathway) + its reference elevation.
+    CH_WIN_M = 250.0  # matches build_arc_B.py
+    if (np.isfinite(crow.get("fp_ref_m", np.nan)) and np.isfinite(crow["kan_arc_m"])
+            and np.isfinite(crow["uyak_arc_m"])):
+        lo, hi = sorted([crow["kan_arc_m"], crow["uyak_arc_m"]])
+        fig.add_vrect(x0=(lo + CH_WIN_M) / 1000.0, x1=(hi - CH_WIN_M) / 1000.0,
+                      fillcolor="#31a354", opacity=0.08, line_width=0,
+                      annotation_text="floodplain corridor", annotation_position="top left",
+                      annotation_font_size=10, annotation_font_color="#31a354")
+        fig.add_hline(y=crow["fp_ref_m"], line_dash="dash", line_color="#31a354", line_width=1.5,
+                      annotation_text=f"floodplain ref ({crow['fp_ref_m']:.1f} m)",
+                      annotation_position="right", annotation_font_size=10,
+                      annotation_font_color="#31a354")
+    # Kanektok ADCP bed + ridge crest (the Gearon β geometry): H_M spans crest→bed, H_AR crest→floodplain.
+    kx = crow["kan_arc_m"] / 1000.0 if np.isfinite(crow["kan_arc_m"]) else None
+    if kx is not None and np.isfinite(crow.get("kan_bed_m", np.nan)):
+        fig.add_trace(go.Scatter(
+            x=[kx], y=[crow["kan_bed_m"]], mode="markers", name="Kanektok bed (ADCP)",
+            marker=dict(symbol="triangle-down", size=12, color=COLOR_MAP["Kanektok_River"]),
+            hovertemplate=f"Kanektok bed: %{{y:.2f}} m<br>ADCP depth: {crow.get('kan_depth_m', np.nan):.2f} m<extra></extra>"))
+    if kx is not None and np.isfinite(crow.get("kan_crest_m", np.nan)):
+        fig.add_trace(go.Scatter(
+            x=[kx], y=[crow["kan_crest_m"]], mode="markers", name="Kanektok ridge crest",
+            marker=dict(symbol="triangle-up", size=12, color=COLOR_MAP["Kanektok_River"]),
+            hovertemplate="Kanektok ridge crest: %{y:.2f} m<extra></extra>"))
+    fig.update_layout(
+        title=f"Arc at {R:.1f} km from anchor  (Kanektok → floodplain → Uyak)",
+        xaxis_title="Along-arc distance (km)", yaxis_title="Elevation (m, EGM2008)",
+        height=460, template=plotly_template, showlegend=True, margin=dict(r=150),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    st.plotly_chart(fig, use_container_width=True, theme=None)
+
+    # Two aligned rows of 3: water surfaces on top, superelevation (the avulsion metric) below.
+    def _se(v):
+        return f"{v:+.2f} m" if pd.notna(v) else "n/a"
+    diff = crow["diff_uyak_minus_kan"]
+    r1c1, r1c2, r1c3 = st.columns(3)
+    r1c1.metric("Kanektok water surface", f"{crow['kan_wse_m']:.2f} m")
+    r1c2.metric("Uyak water surface", f"{crow['uyak_wse_m']:.2f} m")
+    r1c3.metric("Uyak − Kanektok", f"{diff:+.2f} m",
+                help="Positive → Uyak sits higher at this radius.")
+    r2c1, r2c2, r2c3 = st.columns(3)
+    r2c1.metric("Kanektok superelevation", _se(crow.get("kan_superelev_m", np.nan)),
+                help="Channel water surface minus the inter-channel floodplain corridor. "
+                     "Negative = incised below the floodplain (not perched); "
+                     "positive = perched above the corridor (avulsion-prone).")
+    r2c2.metric("Uyak superelevation", _se(crow.get("uyak_superelev_m", np.nan)),
+                help="As for the Kanektok, relative to the same corridor.")
+    r2c3.metric("Floodplain corridor elev",
+                f"{crow['fp_ref_m']:.2f} m" if pd.notna(crow.get("fp_ref_m", np.nan)) else "n/a",
+                help="Median terrain of the corridor between the channels — the baseline "
+                     "each superelevation is measured against.")
+
+    # Kanektok Gearon β = H_AR/H_M, using the measured ADCP channel depth (bed = WSE − depth).
+    st.markdown("**Kanektok avulsion number** — Gearon β = H_AR / H_M "
+                "(ridge height ÷ channel depth; **β ≥ 1 = avulsion-prone**)")
+    b = crow.get("kan_beta", np.nan)
+    r3c1, r3c2, r3c3 = st.columns(3)
+    r3c1.metric("Kanektok β", f"{b:.2f}" if pd.notna(b) else "n/a",
+                help="H_AR/H_M with the bed from the boat-ADCP depth. β≥1 means the bed has aggraded "
+                     "to floodplain level (perched). Kanektok β≈0.24 ≪ 1 → firmly not avulsion-prone.")
+    r3c2.metric("H_AR (ridge height)", _se(crow.get("kan_HAR_m", np.nan)),
+                help="Alluvial-ridge crest minus floodplain — how high the levee stands above the floodplain.")
+    r3c3.metric("H_M (channel depth)",
+                f"{crow['kan_HM_m']:.2f} m" if pd.notna(crow.get("kan_HM_m", np.nan)) else "n/a",
+                help=f"Crest minus bed = freeboard + measured ADCP depth "
+                     f"({crow.get('kan_depth_m', np.nan):.2f} m at this arc).")
+
+    # Water-surface long-profiles vs radius with the current arc marked.
+    prof_fig = go.Figure()
+    prof_fig.add_trace(go.Scatter(x=chB["R_km"], y=chB["kan_wse_m"], mode="lines",
+                                  name="Kanektok", line=dict(color=COLOR_MAP["Kanektok_River"], width=2)))
+    prof_fig.add_trace(go.Scatter(x=chB["R_km"], y=chB["uyak_wse_m"], mode="lines",
+                                  name="Uyak", line=dict(color=COLOR_MAP["Uyak_Creek"], width=2)))
+    prof_fig.add_vline(x=R, line_color="gray", line_dash="dot", line_width=1.5)
+    prof_fig.update_layout(
+        title="Channel water-surface long profiles at matched radius",
+        xaxis_title="Distance from anchor (km, ≈ downstream)",
+        yaxis_title="Channel water-surface elevation (m)", height=340, template=plotly_template)
+    st.plotly_chart(prof_fig, use_container_width=True, theme=None)
+
+    valid = chB.dropna(subset=["kan_wse_m", "uyak_wse_m"])
+    share = (valid["diff_uyak_minus_kan"] > 0).mean() * 100
+    fpv = chB.dropna(subset=["fp_ref_m"])
+    kan_perched = (fpv["kan_superelev_m"] > 0).mean() * 100 if len(fpv) else float("nan")
+    st.markdown(
+        f"**Across all arcs:** the Uyak water surface sits a median "
+        f"**{valid['diff_uyak_minus_kan'].median():+.2f} m** relative to the Kanektok, higher on "
+        f"**{share:.0f}%** of arcs — the same direction as the SWOT water-surface comparison.\n\n"
+        f"**Superelevation vs the floodplain corridor:** the Kanektok is **incised** "
+        f"(median **{fpv['kan_superelev_m'].median():+.2f} m**, perched on only {kan_perched:.0f}% of arcs) "
+        f"while the Uyak sits ≈ at grade (median **{fpv['uyak_superelev_m'].median():+.2f} m**). "
+        "A channel must be *perched above* the corridor to avulse into it — the Kanektok is not, "
+        "so this is direct topographic evidence **against** a Kanektok → Uyak avulsion."
+    )
+    bv = chB.dropna(subset=["kan_beta"])
+    if len(bv):
+        st.markdown(
+            f"**Gearon avulsion number (β = H_AR/H_M):** using the *measured* boat-ADCP channel depth "
+            f"(bed = water surface − depth), the Kanektok's median **β = {bv['kan_beta'].median():.2f}**, "
+            f"below the avulsion threshold of 1 on **{(bv['kan_beta']<1).mean()*100:.0f}%** of arcs. "
+            "The measured bed deepens the channel (H_M) versus a DEM-only estimate, so β lands *lower* "
+            "than the earlier DEM-inferred value — the field depth sharpens the not-avulsion-prone result."
+        )
+    with st.expander("How to read this arc cross-section (and its caveat)"):
+        st.markdown("""
+            Each cut follows an **arc of constant straight-line distance from the shared anchor**,
+            so every point is at the same downstream coordinate the rest of the dashboard uses
+            (the fan/delta radial-distance convention). One arc spans **Kanektok → floodplain →
+            Uyak**, letting the two water surfaces be compared at a matched downstream position.
+
+            - The two **vertical lines** mark each channel; the **green band** is the inter-channel
+              floodplain corridor (the pathway a Kanektok → Uyak avulsion would drain across),
+              excluding each channel's ±250 m notch; the **green dashed line** is its median elevation.
+            - **Superelevation** = channel water surface − corridor elevation. *Negative* means the
+              channel is incised below the floodplain (the safe, usual case); *positive* means it is
+              perched above the corridor and could spill toward the other river.
+            - **Gearon β = H_AR / H_M** (▲ ridge crest, ▼ bed on the Kanektok): the alluvial-ridge
+              height above the floodplain (H_AR = crest − floodplain) divided by the channel depth
+              (H_M = crest − bed). The **bed comes from the boat-ADCP depth** (bed = water surface −
+              measured depth), so H_M is measured, not DEM-guessed. **β ≥ 1** means the bed has
+              aggraded up to floodplain level → perched and avulsion-prone; the Kanektok's β ≈ 0.24
+              is well below that. (Kanektok only — the Uyak has ADCP depth near its mouth only.)
+            - Each channel is located by **snapping to the actual DEM channel** from a centerline
+              prior. Both priors are **official field-surveyed centerlines** accurate to ~20–50 m —
+              the Uyak from a hunter's boat GPS, the Kanektok from a coworker boat-ADCP thalweg run —
+              so both use the same tight ±75 m search that can't stray onto nearby sloughs. The channels are narrow
+              (~30–50 m), so both the thalweg and the water surface use the **2nd percentile**
+              (deepest sliver of terrain = the water) in a tight ±50 m window, sampled at the DEM's
+              native 2 m resolution so the narrow channel is genuinely resolved (~15–25 samples).
+              ArcticDEM images the water surface, not the true bed, so this is
+              directly comparable to the SWOT water surface.
+
+            **Validity caveat (Merwade et al. 2006):** straight-line radius equals along-channel
+            flow distance only where a channel runs straight from the anchor. Here each channel's
+            bearing drifts ~20° over its length, but *both* drift consistently and keep a steady
+            separation, so the Kanektok-vs-Uyak comparison stays robust — and it agrees with SWOT.
+            """)
+
+
 @st.cache_data(ttl=86400)
 def load_reference_gradient(_con):
     """Load the per-pass reference-gradient artifact (one row per reach x pass).
@@ -1215,10 +1414,19 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         if dem_profile is None:
             st.warning("No DEM data available. If running locally, run `DEM_Pull.py` first.")
         else:
-            dem_tab1, dem_tab2, dem_tab3, dem_tab4, dem_tab5 = st.tabs([
+            # Cross-section artifacts are local-only; show the tab only when present.
+            xsecB_ch, xsecB_prof = load_xsec_B()
+            has_xsec = xsecB_ch is not None
+
+            dem_tab_names = [
                 "📈 Terrain Profile", "🔀 Elevation Difference",
-                "📐 Terrain Slope", "🎯 Detrended Profile", "🗺️ Map View"
-            ])
+                "📐 Terrain Slope", "🎯 Detrended Profile", "🗺️ Map View",
+            ]
+            if has_xsec:
+                dem_tab_names.append("✂️ Cross-Sections")
+            dem_tabs = st.tabs(dem_tab_names)
+            dem_tab1, dem_tab2, dem_tab3, dem_tab4, dem_tab5 = dem_tabs[:5]
+            dem_tab_xsec = dem_tabs[5] if has_xsec else None
 
             plot_order = sorted(selected_reaches, key=lambda r: r == "Uyak_Creek")
 
@@ -1590,6 +1798,10 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                         """)
 
                 render_dem_map()
+
+            if dem_tab_xsec is not None:
+                with dem_tab_xsec:
+                    render_cross_sections(xsecB_ch, xsecB_prof, plotly_template)
 
             # --- DEM SUMMARY STATISTICS ---
             st.divider()
