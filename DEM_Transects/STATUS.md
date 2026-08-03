@@ -2,7 +2,7 @@
 
 Avulsion analysis for the Kanektok & Uyak. **Full methods, results, and caveats:
 [`AVULSION_ANALYSIS.md`](AVULSION_ANALYSIS.md)** (the single source of truth for the science).
-This file tracks build status only. Last updated 2026-08-03 (Kanektok centerline + ADCP depth / Gearon β wired in).
+This file tracks build status only. Last updated 2026-08-03 (B#3: Kanektok-centered cross-section axis + β anatomy overlay).
 
 ---
 
@@ -45,6 +45,13 @@ This file tracks build status only. Last updated 2026-08-03 (Kanektok centerline
   the arcs by radius (Kanektok/Uyak water-surface vlines, floodplain corridor band, superelevation
   metrics, long-profiles). Reads `arcB_profiles.parquet` locally; the tab hides itself when the
   artifact is absent (e.g. on Streamlit Cloud). Verified via `streamlit.testing` AppTest.
+- **Kanektok-centered cross-section axis (B#3):** the arc section x-axis is re-centered on the
+  Kanektok (x = 0), increasing toward the Uyak — it reads "stand in the Kanektok, walk the spill
+  path toward the Uyak," and the Uyak sits at the ~3 km channel separation. The Gearon β anatomy
+  now hangs off the channel at x = 0: bed ▼, crest ▲, an **H_M** measure bar (crest→bed) and an
+  **H_AR** bar (crest→floodplain) with the **β** value labelled at the crest — the section *is* the
+  β figure. Applied to both `arcB_sections.png` and the dashboard tab; a display-only reframe, so
+  every β / superelevation number is unchanged.
 - **Retired Approach A** (perpendicular-to-channel β, `beta_perpendicular.py`): superseded by the
   arc method; removed from the dashboard/map/docs. Result (β ≈ 0.41, modest levee) recorded in
   §3; code recoverable from git history.
@@ -54,8 +61,8 @@ This file tracks build status only. Last updated 2026-08-03 (Kanektok centerline
 - **Perpendicular β re-measurement** (rigor refinement) — the current β reads the ridge crest along
   the slightly oblique arc; a flow-perpendicular section at each channel would be truer to Gearon.
   *(No Uyak depth model — dropped by design; we only needed Kanektok depth stats + the mouth comparison.)*
-- Combined figure overlaying the arc side-by-side on the SWOT WSE profile.
-- Re-center the arc x-axis on Kanektok = 0 (B#3); downstream stack/heatmap (B#4).
+- Combined figure overlaying the arc side-by-side on the SWOT WSE profile (B#5).
+- Downstream stack/heatmap of the arcs (B#4).
 
 ## 🗂️ Script status (see README for details)
 
