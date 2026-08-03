@@ -1,0 +1,16 @@
+# Upstream reference repo (cloned for reading; not part of our codebase)
+reference/
+
+# Regenerable scratch: figures, HTML maps, draft centerlines, scratch parquets.
+# All rebuilt by the scripts; the dashboard cross-section tab treats these as a local-only feature.
+outputs/
+
+# Large local rasters
+*.tif
+
+# Parquet is scratch by default, EXCEPT the small canonical depth artifacts committed under data/.
+*.parquet
+!data/*.parquet
+
+__pycache__/
+*.pyc
