@@ -79,7 +79,7 @@ So although the Uyak water surface is marginally the higher of the two, **neithe
 
 **Validity caveat (Merwade et al. 2006):** iso-radius equals iso-flow-distance only where a channel runs straight from the anchor. Here each channel's bearing-from-anchor drifts ~20° over its length (`arcB_validity.png`), so there is some Euclidean-vs-flow distortion — but **both channels drift consistently and keep a steady ~10–15° separation**, so the *comparison between them* remains robust, and it agrees with SWOT. State this explicitly rather than hiding it.
 
-**Figures:** `arcB_sections.png` (arc cross-sections across the valley, with Kanektok bed ▼ + ridge crest ▲), `arcB_sidebyside.png` (both water surfaces + Kanektok bed vs radius + difference), `arcB_beta.png` (Kanektok β vs radius + depth/H_M/H_AR), `arcB_validity.png` (bearing vs radius).
+**Figures:** `arcB_sections.png` (arc cross-sections **re-centered on the Kanektok, x = 0, increasing toward the Uyak** — "stand in the Kanektok, walk the spill path" — with the β anatomy hung off the channel: bed ▼, ridge crest ▲, an **H_M** measure bar crest→bed, an **H_AR** bar crest→floodplain, and the **β** value at the crest, so the section itself reads as β = H_AR/H_M), `arcB_sidebyside.png` (both water surfaces + Kanektok bed vs radius + difference), `arcB_beta.png` (Kanektok β vs radius + depth/H_M/H_AR), `arcB_validity.png` (bearing vs radius).
 
 ---
 

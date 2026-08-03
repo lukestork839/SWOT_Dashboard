@@ -20,7 +20,8 @@ ONLY where the channel runs straight from the anchor. The validity panel below q
 river's bearing drift with radius so we know which reach the arc frame is trustworthy over.
 
 Deliverables (DEM_Transects/outputs/):
-  - arcB_sections.png     example arc cross-sections (elevation vs along-arc distance; bed + crest)
+  - arcB_sections.png     example arc cross-sections, Kanektok-centered (x=0) toward the Uyak, with
+                          the Gearon β anatomy (bed ▼, crest ▲, H_M / H_AR measure bars, β label)
   - arcB_sidebyside.png   Kanektok vs Uyak channel elevation vs radius + difference + Kanektok bed
   - arcB_beta.png         Kanektok Gearon β = H_AR/H_M vs radius (avulsion threshold β=1) + depth/H_M/H_AR
   - arcB_validity.png     bearing-vs-radius per river (sinuosity from the anchor)
@@ -300,31 +301,43 @@ def main():
 
 
 def _sections_fig(examples):
+    """Arc cross-sections re-centered on the Kanektok (x=0, increasing toward the Uyak), trimmed a
+    little past the Uyak, with the Kanektok bed ▼ and ridge crest ▲ marked (β/H_M/H_AR values live
+    in the parquet + dashboard metrics, not on the plot)."""
+    PAD_KM = 0.75    # context to show past each channel; the outward sweep beyond is off-system
     fig, axes = plt.subplots(len(examples), 1, figsize=(13, 3 * len(examples)))
     for ax, R in zip(np.atleast_1d(axes), sorted(examples)):
         arc_m, z, kcm, ucm, fp, kbed, kcrest = examples[R]
-        ax.plot(arc_m / 1000, z, lw=0.7, color="0.3")
-        if np.isfinite(kcm):
-            ax.axvline(kcm / 1000, color="#08519c", lw=1.5, label="Kanektok")
-        if np.isfinite(ucm):
-            ax.axvline(ucm / 1000, color="#d94801", lw=1.5, label="Uyak")
-        if np.isfinite(kcm) and np.isfinite(kbed):
-            ax.plot(kcm / 1000, kbed, marker="v", color="#08519c", ms=8,
-                    label="Kanektok bed (ADCP)")
-        if np.isfinite(kcm) and np.isfinite(kcrest):
-            ax.plot(kcm / 1000, kcrest, marker="^", color="#08519c", ms=8,
-                    label="Kanektok ridge crest")
-        if np.isfinite(fp) and np.isfinite(kcm) and np.isfinite(ucm):
-            lo, hi = sorted([kcm, ucm])
-            ax.axvspan((lo + CH_WIN_M) / 1000, (hi - CH_WIN_M) / 1000,
-                       color="#a1d99b", alpha=0.25)
+        # Re-center: x = 0 is the Kanektok, x grows toward the Uyak (sign robust to geometry).
+        sgn = np.sign(ucm - kcm) if (np.isfinite(kcm) and np.isfinite(ucm)) else 1.0
+        sgn = sgn if sgn != 0 else 1.0
+        origin = kcm if np.isfinite(kcm) else 0.0
+        xr = (arc_m - origin) * sgn / 1000.0
+        xk = 0.0 if np.isfinite(kcm) else np.nan
+        xu = (ucm - origin) * sgn / 1000.0 if np.isfinite(ucm) else np.nan
+        left = (xk if np.isfinite(xk) else np.nanmin(xr)) - PAD_KM
+        right = (xu if np.isfinite(xu) else np.nanmax(xr)) + PAD_KM
+        win = (xr >= left) & (xr <= right)
+        ax.plot(xr[win], z[win], lw=0.7, color="0.3")
+        if np.isfinite(xk):
+            ax.axvline(xk, color="#08519c", lw=1.5, label="Kanektok")
+        if np.isfinite(xu):
+            ax.axvline(xu, color="#d94801", lw=1.5, label="Uyak")
+        if np.isfinite(fp) and np.isfinite(xk) and np.isfinite(xu):
+            lo, hi = sorted([xk, xu])
+            ax.axvspan(lo + CH_WIN_M / 1000, hi - CH_WIN_M / 1000, color="#a1d99b", alpha=0.25)
             ax.axhline(fp, color="#31a354", lw=1.2, ls="--", label="floodplain ref")
+        if np.isfinite(xk) and np.isfinite(kbed):
+            ax.plot(xk, kbed, marker="v", color="#08519c", ms=8, label="Kanektok bed (ADCP)")
+        if np.isfinite(xk) and np.isfinite(kcrest):
+            ax.plot(xk, kcrest, marker="^", color="#08519c", ms=8, label="Kanektok ridge crest")
+        ax.set_xlim(left, right)
         ax.set_title(f"Arc transect at radius {R} km from anchor "
                      f"(Kanektok -> floodplain -> Uyak)", fontsize=10)
-        ax.set_xlabel("along-arc distance (km)")
+        ax.set_xlabel("distance from Kanektok toward Uyak (km)")
         ax.set_ylabel("elevation (m)")
         ax.legend(fontsize=8)
-    fig.suptitle("Approach B — iso-distance-from-anchor arc cross-sections", fontsize=13)
+    fig.suptitle("Approach B — Kanektok-centered arc cross-sections (bed ▼ / crest ▲)", fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.98))
     fig.savefig(os.path.join(OUT, "arcB_sections.png"), dpi=130)
     plt.close(fig)
