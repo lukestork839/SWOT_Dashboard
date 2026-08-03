@@ -7,6 +7,9 @@ Overlays, on a satellite basemap, the exact geometry the Approach-B analysis use
   - the Approach-B iso-distance-from-anchor transects, each TRIMMED to the Kanektok->Uyak reach
     (+0.75 km past each channel — the same span the cross-section figure shows) and dotted where it
     crosses each field centerline, so the map transect and the plotted section line up,
+  - the distance-from-anchor bands: concentric arcs ("radar pulses") every 1 km (labelled every
+    5 km) marking the same distance the dashboard slider scrubs, so you can read a slider position
+    straight off the map,
   - the shared anchor and the bifurcation point.
 
 Everything is rebuilt by importing build_arc_B, so the map shows precisely what the analysis
@@ -62,11 +65,27 @@ def approach_B_arcs(radii, kd, kb, ud, ub) -> list:
     return arcs
 
 
+def distance_bands(radii) -> list:
+    """Concentric iso-distance-from-anchor arcs ('radar pulses') over the analysis bearing sector.
+
+    Full-sector arcs (unlike the trimmed transects): they are the distance reference the dashboard
+    slider scrubs, so each ring == one slider position in km from the anchor.
+    """
+    bands = []
+    bearings = np.linspace(B.BEAR_MIN, B.BEAR_MAX, 240)
+    for R in radii:
+        lat, lon = B.dest(B.ANCHOR[0], B.ANCHOR[1], R, bearings)
+        bands.append((R, LineString(np.column_stack([lon, lat]))))
+    return bands
+
+
 def main():
     centerlines = gpd.read_file(CENTERLINE).to_crs(4326)
     kd, kb = B.hand_centerline_dbr(B.KAN_CL)
     ud, ub = B.hand_centerline_dbr(B.UYAK_CL)
     arcsB = approach_B_arcs(np.arange(4.0, 33.0, 4.0), kd, kb, ud, ub)
+    bands_minor = distance_bands(np.arange(2.0, 34.01, 1.0))
+    bands_major = distance_bands(np.arange(5.0, 34.01, 5.0))
 
     # Map centred on the centerlines' bounding box.
     minx, miny, maxx, maxy = centerlines.total_bounds
@@ -102,6 +121,22 @@ def main():
                         tooltip="Kanektok centerline (field boat ADCP thalweg)").add_to(fg_kan)
     fg_kan.add_to(m)
 
+    # --- Distance-from-anchor bands ("radar pulses"): the slider's distance grid ---
+    fg_band = folium.FeatureGroup(name="Distance-from-anchor bands (km)", show=True)
+    for _, geom in bands_minor:
+        coords = [(y, x) for x, y in geom.coords]
+        folium.PolyLine(coords, color="#17becf", weight=0.8, opacity=0.35).add_to(fg_band)
+    for R, geom in bands_major:
+        coords = [(y, x) for x, y in geom.coords]
+        folium.PolyLine(coords, color="#17becf", weight=1.8, opacity=0.85,
+                        tooltip=f"{R:.0f} km from anchor").add_to(fg_band)
+        folium.map.Marker(
+            coords[-1],
+            icon=folium.DivIcon(html=f'<div style="font-size:11px;color:#0e7c7b;'
+                                     f'font-weight:bold;text-shadow:0 0 2px #fff">{R:.0f} km</div>')
+        ).add_to(fg_band)
+    fg_band.add_to(m)
+
     # --- Approach-B transects (trimmed to the Kanektok->Uyak reach) + channel crossings ---
     fg_arc = folium.FeatureGroup(name="B transects (trimmed to reach)", show=True)
     for R, geom, kpt, upt in arcsB:
@@ -131,7 +166,8 @@ def main():
 
     out = os.path.join(OUT, "transect_map.html")
     m.save(out)
-    print(f"{len(arcsB)} B arcs, {len(centerlines)} SWOT centerlines + field Uyak & Kanektok lines")
+    print(f"{len(arcsB)} trimmed transects, {len(bands_minor)} distance bands "
+          f"({len(bands_major)} labelled), {len(centerlines)} SWOT centerlines + field lines")
     print(f"wrote {out}")
 
 
