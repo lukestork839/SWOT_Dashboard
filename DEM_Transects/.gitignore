@@ -12,5 +12,9 @@ outputs/
 *.parquet
 !data/*.parquet
 
+# Transient SQLite/GeoPackage journals from editors (QGIS etc.) — never commit these
+*.gpkg-wal
+*.gpkg-shm
+
 __pycache__/
 *.pyc
