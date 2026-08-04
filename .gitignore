@@ -30,6 +30,11 @@ thesis_figures/output/
 slope_finescale_prototype/
 coastal_noise_diagnostic/
 
+# DEM channel-slope exploratory outputs
+# (regenerable from dem_channel_slope_phase2.py / dem_finescale_slope_spike.py)
+dem_channel_slope_phase2/
+dem_finescale_slope_spike/
+
 # Project-specific: Large data files
 batch_outputs/
 # Deployment data lives on the GitHub Release (v2.0-data), not in git
