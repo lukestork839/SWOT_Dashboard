@@ -22,8 +22,9 @@ perpendicular-to-channel β method, "Approach A", has been retired; it lives in 
 ## Run
 
 ```bash
-# prerequisites: batch_outputs/arcticdem_rivers_2m.tif, outputs/swot_centerlines.gpkg,
-#                data/uyak_centerline_official.gpkg, data/kanektok_centerline_official.gpkg
+# prerequisites: outputs/swot_centerlines.gpkg, data/uyak_centerline_official.gpkg,
+#                data/kanektok_centerline_official.gpkg
+python3 DEM_2m_Pull.py                             # fetch PGC ArcticDEM 2 m COGs -> batch_outputs/arcticdem_rivers_2m.tif
 python3 DEM_Transects/make_swot_centerline.py      # (re)build SWOT centerlines (now a reference overlay)
 python3 DEM_Transects/build_uyak_centerline.py     # (re)build the Uyak field-GPS centerline DRAFT
 python3 DEM_Transects/build_kanektok_centerline.py # (re)build Kanektok centerline DRAFT + thalweg-depth parquet
