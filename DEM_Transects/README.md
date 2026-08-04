@@ -33,8 +33,10 @@ python3 DEM_Transects/map_transects.py             # satellite placement-check m
 ```
 
 `arcB_profiles.parquet` holds the full elevation-vs-arc cross-sections and drives the interactive
-**✂️ Cross-Sections** tab in the main dashboard (`dashboard_swot.py` → DEM Data). The tab only
-appears when that local artifact is present, so it's a local-run feature.
+**✂️ Cross-Sections** tab in the main dashboard (`dashboard_swot.py` → DEM Data). Both it and
+`arcB_channels.parquet` are published to **`data/`** (tracked, `float32`/zstd, ~2.9 MB), so the tab
+is **live on the hosted app** — no longer local-only. `build_arc_B.py` writes those two to `data/`
+and leaves the figures as scratch in `outputs/`.
 
 Both channel priors are **official** field centerlines in `data/`: `uyak_centerline_official.gpkg`
 (boat GPS) and `kanektok_centerline_official.gpkg` (boat ADCP thalweg). The `build_*_centerline.py`
