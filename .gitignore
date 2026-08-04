@@ -87,3 +87,9 @@ old_stuff/
 # Raw data available upon request
 Quinhagak*
 *Calibration*Readings*/
+
+# Standalone DEM slope + veg-filter experiments: commit the generator scripts/findings,
+# not the rendered outputs (regenerable from the scripts)
+/dem_channel_slope_phase2/
+/dem_finescale_slope_spike/
+/dem_veg_filter/outputs/
