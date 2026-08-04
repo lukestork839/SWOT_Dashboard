@@ -19,13 +19,14 @@ Precedent/caveat (Merwade et al. 2006): straight-line radius = along-channel flo
 ONLY where the channel runs straight from the anchor. The validity panel below quantifies each
 river's bearing drift with radius so we know which reach the arc frame is trustworthy over.
 
-Deliverables (DEM_Transects/outputs/):
+Deliverables — figures to DEM_Transects/outputs/ (scratch), the two dashboard parquets to data/ (tracked/hosted):
   - arcB_sections.png     example arc cross-sections, Kanektok-centered (x=0) toward the Uyak, with
                           the Gearon β anatomy (bed ▼, crest ▲, H_M / H_AR measure bars, β label)
   - arcB_sidebyside.png   Kanektok vs Uyak channel elevation vs radius + difference + Kanektok bed
   - arcB_beta.png         Kanektok Gearon β = H_AR/H_M vs radius (avulsion threshold β=1) + depth/H_M/H_AR
   - arcB_validity.png     bearing-vs-radius per river (sinuosity from the anchor)
-  - arcB_channels.parquet per-radius channel elevations, superelevation, and Kanektok depth/bed/β
+  - data/arcB_channels.parquet  per-radius channel elevations, superelevation, and Kanektok depth/bed/β
+  - data/arcB_profiles.parquet  full elevation-vs-arc cross-sections (float32/zstd) — drives the tab
 
 Run:  python3 DEM_Transects/build_arc_B.py
 """
@@ -56,6 +57,9 @@ CENTERLINE = os.path.join(HERE, "outputs", "swot_centerlines.gpkg")
 UYAK_CL = os.path.join(HERE, "data", "uyak_centerline_official.gpkg")
 KAN_CL = os.path.join(HERE, "data", "kanektok_centerline_official.gpkg")
 OUT = os.path.join(HERE, "outputs")
+# The two parquets that DRIVE the dashboard Cross-Sections tab are published to data/ (tracked, not
+# outputs/) so the tab works on the hosted app, not just local runs. Figures stay scratch in OUT.
+DATA = os.path.join(HERE, "data")
 
 ANCHOR = (59.82463509, -161.33397834)   # lat, lon — same anchor SWOT/DEM dist_km uses
 R_EARTH = 6371.0088
@@ -269,12 +273,15 @@ def main():
     # negative => channel is incised below the surrounding floodplain (the safe, usual case).
     ch["kan_superelev_m"] = ch["kan_wse_m"] - ch["fp_ref_m"]
     ch["uyak_superelev_m"] = ch["uyak_wse_m"] - ch["fp_ref_m"]
-    ch.to_parquet(os.path.join(OUT, "arcB_channels.parquet"), index=False)
+    ch.to_parquet(os.path.join(DATA, "arcB_channels.parquet"), index=False)
 
     # Full arc profiles (elevation vs along-arc distance) for interactive dashboard rendering.
+    # float32 + zstd keeps the committed, hosted artifact small (~2 MB) at sub-mm/sub-cm precision.
     prof = pd.concat(profiles, ignore_index=True)
-    prof.to_parquet(os.path.join(OUT, "arcB_profiles.parquet"), index=False)
-    print(f"wrote arcB_profiles.parquet ({len(prof)} pts, {ch['R_km'].nunique()} arcs)")
+    for c in ("R_km", "arc_m", "elevation_m"):
+        prof[c] = prof[c].astype("float32")
+    prof.to_parquet(os.path.join(DATA, "arcB_profiles.parquet"), index=False, compression="zstd")
+    print(f"wrote data/arcB_profiles.parquet ({len(prof)} pts, {ch['R_km'].nunique()} arcs)")
     valid = ch.dropna(subset=["kan_wse_m", "uyak_wse_m"])
     print(f"{len(ch)} arcs | median arc data coverage "
           f"{(ch['n_valid']/ch['n_tot']).median()*100:.0f}%")

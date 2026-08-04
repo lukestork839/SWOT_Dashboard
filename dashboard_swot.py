@@ -508,9 +508,10 @@ def load_dem_points(_con):
         return None
 
 
-# --- DEM CROSS-SECTION ARTIFACTS (local only; produced by DEM_Transects/*.py) ---
-# These parquets are not in the Streamlit-Cloud data release, so the Cross-Sections tab
-# only appears when they are present on disk (local runs). See DEM_Transects/AVULSION_ANALYSIS.md.
+# --- DEM CROSS-SECTION ARTIFACTS (produced by DEM_Transects/build_arc_B.py) ---
+# The two parquets that drive the Cross-Sections tab are committed under DEM_Transects/data/, so the
+# tab works on the hosted app; a local build also drops scratch copies in outputs/ (fallback below).
+# See DEM_Transects/AVULSION_ANALYSIS.md.
 _XSEC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DEM_Transects", "outputs")
 # The transect-map overlay (field centerlines, distance bands, transects) IS committed under data/,
 # so the DEM Map View can draw it even on Streamlit Cloud. Rebuilt by DEM_Transects/map_transects.py.
@@ -538,13 +539,18 @@ def load_xsec_B():
     kan/uyak_superelev_m, and the Kanektok β geometry kan_depth_m/kan_bed_m/kan_crest_m/
     kan_HAR_m/kan_HM_m/kan_beta, n_valid, n_tot). profiles: full arc cross-sections
     (R_km, arc_m, elevation_m).
+
+    Reads the committed `data/` copies first (present on the hosted app) and falls back to the
+    scratch `outputs/` copies from a local `build_arc_B.py` run.
     """
-    try:
-        channels = pd.read_parquet(os.path.join(_XSEC_DIR, "arcB_channels.parquet"))
-        profiles = pd.read_parquet(os.path.join(_XSEC_DIR, "arcB_profiles.parquet"))
-        return channels, profiles
-    except Exception:
-        return None, None
+    for base in (_XSEC_DATA_DIR, _XSEC_DIR):
+        try:
+            channels = pd.read_parquet(os.path.join(base, "arcB_channels.parquet"))
+            profiles = pd.read_parquet(os.path.join(base, "arcB_profiles.parquet"))
+            return channels, profiles
+        except Exception:
+            continue
+    return None, None
 
 
 def add_transect_overlay(m, overlay):
@@ -1522,7 +1528,8 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         if dem_profile is None:
             st.warning("No DEM data available. If running locally, run `DEM_Pull.py` first.")
         else:
-            # Cross-section artifacts are local-only; show the tab only when present.
+            # Cross-section artifacts are committed under DEM_Transects/data/ (so the tab shows on the
+            # hosted app); still gate on presence so it degrades gracefully if they're ever missing.
             xsecB_ch, xsecB_prof = load_xsec_B()
             has_xsec = xsecB_ch is not None
 

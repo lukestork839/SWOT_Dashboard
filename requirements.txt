@@ -10,6 +10,7 @@ duckdb>=1.0.0
 pandas>=2.0.0
 numpy>=1.24.0
 scipy>=1.10.0
+pyarrow>=14.0.0           # pandas parquet engine for the DEM cross-section artifacts (also a Streamlit dep)
 
 # Maps
 folium>=0.15.0

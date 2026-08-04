@@ -43,8 +43,9 @@ This file tracks build status only. Last updated 2026-08-03 (B#3: Kanektok-cente
   Citations in `AVULSION_ANALYSIS.md`.
 - **Interactive dashboard tab** (`dashboard_swot.py` → DEM Data → **✂️ Cross-Sections**): scrub
   the arcs by radius (Kanektok/Uyak water-surface vlines, floodplain corridor band, superelevation
-  metrics, long-profiles). Reads `arcB_profiles.parquet` locally; the tab hides itself when the
-  artifact is absent (e.g. on Streamlit Cloud). Verified via `streamlit.testing` AppTest.
+  metrics, long-profiles). Reads the committed `data/arcB_profiles.parquet` + `arcB_channels.parquet`
+  (float32/zstd, ~2.9 MB), so the tab is **live on the hosted app**; still gated on presence so it
+  degrades gracefully if the artifacts are absent. Verified via `streamlit.testing` AppTest.
 - **Kanektok-centered cross-section axis (B#3):** the arc section x-axis is re-centered on the
   Kanektok (x = 0), increasing toward the Uyak — it reads "stand in the Kanektok, walk the spill
   path toward the Uyak," and the Uyak sits at the ~3 km channel separation. The Gearon β anatomy
