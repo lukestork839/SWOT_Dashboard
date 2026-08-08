@@ -534,11 +534,19 @@ def load_transect_overlay():
 def load_xsec_B():
     """Approach B — iso-distance-from-anchor arc transects (Kanektok vs Uyak).
 
-    Returns (channels, profiles) or (None, None). channels: one row per radius
-    (R_km, kan_wse_m, uyak_wse_m, kan_arc_m, uyak_arc_m, diff_uyak_minus_kan, fp_ref_m,
-    kan/uyak_superelev_m, and the Kanektok β geometry kan_depth_m/kan_bed_m/kan_crest_m/
-    kan_HAR_m/kan_HM_m/kan_beta, n_valid, n_tot). profiles: full arc cross-sections
-    (R_km, arc_m, elevation_m).
+    Returns (channels, profiles) or (None, None). profiles: full arc cross-sections
+    (R_km, arc_m, elevation_m). channels: one row per radius —
+
+      geometry     R_km, kan_arc_m, uyak_arc_m, fp_ref_m, fp_zone_n/width_m, geoid_m, n_valid, n_tot
+      DEM water    kan_wse_m, uyak_wse_m, diff_uyak_minus_kan
+      SWOT water   swot_{kan,uyak}_wse_{med,p10,p90}_m, swot_kan_wse_survey_m,
+                   swot_diff_uyak_minus_kan  <- the PASS-PAIRED difference; prefer this over the
+                   DEM one, which carries a differential-stage artifact from the multi-date mosaic
+      superelev    {kan,uyak}_superelev_m (primary, at SWOT median stage), _{med,p10,p90}_m (band),
+                   _dem_m (all-DEM variant)
+      β geometry   kan_depth_m, kan_bed_m (stage-matched), kan_bed_dem_m, kan_crest_m, kan_HAR_m,
+                   kan_HM_m, kan_beta, kan_freeboard_over_depth (the bankfull check)
+      migration QC kan/uyak_snap_offset_m, kan/uyak_snap_clipped  (2026 field line vs 2010–2021 DEM)
 
     Reads the committed `data/` copies first (present on the hosted app) and falls back to the
     scratch `outputs/` copies from a local `build_arc_B.py` run.
@@ -699,6 +707,23 @@ def render_cross_sections(chB, profB, plotly_template):
             x=[x_kan], y=[crest], mode="markers", name="Kanektok ridge crest",
             marker=dict(symbol="triangle-up", size=12, color=KAN),
             hovertemplate="Kanektok ridge crest: %{y:.2f} m<extra></extra>"))
+    # Independent SWOT water surface at each channel, with the p10–p90 range across overpasses as the
+    # error bar. The DEM images one arbitrary stage from a 2010–2021 mosaic blend; SWOT shows both
+    # where the water actually sits and how far it moves, so the reader can see the DEM marker land
+    # inside the observed range rather than take the single DEM value on faith.
+    for tag, xc, col, name in (("kan", x_kan, KAN, "Kanektok"), ("uyak", x_uyak, UYAK, "Uyak")):
+        med = crow.get(f"swot_{tag}_wse_med_m", np.nan)
+        p10, p90 = crow.get(f"swot_{tag}_wse_p10_m", np.nan), crow.get(f"swot_{tag}_wse_p90_m", np.nan)
+        if xc is None or not np.isfinite(med):
+            continue
+        err = dict(type="data", symmetric=False, array=[p90 - med], arrayminus=[med - p10],
+                   color=col, thickness=1.5, width=6) if np.isfinite(p10) and np.isfinite(p90) else None
+        fig.add_trace(go.Scatter(
+            x=[xc], y=[med], mode="markers", name=f"{name} SWOT water (p10–p90)",
+            marker=dict(symbol="circle-open", size=13, color=col, line=dict(width=2.5)),
+            error_y=err,
+            hovertemplate=f"{name} SWOT median stage: %{{y:.2f}} m<br>"
+                          f"range p10–p90: {p10:.2f} – {p90:.2f} m<extra></extra>"))
     fig.update_layout(
         title=f"Arc at {R:.1f} km from anchor  (Kanektok → floodplain → Uyak)",
         xaxis=dict(title="Distance from Kanektok toward Uyak (km)", range=[left, right]),
@@ -710,34 +735,59 @@ def render_cross_sections(chB, profB, plotly_template):
     # Two aligned rows of 3: water surfaces on top, superelevation (the avulsion metric) below.
     def _se(v):
         return f"{v:+.2f} m" if pd.notna(v) else "n/a"
-    diff = crow["diff_uyak_minus_kan"]
+
+    # The inter-river difference is quoted from SWOT PASS-PAIRED data, not from the DEM. Both rivers
+    # are measured in the same overpass, so stage cancels exactly. The DEM version is contaminated:
+    # the ArcticDEM mosaic is a multi-date blend that caught the Kanektok near the 29th percentile of
+    # observed stages and the Uyak near the 76th, worth ~0.34 m of spurious "Uyak higher".
+    swot_diff = crow.get("swot_diff_uyak_minus_kan", np.nan)
+    dem_diff = crow["diff_uyak_minus_kan"]
     r1c1, r1c2, r1c3 = st.columns(3)
-    r1c1.metric("Kanektok water surface", f"{crow['kan_wse_m']:.2f} m")
-    r1c2.metric("Uyak water surface", f"{crow['uyak_wse_m']:.2f} m")
-    r1c3.metric("Uyak − Kanektok", f"{diff:+.2f} m",
-                help="Positive → Uyak sits higher at this radius.")
+    r1c1.metric("Kanektok water surface", f"{crow['kan_wse_m']:.2f} m",
+                help="From the 2 m ArcticDEM along this arc (EGM2008). The open circle on the plot "
+                     "is the independent SWOT water surface, with its p10–p90 range across overpasses.")
+    r1c2.metric("Uyak water surface", f"{crow['uyak_wse_m']:.2f} m",
+                help="As for the Kanektok.")
+    r1c3.metric("Uyak − Kanektok (SWOT)",
+                f"{swot_diff:+.2f} m" if pd.notna(swot_diff) else _se(dem_diff),
+                help="Positive → Uyak sits higher at this radius. Taken from SWOT overpasses that "
+                     "measured BOTH rivers at the same moment, so river stage cancels out. "
+                     f"The DEM-only value here is {dem_diff:+.2f} m; it reads high because the "
+                     "multi-date DEM mosaic imaged the two rivers at different stages.")
+
+    # Superelevation is inherently stage-dependent, so it is quoted at the SWOT MEDIAN stage with the
+    # p10–p90 band in the help text rather than at the DEM's single arbitrary blend stage.
+    def _band(tag):
+        p10, p90 = crow.get(f"{tag}_superelev_p10_m", np.nan), crow.get(f"{tag}_superelev_p90_m", np.nan)
+        return (f" Across the observed stage range this runs {p10:+.2f} m (low water) to "
+                f"{p90:+.2f} m (high water)." if pd.notna(p10) and pd.notna(p90) else "")
+
     r2c1, r2c2, r2c3 = st.columns(3)
     r2c1.metric("Kanektok superelevation", _se(crow.get("kan_superelev_m", np.nan)),
-                help="Channel water surface minus the inter-channel floodplain corridor. "
-                     "Negative = incised below the floodplain (not perched); "
-                     "positive = perched above the corridor (avulsion-prone).")
+                help="Channel water surface minus the inter-channel floodplain corridor, at the "
+                     "median observed stage. Negative = incised below the floodplain (not perched); "
+                     "positive = perched above the corridor (avulsion-prone)." + _band("kan"))
     r2c2.metric("Uyak superelevation", _se(crow.get("uyak_superelev_m", np.nan)),
-                help="As for the Kanektok, relative to the same corridor.")
+                help="As for the Kanektok, relative to the same corridor." + _band("uyak"))
     r2c3.metric("Floodplain corridor elev",
                 f"{crow['fp_ref_m']:.2f} m" if pd.notna(crow.get("fp_ref_m", np.nan)) else "n/a",
                 help="Median terrain of the corridor between the channels — the baseline "
                      "each superelevation is measured against.")
 
-    # Kanektok Gearon β = H_AR/H_M, using the measured ADCP channel depth (bed = WSE − depth).
-    st.markdown("**Kanektok avulsion number** — Gearon β = H_AR / H_M "
-                "(ridge height ÷ channel depth; **β ≥ 1 = avulsion-prone**)")
+    # Kanektok Gearon β = H_AR/H_M, using the measured ADCP channel depth for the bed.
+    st.markdown("**Kanektok superelevation ratio** — Gearon β = H_AR / H_M "
+                "(alluvial-ridge height ÷ channel depth)")
     b = crow.get("kan_beta", np.nan)
     r3c1, r3c2, r3c3 = st.columns(3)
     r3c1.metric("Kanektok β", f"{b:.2f}" if pd.notna(b) else "n/a",
-                help="H_AR/H_M with the bed from the boat-ADCP depth. β≥1 means the bed has aggraded "
-                     "to floodplain level (perched). Kanektok β≈0.24 ≪ 1 → firmly not avulsion-prone.")
+                help="H_AR/H_M, with the bed from the boat-ADCP depth at the SWOT-matched survey "
+                     "stage. β near 0 means H_AR ≈ 0 — there is no alluvial ridge standing above the "
+                     "floodplain to superelevate. Note β = 1 is NOT the operative avulsion threshold: "
+                     "Gearon's criterion is β×γ ≥ Λ, and this analysis does not evaluate the gradient "
+                     "term γ. See the how-to-read note below.")
     r3c2.metric("H_AR (ridge height)", _se(crow.get("kan_HAR_m", np.nan)),
-                help="Alluvial-ridge crest minus floodplain — how high the levee stands above the floodplain.")
+                help="Alluvial-ridge crest minus floodplain. Across all arcs the median is ≈ +0.1 m, "
+                     "i.e. effectively no ridge — consistent with the channel being incised.")
     r3c3.metric("H_M (channel depth)",
                 f"{crow['kan_HM_m']:.2f} m" if pd.notna(crow.get("kan_HM_m", np.nan)) else "n/a",
                 help=f"Crest minus bed = freeboard + measured ADCP depth "
@@ -745,10 +795,19 @@ def render_cross_sections(chB, profB, plotly_template):
 
     # Water-surface long-profiles vs radius with the current arc marked.
     prof_fig = go.Figure()
-    prof_fig.add_trace(go.Scatter(x=chB["R_km"], y=chB["kan_wse_m"], mode="lines",
-                                  name="Kanektok", line=dict(color=COLOR_MAP["Kanektok_River"], width=2)))
-    prof_fig.add_trace(go.Scatter(x=chB["R_km"], y=chB["uyak_wse_m"], mode="lines",
-                                  name="Uyak", line=dict(color=COLOR_MAP["Uyak_Creek"], width=2)))
+    for tag, col, name in (("kan", COLOR_MAP["Kanektok_River"], "Kanektok"),
+                           ("uyak", COLOR_MAP["Uyak_Creek"], "Uyak")):
+        p10, p90 = chB.get(f"swot_{tag}_wse_p10_m"), chB.get(f"swot_{tag}_wse_p90_m")
+        if p10 is not None and p10.notna().any():
+            # Trace-level opacity rather than an rgba fillcolor, so COLOR_MAP can hold CSS colour
+            # names (it does — "firebrick"/"dodgerblue") without needing a name→rgb conversion.
+            band = pd.concat([p90, p10[::-1]]).to_numpy(dtype=float)
+            prof_fig.add_trace(go.Scatter(
+                x=np.concatenate([chB["R_km"].to_numpy(), chB["R_km"].to_numpy()[::-1]]),
+                y=band, fill="toself", fillcolor=col, opacity=0.18, line=dict(width=0),
+                name=f"{name} SWOT stage p10–p90", hoverinfo="skip"))
+        prof_fig.add_trace(go.Scatter(x=chB["R_km"], y=chB[f"{tag}_wse_m"], mode="lines",
+                                      name=f"{name} (DEM)", line=dict(color=col, width=2)))
     prof_fig.add_vline(x=R, line_color="gray", line_dash="dot", line_width=1.5)
     prof_fig.update_layout(
         title="Channel water-surface long profiles at matched radius",
@@ -756,28 +815,33 @@ def render_cross_sections(chB, profB, plotly_template):
         yaxis_title="Channel water-surface elevation (m)", height=340, template=plotly_template)
     st.plotly_chart(prof_fig, use_container_width=True, theme=None)
 
-    valid = chB.dropna(subset=["kan_wse_m", "uyak_wse_m"])
-    share = (valid["diff_uyak_minus_kan"] > 0).mean() * 100
+    sv = chB.dropna(subset=["swot_diff_uyak_minus_kan"])
     fpv = chB.dropna(subset=["fp_ref_m"])
     kan_perched = (fpv["kan_superelev_m"] > 0).mean() * 100 if len(fpv) else float("nan")
     st.markdown(
         f"**Across all arcs:** the Uyak water surface sits a median "
-        f"**{valid['diff_uyak_minus_kan'].median():+.2f} m** relative to the Kanektok, higher on "
-        f"**{share:.0f}%** of arcs — the same direction as the SWOT water-surface comparison.\n\n"
-        f"**Superelevation vs the floodplain corridor:** the Kanektok is **incised** "
-        f"(median **{fpv['kan_superelev_m'].median():+.2f} m**, perched on only {kan_perched:.0f}% of arcs) "
-        f"while the Uyak sits ≈ at grade (median **{fpv['uyak_superelev_m'].median():+.2f} m**). "
-        "A channel must be *perched above* the corridor to avulse into it — the Kanektok is not, "
-        "so this is direct topographic evidence **against** a Kanektok → Uyak avulsion."
+        f"**{sv['swot_diff_uyak_minus_kan'].median():+.2f} m** above the Kanektok, measured from SWOT "
+        f"overpasses that caught **both rivers at the same moment** so that stage cancels. (The "
+        f"DEM-only value, {chB['diff_uyak_minus_kan'].median():+.2f} m, reads high because the "
+        f"multi-date DEM mosaic imaged the two rivers at different stages.)\n\n"
+        f"**Superelevation vs the floodplain corridor, at the median observed stage:** the Kanektok "
+        f"is **incised** (median **{fpv['kan_superelev_m'].median():+.2f} m**, perched on "
+        f"{kan_perched:.0f}% of arcs) while the Uyak sits closer to grade (median "
+        f"**{fpv['uyak_superelev_m'].median():+.2f} m**). A channel must be *perched above* the "
+        "corridor to avulse into it — the Kanektok is not, so this is direct topographic evidence "
+        "**against** a Kanektok → Uyak avulsion."
     )
     bv = chB.dropna(subset=["kan_beta"])
     if len(bv):
         st.markdown(
-            f"**Gearon avulsion number (β = H_AR/H_M):** using the *measured* boat-ADCP channel depth "
-            f"(bed = water surface − depth), the Kanektok's median **β = {bv['kan_beta'].median():.2f}**, "
-            f"below the avulsion threshold of 1 on **{(bv['kan_beta']<1).mean()*100:.0f}%** of arcs. "
-            "The measured bed deepens the channel (H_M) versus a DEM-only estimate, so β lands *lower* "
-            "than the earlier DEM-inferred value — the field depth sharpens the not-avulsion-prone result."
+            f"**Superelevation ratio (Gearon β = H_AR/H_M):** median **β = {bv['kan_beta'].median():.2f}**, "
+            f"with **H_AR ≈ {bv['kan_HAR_m'].median():+.2f} m** — the Kanektok has essentially **no "
+            f"alluvial ridge** standing above the floodplain, and on "
+            f"**{(bv['kan_beta']<=0).mean()*100:.0f}%** of arcs the near-channel high ground sits "
+            "*below* the floodplain reference outright. That is the same story the incision figure "
+            "tells, in dimensionless form: there is no levee here to perch a channel on top of. "
+            "β is reported as a reproduction of the original ArcGIS metric — **β = 1 is not the "
+            "operative avulsion threshold** (see the note below)."
         )
     with st.expander("How to read this arc cross-section (and its caveat)"):
         st.markdown("""
@@ -797,13 +861,31 @@ def render_cross_sections(chB, profB, plotly_template):
             - **Superelevation** = channel water surface − corridor elevation. *Negative* means the
               channel is incised below the floodplain (the safe, usual case); *positive* means it is
               perched above the corridor and could spill toward the other river.
+            - **Water surface, and why SWOT is here.** The grey terrain line is the 2 m ArcticDEM.
+              The **open circles** are the independent **SWOT** water surface at each channel, and
+              their **error bars are the p10–p90 range across overpasses** — a river has no single
+              water surface, and at a fixed radius the stage moves ~0.7 m. The DEM is a *mosaic
+              blended from 2010–2021 imagery*, so it captured one arbitrary (and per-river different)
+              stage. It holds up well — the DEM channel water surface lands within ~0.15 m of the
+              SWOT median on both rivers — but because the mosaic caught the Kanektok low in its
+              stage range and the Uyak high, the **Uyak − Kanektok difference is quoted from
+              pass-paired SWOT**, where both rivers are measured in the same overpass and stage
+              cancels exactly. Superelevation is likewise quoted **at the median observed stage**,
+              with the low/high-water range given in each metric's tooltip.
             - **Gearon β = H_AR / H_M** — on the Kanektok at x = 0, ▲ marks the ridge crest and ▼ the
               bed; H_M = crest − bed (channel depth) and H_AR = crest − floodplain (ridge height), and
-              the **β / H_AR / H_M values are listed in the metrics below the plot**. The **bed comes
-              from the boat-ADCP depth** (bed = water surface − measured depth), so H_M is measured,
-              not DEM-guessed. **β ≥ 1** means the bed has aggraded up to floodplain level → perched
-              and avulsion-prone; the Kanektok's β ≈ 0.24 is well below that. (Kanektok only — the
-              Uyak has ADCP depth near its mouth only.)
+              the **β / H_AR / H_M values are listed in the metrics below the plot**. Note that all
+              three are *topographic* surfaces: the water surface is not a term in β — it only serves
+              to place the bed under the **boat-ADCP depth sounding**, and it is taken from the SWOT
+              pass that flew **during the 2026 survey**, so depth and water surface share one stage.
+              The crest is read within **±150 m** of the channel (~3 channel widths, the scale Gearon
+              works at); a wider window climbs onto regional high ground rather than a bank, and
+              yields a "bank" standing far higher above the water than the river is deep — one the
+              river could never fill. **β = 1 is not the operative avulsion threshold.** Gearon's
+              criterion is **β × γ ≥ Λ** (Λ median ≈ 2.1), where γ is a gradient-advantage term this
+              analysis does not evaluate; in their data most avulsed *deltas* sit at β < 0.5. Here β
+              lands near 0 because **H_AR ≈ 0 — there is no alluvial ridge to superelevate.**
+              (Kanektok only — the Uyak has ADCP depth near its mouth only.)
             - Each channel is located by **snapping to the actual DEM channel** from a centerline
               prior. Both priors are **official field-surveyed centerlines** accurate to ~20–50 m —
               the Uyak from a hunter's boat GPS, the Kanektok from a coworker boat-ADCP thalweg run —
@@ -813,6 +895,15 @@ def render_cross_sections(chB, profB, plotly_template):
               native 2 m resolution so the narrow channel is genuinely resolved (~15–25 samples).
               ArcticDEM images the water surface, not the true bed, so this is
               directly comparable to the SWOT water surface.
+
+            **Channel-migration caveat:** the field centerlines were surveyed in **2026**, but the
+            ArcticDEM mosaic is built from **2010–2021** imagery, so the river has had years to
+            shift. The DEM channel sits a median ~38 m (Kanektok) and ~12 m (Uyak) from the boat
+            line, and on ~9% of arcs the snap runs into the edge of its ±75 m search window, meaning
+            the DEM channel may lie further out still. This does **not** move the water-surface
+            values — widening the search leaves them unchanged to 0.00 m, because the floodplain low
+            is broad and flat — but it does leave the channel *position*, and the crest window
+            anchored on it, uncertain at the few-tens-of-metres level.
 
             **Validity caveat (Merwade et al. 2006):** straight-line radius equals along-channel
             flow distance only where a channel runs straight from the anchor. Here each channel's
@@ -1675,8 +1766,10 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
                         \u2015 Technical details \u2015
                         Difference of median terrain elevation between the two river corridors per
-                        0.5 km bin. Analogous to *alluvial ridge height* (Slingerland & Smith, 1998);
-                        Gearon et al. (2024, *Nature*) use similar metrics to predict avulsion likelihood.
+                        0.5 km bin. Analogous to *alluvial ridge height* (Slingerland & Smith, 1998),
+                        the H_AR term in the superelevation ratio of Gearon et al. (2024, *Nature*).
+                        This is a corridor-wide comparison; for the channel-by-channel version, with
+                        the floodplain between them as the reference, see the ✂️ Cross-Sections tab.
                         """)
 
             with dem_tab3:
