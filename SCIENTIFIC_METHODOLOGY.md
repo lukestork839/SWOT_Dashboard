@@ -31,6 +31,8 @@
 | **Code Implementation** | ✅ Verified | All critical steps documented with file:line references |
 | **Ice Season Handling** | ✅ Documented | Dashboard warnings for Oct-May; Classes 3-4 exclude most ice; no PIXC ice flag available |
 | **DEM Elevation Comparison** | ✅ Integrated | ArcticDEM V4 with geoid correction; LiDAR-validated (0.50m RMSE); methods supported by Slingerland & Smith (1998), Gearon et al. (2024) |
+| **DEM Cross-Sections (arc method)** | ✅ **SWOT-CROSS-VALIDATED** | DEM channel water surface agrees with SWOT to **0.15 m** on both rivers (shared EGM2008 datum, per-radius geoid); superelevation quoted at a declared stage with p10–p90 band; inter-river difference from **pass-paired** overpasses; bed stage-matched to the boat-ADCP survey via coincident SWOT passes |
+| **Superelevation ratio β** | ✅ Verified · ⚠️ Read with care | β ≈ 0.06 with H_AR ≈ 0 → **no alluvial ridge**; crest window set by a bankfull consistency check (freeboard ≈ channel depth). **β = 1 is not the avulsion threshold** — Gearon's criterion is βγ ≥ Λ and γ is not evaluated here |
 
 **Overall Assessment:** 🎯 **CORE PROCESSING VERIFIED AND SCIENTIFICALLY SOUND** — PIXC quality flag filtering pending expert review
 
@@ -1096,11 +1098,17 @@ The dashboard includes an ArcticDEM comparison tab that overlays satellite-deriv
 
 ### Data Source
 
-**ArcticDEM V4 2m Mosaic** — A pan-Arctic digital surface model produced by the Polar Geospatial Center (University of Minnesota) from stereo satellite imagery. The mosaic is accessed via Google Earth Engine (`UMN/PGC/ArcticDEM/V4/2m_mosaic`) and exported at 10m resolution, clipped to the river polygon extent.
+**ArcticDEM 2m Mosaic** — A pan-Arctic digital **surface** model produced by the Polar Geospatial Center (University of Minnesota) from stereo satellite imagery. Two extraction paths are used, for two different purposes:
+
+| Path | Script | Resolution | Access | Used by |
+|---|---|---|---|---|
+| Corridor profile | `DEM_Pull.py` | 2 m resampled to **10 m** | Google Earth Engine (`UMN/PGC/ArcticDEM/V4/2m_mosaic`) | DEM Data subtabs 1–5 |
+| Cross-sections | `DEM_2m_Pull.py` | **native 2 m** | PGC S3 COGs via GDAL `/vsicurl` (GEE cannot serve 2 m — 48 MB export cap) | ✂️ Cross-Sections subtab |
 
 - **Coverage:** Full study area (Kanektok River and Uyak Creek corridors)
-- **Native resolution:** 2m (resampled to 10m for export)
-- **Extraction script:** `DEM_Pull.py`
+- **Mosaic version:** v4.1, EPSG:3413
+- **Source imagery window:** **2010-10-03 → 2021-03-02** for the tiles covering this corridor (from the per-tile PGC STAC `start_datetime`/`end_datetime`). The mosaic is a **multi-date blend**, not a single snapshot — this has direct consequences for both channel position and water stage, quantified in [Arc Cross-Section Avulsion Analysis](#arc-cross-section-avulsion-analysis).
+- **Not hydro-flattened.** Unlike Copernicus GLO-30/FABDEM, ArcticDEM mosaics retain the raw stereo surface over water, so the DEM's "water surface" is a photogrammetric estimate rather than an enforced flat plane. Its accuracy is measured against SWOT below.
 
 ### Vertical Datum Alignment
 
@@ -1131,6 +1139,8 @@ The geoid undulation is obtained by building a spatially-varying interpolation s
 
 The ~0.6m variation over 35 km is small but spatially systematic, justifying the interpolation approach over a single constant.
 
+**Cross-section path (added 2026-08-08):** the arc cross-section analysis originally used a single constant 13.46 m and now takes the geoid **per radius** from the same SWOT `geoid` field, tabulated in `DEM_Transects/data/swot_arc_reference.parquet` (13.74 m at the anchor → 13.28 m at the coast). The distinction matters only for *cross-dataset* comparison: every quantity measured **within a single arc** — β, H_AR, H_M, superelevation, Uyak−Kanektok at matched radius — is a difference between two elevations at effectively the same geoid value, so the choice cancels exactly (verified: all such identities reproduce to 0.0 m under the change). What the per-radius geoid buys is that DEM elevations and SWOT WSE now sit on the same datum, which removed a spurious along-reach tilt in the DEM-vs-SWOT residual (Uyak: −0.14 → **+0.02 m per 10 km**).
+
 ### Independent Validation
 
 The ArcticDEM V4 was independently validated against NOAA 2024 QL1 LiDAR for the Quinhagak area:
@@ -1144,7 +1154,7 @@ The ArcticDEM V4 was independently validated against NOAA 2024 QL1 LiDAR for the
 
 ### Dashboard Visualization
 
-The DEM Data tab contains five subtabs:
+The DEM Data tab contains six subtabs:
 
 1. **Terrain Profile** — ArcticDEM median elevation per 0.5 km distance bin for each river, with linear regression trendlines (gradient in cm/km, R² goodness-of-fit). The median is used rather than the mean because it is robust to outlier pixels (e.g., misclassified land cover or DEM artifacts).
 
@@ -1154,7 +1164,9 @@ The DEM Data tab contains five subtabs:
 
 4. **Detrended Terrain Profile** — Removes the regional downstream gradient by fitting a 2nd-order polynomial baseline to both rivers combined. A quadratic is appropriate because river long-profiles are typically concave-up, following S ∝ A^(−m) where A is upstream drainage area (Hack, 1957; Flint, 1974). Residuals reveal where each river corridor deviates from the regional trend — a river consistently above the baseline may indicate a *perched* or *super-elevated* channel, a key precondition for avulsion.
 
-5. **Map View** — Interactive Folium map displaying DEM elevation points within the river polygons. Color-by options: River Name (categorical) or Elevation (viridis continuous colormap). Includes basemap toggle, point opacity control, measurement tools, and click-for-details popups.
+5. **Map View** — Interactive Folium map displaying DEM elevation points within the river polygons. Color-by options: River Name (categorical) or Elevation (viridis continuous colormap). Includes basemap toggle, point opacity control, measurement tools, and click-for-details popups. A toggleable overlay draws the exact cross-section geometry (field centerlines, distance-from-anchor rings, transects, channel crossings, anchor).
+
+6. **✂️ Cross-Sections** — Scrubbable individual cross-sections along arcs of constant distance-from-anchor, spanning Kanektok → floodplain → Uyak, with the superelevation and β metrics per arc. Methods and validation in the next section; full write-up in `DEM_Transects/AVULSION_ANALYSIS.md`.
 
 **Summary Statistics:** Below the subtabs, a per-river summary table displays Avg Elevation (m) and Avg Gradient (cm/km), both computed using the same distance-weighted binned median methodology as the SWOT summary statistics (see [Summary Statistics: Distance-Weighted Averaging](#summary-statistics-distance-weighted-averaging)).
 
@@ -1169,15 +1181,76 @@ DEM data is loaded via DuckDB, consistent with the SWOT data pipeline. The full 
 
 This approach replaced an earlier pandas-based pipeline that stride-downsampled to 15K rows before computing bin statistics. The DuckDB approach provides exact statistics (tested: 0.000 m error vs full-data computation) while keeping memory usage minimal on Streamlit Cloud (~1.4 MB steady-state vs the previous ~233 MB peak).
 
+### Arc Cross-Section Avulsion Analysis
+
+The ✂️ Cross-Sections subtab is driven by `DEM_Transects/build_arc_B.py`. Each cross-section follows an **arc of constant straight-line distance from the shared anchor**, so every point on it sits at the same downstream coordinate the rest of the dashboard uses, and one arc spans Kanektok → floodplain → Uyak. This is the fan/delta radial-distance-from-apex convention (Williams et al. 2006; Edmonds et al. 2011). Full methods, results and caveats: `DEM_Transects/AVULSION_ANALYSIS.md`.
+
+**What is measured, per arc:**
+
+| Quantity | Definition | Source |
+|---|---|---|
+| Channel water surface | P2 of DEM elevations within ±50 m of the DEM-snapped thalweg | 2 m ArcticDEM |
+| Floodplain reference | median terrain of the inter-channel corridor, excluding each ±250 m channel notch | 2 m ArcticDEM |
+| Superelevation | channel water surface − floodplain reference, **at a declared stage** | SWOT stage + DEM floodplain |
+| Ridge crest | lower of the two P98 bank-highs within **±150 m** of the thalweg | 2 m ArcticDEM |
+| Channel bed | survey-stage water surface − measured thalweg depth | SWOT + boat ADCP |
+| β = H_AR/H_M | (crest − floodplain) / (crest − bed) | all of the above |
+
+#### SWOT cross-validation of the DEM water surface
+
+The DEM is a stereo *surface* model over water, so its channel "water surface" needs independent verification. Comparing against SWOT at matched radius on a shared EGM2008 datum:
+
+| River | DEM − SWOT (median stage) | Residual trend |
+|---|---|---|
+| Kanektok | **−0.15 m** | −0.14 m / 10 km |
+| Uyak | **+0.14 m** | **+0.02 m / 10 km** |
+
+Both are well inside ArcticDEM's independently validated 0.50 m RMSE, and the Uyak residual is essentially trend-free. This is a genuine three-way agreement — 2 m DEM, boat ADCP, and SWOT — and it is the strongest validation the cross-section analysis has.
+
+#### Stage: why aggregation choice matters
+
+A river has no single water surface. At a fixed radius the SWOT water surface spans **~0.7 m between p10 and p90** across ~40 overpasses (Kanektok 0.72 m, Uyak 0.64 m; seasonality is weak, June running +0.21 m on the Kanektok and all other months within ±0.09 m). Two consequences are handled explicitly:
+
+1. **Superelevation is stage-dependent**, so it is quoted at the **median observed stage** with the p10–p90 range carried alongside rather than at whatever single stage the DEM caught. Kanektok: **−1.50 m** median stage (−1.75 m low water, −1.01 m high water), incised on **100 %** of arcs at every stage in the observed range. Uyak: **−0.49 m** (−0.77 / −0.14).
+
+2. **The multi-date mosaic imaged the two rivers at different stages.** Geoid-corrected, the DEM water surface sits at the **29th percentile** of observed stages on the Kanektok but the **76th** on the Uyak — a ~0.34 m differential bias pointing exactly the way that inflates "Uyak higher". The inter-river comparison is therefore taken from **pass-paired SWOT** (both rivers measured within the *same* overpass, so stage cancels identically): **+0.96 m, Uyak higher on 100 % of passes**, from 2 495 pass-radius pairs across 49 passes. The DEM-only value (+1.45 m) is retained in the artifact for continuity but is not the number reported.
+
+#### Channel bed: stage-matched by construction
+
+`bed = water surface − depth` is only a true bed if both terms are at the same stage. SWOT overflew on **2026-05-28 and 2026-05-30, inside the 2026-05-28 → 06-03 boat-ADCP survey window**, so the water surface used for the bed is the one measured at the stage the depths were sounded at. This removes the mismatch inherent in pairing a 2026 depth with a 2010–2021 DEM (worth +0.05 m on the bed). The survey itself caught a typical stage — **+0.04 m** from the all-pass median — so β carries no stage bias.
+
+#### Setting the crest window: the bankfull consistency check
+
+The ridge crest is the parameter β is most sensitive to after the floodplain reference, and it is not self-evident how far from the channel to look. Two independent diagnostics set it:
+
+- **The P98 never settles.** Sweeping the half-window, β climbs monotonically (−0.16 at ±75 m, 0.06 at ±150, 0.21 at ±250, 0.24 at ±350, 0.28 at ±500) while the crest pixel's distance from the thalweg tracks the window boundary (57 m → 292 m). A real levee would produce a local maximum the search converges on; this is the signature of **no levee**.
+- **Bankfull consistency.** A bank the river can actually fill should have freeboard *A* = (crest − water surface) comparable to the channel depth *B* (ADCP median 1.30 m). Measured A/B by window: 0.66 @ ±60 m, 1.02 @ ±100, **1.27 @ ±150**, 1.72 @ ±250, **1.87 @ ±350**. At ±350 m the "bank" stood 1.9× the channel depth above the water — one the Kanektok could never overtop.
+
+The window is therefore **±150 m**, ~3 channel widths on a ~50 m river, which is the scale Gearon et al. work at. This supersedes an earlier ±350 m (~7 channel widths) that was reaching regional high ground.
+
+#### Result, and how β should be read
+
+**β median 0.06, H_AR median +0.14 m**, with the near-channel high ground sitting *below* the floodplain reference outright (β ≤ 0) on **38 %** of arcs. The defensible statement is not "β is safely under a threshold" but **there is no alluvial ridge to superelevate** — the same fact the −1.50 m incision reports, in dimensionless form.
+
+**β = 1 is not the operative avulsion threshold, and is not presented as one.** Gearon et al. (2024) show the criterion is **βγ ≥ Λ** (their eq. 4) with Λ median **2.1**; the paper states plainly that "β only accounts for half of Λ" and that "roughly 60 % of deltas in our dataset have β < 0.5" — near the sink, rivers that *did* avulse carry low β because the gradient-advantage term γ is high. This analysis deliberately does not evaluate γ (a corridor-median floodplain has no location, so the ridge-flank slope S_AR has no defensible run length), so β is reported as a **reproduction of the prior ArcGIS metric** `(P98 − median)/(P98 − P2)` and the avulsion argument rests on the incision result rather than on β alone.
+
+#### Channel migration
+
+The field centerlines were surveyed in **2026**; the DEM mosaic is built from **2010–2021** imagery, so the boat line is a prior for a channel the DEM may not show in the same place. Measured: the DEM channel sits a median **38 m** (Kanektok) and **12 m** (Uyak) from the field line, and on **9 % / 8 %** of arcs the snap reaches the edge of its ±75 m search window, meaning the DEM channel may lie further out still.
+
+Critically, this does **not** propagate into the water surface: widening the search from ±75 m to ±400 m moves the picked WSE by **0.00 m**, because the floodplain low is a broad flat wet surface and the low-percentile pick finds it wherever it lands. What remains uncertain is the channel *position* — the x = 0 origin of each section, the crest window anchored on it, and the corridor edges — at the few-tens-of-metres level. Per-arc QC columns `kan/uyak_snap_offset_m` and `kan/uyak_snap_clipped` expose this.
+
 ### Scientific Basis & Methodological Justification
 
 The DEM analyses are grounded in the following theoretical and empirical framework:
 
 **Avulsion mechanics:** Slingerland & Smith (1998) established that avulsions are controlled by (a) the cross-valley slope ratio between the existing channel and potential avulsion path, (b) the alluvial ridge height (elevation of the channel corridor above the surrounding floodplain), and (c) sediment supply. The elevation difference and slope profiles directly quantify factors (a) and (b) from terrain data.
 
-**Topographic prediction of avulsion:** Gearon et al. (2024, *Nature*) demonstrated that landscape topography alone — specifically cross-corridor elevation gradients and slope ratios — can predict avulsion likelihood with high accuracy across a global dataset of 174 avulsions. The DEM analyses implemented here follow the same approach of extracting topographic metrics along competing channel corridors.
+**Topographic metrics for avulsion:** Gearon et al. (2024, *Nature*) catalogued 174 satellite-era avulsions and, on the 58 with sufficient data quality, measured two dimensionless topographic ratios from DEM and ICESat-2 cross-sections: superelevation **β = H_AR/H_M** (alluvial-ridge height over channel depth) and gradient advantage **γ = S_AR/S_M**. Their central result is that these combine as **βγ ≥ Λ** (Λ median 2.1) and that their *relative* importance shifts from source to sink — high β / low γ on fans near the mountain front, the reverse on deltas near the shoreline. The cross-section analysis here adopts their β definition and their crest convention (the lower of the two bank highs), while deliberately not evaluating γ; see [Arc Cross-Section Avulsion Analysis](#arc-cross-section-avulsion-analysis) for why β alone must not be read as a pass/fail avulsion test.
 
-**Geoid correction validation:** Wang et al. (2022, *Water Resources Research*) validated the approach of using interpolated EGM2008 geoid values to align satellite-derived elevations with terrestrial references, reporting geoid interpolation uncertainties of ~±0.5 m — consistent with the approach used in `DEM_Pull.py`.
+**Remote detection of an in-progress avulsion:** Wang et al. (2023, *Water Resources Research*) documented an active avulsion in the Peace-Athabasca Delta using water-surface slope, discharge, channel width and floodplain inundation from remote sensing, and identified SWOT as the instrument that would extend this to global repeat coverage. That is directly the template this project follows — a slope/WSE-based assessment of whether one distributary is gaining advantage over another — and it is the precedent for treating water-surface gradient as an avulsion diagnostic rather than relying on topography alone.
+
+**Geoid correction:** the geoid surface used to align ArcticDEM with SWOT is not borrowed from a literature estimate — it is built from the **same per-pixel NASA EGM2008 values used inside the SWOT WSE calculation itself** (`wse = height − geoid − tides`), so the two datasets are aligned by construction rather than by an external model. The residual accuracy of that alignment is measured directly, not assumed: the DEM channel water surface lands within **0.15 m** of the SWOT median stage on both rivers (see [Arc Cross-Section Avulsion Analysis](#arc-cross-section-avulsion-analysis)), against ArcticDEM's LiDAR-validated 0.50 m RMSE.
 
 **Profile shape:** The 2nd-order polynomial baseline for detrending follows the empirical observation that alluvial river long-profiles are well-approximated by a power law or low-order polynomial (Hack, 1957; Flint, 1974). Higher-order fits risk overfitting to local features that the detrending aims to reveal.
 
@@ -1185,15 +1258,20 @@ The DEM analyses are grounded in the following theoretical and empirical framewo
 - Elevation difference alone is a necessary but not sufficient predictor of avulsion — discharge, sediment load, and bank cohesion also play a role (Slingerland & Smith, 1998)
 - The linear trendline approximates a profile that is naturally concave-up; R² is reported so users can assess fit quality
 - DEM terrain within the river polygons includes banks and bars, not just the active channel bed — this is appropriate for corridor-scale avulsion analysis but differs from SWOT's water-surface-only measurement
-- Geoid correction introduces ~±0.5 m systematic uncertainty (Wang et al., 2022); this affects absolute elevation but not relative comparisons between the two rivers at the same distance
+- The ArcticDEM mosaic is a **2010–2021 multi-date blend**, so (a) the channel may have migrated relative to the 2026 field centerlines, and (b) the two rivers were imaged at different water stages. Both are quantified and handled in [Arc Cross-Section Avulsion Analysis](#arc-cross-section-avulsion-analysis); the inter-river comparison is taken from pass-paired SWOT rather than from the DEM for this reason
+- β is reported as a reproduction of the prior ArcGIS superelevation metric, **not** as a threshold test against β = 1; Gearon's operative criterion is βγ ≥ Λ and the gradient term γ is not evaluated here
+- The floodplain reference is the median of a ~2.7 km-wide inter-channel corridor, which is a regional datum rather than Gearon's local ridge-toe pick; it sits ~0.29 m below the floodplain immediately beside the Kanektok, and because it has no location it cannot support a ridge-flank slope S_AR
 
 ### References
 
+- Edmonds, D.A., et al. (2011). Predicting delta avulsions: implications for coastal wetland restoration. *Journal of Geophysical Research*, 116, F04022. doi:10.1029/2010JF001955
 - Flint, J.J. (1974). Stream gradient as a function of order, magnitude, and discharge. *Water Resources Research*, 10(5), 969–973.
-- Gearon, J.H., et al. (2024). Landscape dynamics and the Phanerozoic diversification of the biosphere. *Nature*, 634, 92–95.
+- Gearon, J.H., et al. (2024). Rules of river avulsion change downstream. *Nature*, 634, 91–95. doi:10.1038/s41586-024-07964-2
 - Hack, J.T. (1957). Studies of longitudinal stream profiles in Virginia and Maryland. *USGS Professional Paper 294-B*.
+- Merwade, V.M., Legleiter, C.J. & Kyriakidis, P.C. (2006). Uncertainty in flood inundation mapping: current issues and future directions / channel-fitted coordinates for meandering rivers. *Mathematical Geosciences*. — basis for the Euclidean-vs-flow-distance caveat on the radial frame
 - Slingerland, R. & Smith, N.D. (1998). Necessary conditions for a meandering-river avulsion. *Geology*, 26(5), 435–438.
-- Wang, J., et al. (2022). Monitoring the Athabasca River avulsion with SWOT. *Water Resources Research*, 58, e2022WR034114.
+- Wang, B., et al. (2023). Athabasca River avulsion underway in the Peace-Athabasca Delta, Canada. *Water Resources Research*, 59, e2022WR034114. doi:10.1029/2022WR034114
+- Williams, R.M.E., et al. (2006). Evidence for episodic alluvial fan formation. *Geophysical Research Letters*, 33, L10201. doi:10.1029/2005GL025618
 
 ---
 
@@ -1310,6 +1388,18 @@ Use this checklist to verify our processing against the SWOT handbook:
 - [x] Vertical datum difference identified and documented (NAVD88 vs EGM2008)
 - [x] Datum offset calculated: ~9.6 m at calibration site
 - [x] SWOT processing verified accurate within measurement uncertainties
+
+### DEM Cross-Sections (arc method)
+- [x] DEM and SWOT on a shared vertical datum (per-radius EGM2008 from the SWOT `geoid` field)
+- [x] DEM channel water surface cross-validated against SWOT (0.15 m on both rivers)
+- [x] Within-arc quantities verified geoid-invariant (β, H_AR, H_M, superelevation reproduce to 0.0 m)
+- [x] Superelevation quoted at a **declared** stage with the p10–p90 range reported
+- [x] Inter-river difference taken from **pass-paired** overpasses so stage cancels
+- [x] Channel bed stage-matched to the boat-ADCP survey via coincident SWOT passes (2026-05-28/30)
+- [x] Crest window justified by channel geometry + a bankfull consistency check, not tuned to a result
+- [x] β framed as a reproduction of the prior ArcGIS metric; **β = 1 explicitly not claimed as a threshold**
+- [x] DEM acquisition window (2010–2021) stated, and channel-migration offsets quantified with QC columns
+- [x] Sensitivity of β to each input reported (floodplain > crest ≫ bed)
 
 ### Code Documentation
 - [x] All critical steps have code references (file:line_number)
