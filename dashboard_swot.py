@@ -289,6 +289,33 @@ FINE_BASE_BIN_KM = 0.1          # base grid for per-pass profiles
 FINE_MIN_PIX_BIN = 30           # trust a bin's median only with >= this many pixels
 FINE_FILL_GAP_KM = 0.3          # per pass, interpolate internal gaps up to this wide
 
+# Resolution and reach extent are FIXED rather than exposed as sliders -- both have a
+# single defensible value, and leaving them adjustable invited readings that disagree
+# with thesis Figure 9 for no scientific gain:
+#   * 0.5 km is the backwater length scale here (L_b ~ depth/slope ~ 2 m / 0.00195),
+#     i.e. the scale an avulsion slope-advantage would act on. The resolution sweep
+#     showed it is comfortably resolvable (SNR ~20 Kanektok / ~15 Uyak).
+#   * 34 km trims the tidal mouth: cross-pass WSE spread only rises in the final
+#     ~1-2 km at each outlet (see coastal_noise_diagnostic.py), and that tail is far
+#     downstream of the bifurcation, so cutting it costs nothing.
+FINE_RES_KM = 0.5
+FINE_XMAX_KM = 34.0
+
+# The temporal views condense a stretch of river to one slope per pass. Both the
+# stretch and the pass-quality gate are fixed at their defensible values (sweep run
+# 2026-08-04 over the full local archive):
+#   * 1-5 km brackets the bifurcation (2.5 km) and is FOUR times the 0.5 km fitting
+#     kernel. Narrower windows are unsafe: at 2-3 km (two kernel widths) the measured
+#     advantage inverts to -6 cm/km, an artifact of where the bifurcation step falls
+#     relative to the window edges rather than a real reversal.
+#   * 80 % coverage is where the answer stabilises -- 50 % -> 80 % moves the paired
+#     advantage +30 -> +25 cm/km (partial-coverage Uyak passes were biasing Uyak's
+#     slope low), while 80 % -> 95 % does not move it at all. It costs passes mainly
+#     on the Uyak (90 -> 42; Kanektok 123 -> 89), which is the point: those are the
+#     passes that only clipped the window.
+FINE_WINDOW_KM = (1.0, 5.0)
+FINE_MIN_COVERAGE = 0.80
+
 
 def _fine_slope_theilsen(x, y, res_km):
     """Robust sliding Theil-Sen slope (cm/km); window width = res_km.
@@ -325,13 +352,34 @@ def _fine_regular_grid(sub):
     return idx.astype(int), s.to_numpy(dtype=float)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def compute_finescale_slope(_con, url_version, where_clause, res_km, xmax):
-    """Per-pass-then-aggregate fine-scale slope for each river (robust Theil-Sen).
+# Period bins for the temporal fine-scale views. These MIRROR the flow-regime
+# definitions in temporal_analysis.py (HIGH_FLOW_MONTHS = May freshet,
+# LOW_FLOW_MONTHS = Jul-Aug baseflow) so a fine-scale seasonal contrast is directly
+# comparable to the Q1/Q2 conclusions in TEMPORAL_ANALYSIS.md. Order = display order.
+FINE_SEASONS = [
+    ("Freshet (May)", {5}),
+    ("Baseflow (Jul–Aug)", {7, 8}),
+    ("Shoulder (Apr, Jun, Sep–Nov)", {4, 6, 9, 10, 11}),
+    ("Ice (Dec–Mar)", {12, 1, 2, 3}),
+]
+FINE_GROUP_MODES = ["Year", "Season", "Month", "Individual pass"]
+FINE_MAX_PERIOD_LINES = 24      # cap overlaid period profiles (guards 'Individual pass')
 
-    Returns {reach: dict(grid, med, q25, q75, n)}. Cached on the selection +
-    controls so slider moves are instant after the first compute. `url_version`
-    keys the cache to the deployed data version (same idiom as other loaders).
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def compute_finescale_pass_matrix(_con, url_version, where_clause, res_km, xmax):
+    """Per-pass fine-scale slope MATRIX for each river (robust sliding Theil-Sen).
+
+    This is the expensive step: one Theil-Sen sweep per pass. It deliberately stops
+    BEFORE aggregating, returning the full (grid x pass) matrix plus the pass dates,
+    so every temporal regrouping (year / season / month / individual pass) and every
+    coverage gate is a free numpy operation on the cached matrix rather than a
+    re-query + re-fit. Aggregate with `_fine_aggregate`.
+
+    Returns {reach: dict(grid, mat, passes, n_passes)} where `mat` holds SIGNED
+    slopes (cm/km, negative = downhill) on a 0.1 km grid, NaN where a pass did not
+    image that bin. Cached on the selection + controls; `url_version` keys the cache
+    to the deployed data version (same idiom as other loaders).
     """
     df = _con.execute(f"""
         SELECT CAST(Pass_Date AS DATE) AS pass,
@@ -366,17 +414,118 @@ def compute_finescale_slope(_con, url_version, where_clause, res_km, xmax):
             pos = ix - 1
             ok = (pos >= 0) & (pos < len(grid))
             mat[pos[ok], j] = sl[ok]
-        with np.errstate(all="ignore"):
-            med = np.nanmedian(mat, axis=1)
-            q25 = np.nanquantile(mat, 0.25, axis=1)
-            q75 = np.nanquantile(mat, 0.75, axis=1)
-            n = np.sum(np.isfinite(mat), axis=1)
-        # Slopes are negative (downhill); plot steepness = |slope|. abs() flips the
-        # band order, so re-derive lo/hi as the min/max of the absolute quartiles.
-        a25, a75 = np.abs(q25), np.abs(q75)
-        out[str(reach)] = dict(grid=grid, med=np.abs(med),
-                               lo=np.minimum(a25, a75), hi=np.maximum(a25, a75),
-                               n=n, n_passes=len(passes))
+        out[str(reach)] = dict(grid=grid, mat=mat,
+                               passes=pd.to_datetime(pd.Series(list(passes))).to_numpy(),
+                               n_passes=len(passes))
+    return out
+
+
+def _fine_aggregate(mat, cols=None, min_passes=0):
+    """Aggregate a per-pass slope matrix across a subset of passes (columns).
+
+    Pure numpy on the cached matrix -- no re-query, no re-fit -- so regrouping by
+    period is instant. Returns (med, lo, hi, n) as ABSOLUTE slope (steepness,
+    cm/km); bins imaged by fewer than `min_passes` passes are set to NaN.
+    """
+    sub = mat if cols is None else mat[:, cols]
+    med = np.full(mat.shape[0], np.nan)
+    q25, q75 = med.copy(), med.copy()
+    n = np.sum(np.isfinite(sub), axis=1) if sub.shape[1] else np.zeros(mat.shape[0], dtype=int)
+    if sub.shape[1] == 0:
+        return med, q25, q75, n
+    # Reduce only over bins that some pass actually imaged: an all-NaN bin is normal
+    # here (coverage gaps), and feeding one to nanmedian just raises a noisy warning.
+    seen = n > 0
+    if seen.any():
+        med[seen] = np.nanmedian(sub[seen], axis=1)
+        q25[seen] = np.nanquantile(sub[seen], 0.25, axis=1)
+        q75[seen] = np.nanquantile(sub[seen], 0.75, axis=1)
+    # Slopes are negative (downhill); plot steepness = |slope|. abs() flips the
+    # band order, so re-derive lo/hi as the min/max of the absolute quartiles.
+    a25, a75 = np.abs(q25), np.abs(q75)
+    med, lo, hi = np.abs(med), np.minimum(a25, a75), np.maximum(a25, a75)
+    if min_passes > 0:
+        gap = n < min_passes
+        med[gap] = lo[gap] = hi[gap] = np.nan
+    return med, lo, hi, n
+
+
+def _fine_window_mask(grid, window):
+    """Boolean mask for the analysis window (lo, hi) on the 0.1 km grid."""
+    lo, hi = window
+    return (grid >= lo) & (grid <= hi)
+
+
+def _fine_window_coverage(mat, grid, window):
+    """Per-pass fraction of the analysis window that yielded a valid slope.
+
+    This is the pass-quality gate: the fine-scale slope of a pass is only
+    meaningful where that pass actually imaged the river, so a pass that caught
+    only a sliver of the window should not contribute a 'window slope'.
+    """
+    m = _fine_window_mask(grid, window)
+    if not m.any():
+        return np.zeros(mat.shape[1])
+    return np.isfinite(mat[m, :]).mean(axis=0)
+
+
+def _fine_window_slope(mat, grid, window):
+    """Per-pass steepness (|cm/km|) summarised over the analysis window.
+
+    Median of that pass's local sliding-Theil-Sen slopes inside the window -- i.e.
+    exactly the quantity the profile plot draws, condensed to one number per pass,
+    so the time series and the profile can never disagree.
+    """
+    out = np.full(mat.shape[1], np.nan)
+    m = _fine_window_mask(grid, window)
+    if not m.any():
+        return out
+    sub = mat[m, :]
+    valid = np.isfinite(sub).any(axis=0)     # passes that imaged part of the window
+    if valid.any():
+        out[valid] = np.abs(np.nanmedian(sub[:, valid], axis=0))
+    return out
+
+
+def _fine_group_passes(passes, mode):
+    """Group pass dates into ordered periods -> [(label, positional indices), ...].
+
+    Seasons follow FINE_SEASONS (temporal_analysis.py flow regimes); Year/Month/
+    Individual pass are self-explanatory. Groups come back in chronological (or
+    seasonal) display order, not alphabetical.
+    """
+    ts = pd.to_datetime(pd.Series(list(passes)))
+    if mode == "Year":
+        key, lab = ts.dt.year, ts.dt.year.astype(str)
+    elif mode == "Month":
+        key, lab = ts.dt.month, ts.dt.strftime("%b")
+    elif mode == "Season":
+        month = ts.dt.month
+        key = pd.Series(len(FINE_SEASONS), index=ts.index)
+        lab = pd.Series("Unclassified", index=ts.index)
+        for i, (name, months) in enumerate(FINE_SEASONS):
+            sel = month.isin(months)
+            key[sel], lab[sel] = i, name
+    else:  # Individual pass
+        key, lab = ts, ts.dt.strftime("%Y-%m-%d")
+    g = pd.DataFrame({"key": key, "lab": lab})
+    groups = [(name, sub.index.to_numpy()) for name, sub in g.groupby("lab", sort=False)]
+    groups.sort(key=lambda item: g.loc[item[1], "key"].iloc[0])
+    return groups
+
+
+def compute_finescale_slope(_con, url_version, where_clause, res_km, xmax):
+    """All-pass aggregate fine-scale profile (the tab's default view).
+
+    Thin wrapper over the cached matrix so the aggregate view and the temporal
+    views share one compute. Returns {reach: dict(grid, med, lo, hi, n, n_passes)}.
+    """
+    data = compute_finescale_pass_matrix(_con, url_version, where_clause, res_km, xmax)
+    out = {}
+    for reach, r in data.items():
+        med, lo, hi, n = _fine_aggregate(r["mat"])
+        out[reach] = dict(grid=r["grid"], med=med, lo=lo, hi=hi,
+                          n=n, n_passes=r["n_passes"])
     return out
 
 
@@ -2645,33 +2794,34 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             "shaded pass-to-pass band. This resolves ~0.5 km structure near the "
             "bifurcation that the standard Slope Profile tab blurs away."
         )
+        st.caption(f"Fixed at **{FINE_RES_KM} km** resolution (the backwater length scale) "
+                   f"over the first **{FINE_XMAX_KM:.0f} km** (tidal mouth trimmed) — the same "
+                   "settings as thesis Figure 9.")
 
         @st.fragment
         def render_finescale():
-            c1, c2 = st.columns(2)
-            with c1:
-                res_km = st.select_slider(
-                    "Resolution (km)", options=[0.25, 0.5, 1.0, 2.0], value=0.5,
-                    key="fine_res",
-                    help="Effective slope resolution. ~0.5 km is the backwater length here; "
-                         "0.25 km is still resolvable given the pixel density.")
-            with c2:
-                xmax = st.slider(
-                    "Max distance (km)", min_value=10, max_value=36, value=34,
-                    key="fine_xmax",
-                    help="Trim the tidal mouth: cross-pass WSE spread rises only in the "
-                         "final ~1–2 km at each river's outlet (see coastal-noise diagnostic).")
+            res_km, xmax = FINE_RES_KM, FINE_XMAX_KM
 
-            zoom = st.checkbox("Zoom to the bifurcation region (0–8 km)", value=False,
-                               key="fine_zoom")
+            view = st.radio(
+                "View", ["Aggregate profile", "Compare periods", "Slope over time"],
+                horizontal=True, key="fine_view",
+                help="**Aggregate** pools every selected pass into one profile. "
+                     "**Compare periods** draws one profile per year / season / month, so you "
+                     "can see whether the fine-scale shape itself moves. **Slope over time** "
+                     "condenses a chosen reach window to one number per pass and plots it "
+                     "against date.")
 
             with st.spinner("Computing per-pass slopes…"):
-                data = compute_finescale_slope(
+                pdata = compute_finescale_pass_matrix(
                     con, REMOTE_PARQUET_URL, where_clause, float(res_km), float(xmax))
 
-            if not data:
+            if not pdata:
                 st.warning("No data available for the selected filters.")
                 return
+            data = {reach: dict(grid=r["grid"], n_passes=r["n_passes"],
+                                **dict(zip(("med", "lo", "hi", "n"),
+                                           _fine_aggregate(r["mat"]))))
+                    for reach, r in pdata.items()}
 
             # Guard: this per-pass-then-aggregate method needs many overlapping passes.
             # With only a handful (e.g. the welcome-page quick-start, which loads just the
@@ -2692,68 +2842,270 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     "(not the quick-start subset) for a trustworthy result."
                 )
 
-            fig_fine = go.Figure()
-            near_rows = []
-            for reach in selected_reaches:
-                r = data.get(reach)
-                if not r:
-                    continue
-                grid, med, lo, hi, n = r["grid"], r["med"], r["lo"], r["hi"], r["n"]
-                core = n >= 3  # only trust bins imaged by >= 3 passes
-                if not core.any():
-                    continue
-                color = COLOR_MAP.get(reach, "black")
-                rr, gg, bb, _ = mcolors.to_rgba(color)
-                fill = f"rgba({int(rr*255)},{int(gg*255)},{int(bb*255)},0.15)"
+            reaches = [r for r in selected_reaches if r in pdata]
+            if not reaches:
+                st.warning("No data available for the selected rivers.")
+                return
 
-                # IQR band (across passes)
-                fig_fine.add_trace(go.Scatter(
-                    x=np.concatenate([grid[core], grid[core][::-1]]),
-                    y=np.concatenate([hi[core], lo[core][::-1]]),
-                    fill="toself", fillcolor=fill, line=dict(width=0),
-                    name=f"{reach} IQR", showlegend=False, hoverinfo="skip"))
-                # median line
-                fig_fine.add_trace(go.Scatter(
-                    x=grid[core], y=med[core], mode="lines",
-                    line=dict(color=color, width=3),
-                    name=f"{reach} ({r['n_passes']} passes)",
-                    hovertemplate="<b>" + reach + "</b><br>Distance: %{x:.2f} km<br>"
-                                  "Slope: %{y:.1f} cm/km<extra></extra>"))
+            # ================= VIEW 1: aggregate profile (all passes pooled) =====
+            if view == "Aggregate profile":
+                zoom = st.checkbox("Zoom to the bifurcation region (0–8 km)", value=False,
+                                   key="fine_zoom")
+                fig_fine = go.Figure()
+                near_rows = []
+                for reach in reaches:
+                    r = data[reach]
+                    grid, med, lo, hi, n = r["grid"], r["med"], r["lo"], r["hi"], r["n"]
+                    core = n >= 3  # only trust bins imaged by >= 3 passes
+                    if not core.any():
+                        continue
+                    color = COLOR_MAP.get(reach, "black")
+                    rr, gg, bb, _ = mcolors.to_rgba(color)
+                    fill = f"rgba({int(rr*255)},{int(gg*255)},{int(bb*255)},0.15)"
 
-                nb = core & (grid >= 1.0) & (grid <= 5.0)
-                near_rows.append({
-                    "River": reach,
-                    "Near-bifurcation slope (1–5 km)": float(np.nanmedian(med[nb])) if nb.any() else np.nan,
-                    "Passes": int(r["n_passes"]),
-                })
+                    # IQR band (across passes)
+                    fig_fine.add_trace(go.Scatter(
+                        x=np.concatenate([grid[core], grid[core][::-1]]),
+                        y=np.concatenate([hi[core], lo[core][::-1]]),
+                        fill="toself", fillcolor=fill, line=dict(width=0),
+                        name=f"{reach} IQR", showlegend=False, hoverinfo="skip"))
+                    # median line
+                    fig_fine.add_trace(go.Scatter(
+                        x=grid[core], y=med[core], mode="lines",
+                        line=dict(color=color, width=3),
+                        name=f"{reach} ({r['n_passes']} passes)",
+                        hovertemplate="<b>" + reach + "</b><br>Distance: %{x:.2f} km<br>"
+                                      "Slope: %{y:.1f} cm/km<extra></extra>"))
 
-            add_bifurcation_line(fig_fine)
-            fig_fine.update_layout(
-                xaxis_title="Distance from Anchor Point (km)",
-                yaxis_title="Interval Slope (cm/km)",
-                height=600, template=plotly_template, hovermode="x unified",
-                showlegend=True)
-            fig_fine.update_xaxes(autorange="reversed")
-            if zoom:
-                fig_fine.update_xaxes(range=[8, 0])  # reversed axis: [max, min]
+                    nb = core & (grid >= 1.0) & (grid <= 5.0)
+                    near_rows.append({
+                        "River": reach,
+                        "Near-bifurcation slope (1–5 km)": float(np.nanmedian(med[nb])) if nb.any() else np.nan,
+                        "Passes": int(r["n_passes"]),
+                    })
 
-            st.plotly_chart(fig_fine, width="stretch", theme=None)
+                add_bifurcation_line(fig_fine)
+                fig_fine.update_layout(
+                    xaxis_title="Distance from Anchor Point (km)",
+                    yaxis_title="Interval Slope (cm/km)",
+                    height=600, template=plotly_template, hovermode="x unified",
+                    showlegend=True)
+                fig_fine.update_xaxes(autorange="reversed")
+                if zoom:
+                    fig_fine.update_xaxes(range=[8, 0])  # reversed axis: [max, min]
 
-            # Near-bifurcation contrast (the headline of the re-analysis)
-            if len(near_rows) == 2 and all(np.isfinite(x["Near-bifurcation slope (1–5 km)"]) for x in near_rows):
-                k = next((x for x in near_rows if x["River"] == "Kanektok_River"), None)
-                u = next((x for x in near_rows if x["River"] == "Uyak_Creek"), None)
-                if k and u:
-                    adv = k["Near-bifurcation slope (1–5 km)"] - u["Near-bifurcation slope (1–5 km)"]
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Kanektok @ bifurcation (1–5 km)",
-                              f"{k['Near-bifurcation slope (1–5 km)']:.0f} cm/km")
-                    m2.metric("Uyak @ bifurcation (1–5 km)",
-                              f"{u['Near-bifurcation slope (1–5 km)']:.0f} cm/km")
-                    m3.metric("Kanektok advantage here", f"{adv:+.0f} cm/km",
-                              help="Reach-averaged, the two gradients differ by only ~3.6 cm/km; "
-                                   "near the bifurcation the local advantage is far larger.")
+                st.plotly_chart(fig_fine, width="stretch", theme=None)
 
+                # Near-bifurcation contrast (the headline of the re-analysis)
+                if len(near_rows) == 2 and all(np.isfinite(x["Near-bifurcation slope (1–5 km)"]) for x in near_rows):
+                    k = next((x for x in near_rows if x["River"] == "Kanektok_River"), None)
+                    u = next((x for x in near_rows if x["River"] == "Uyak_Creek"), None)
+                    if k and u:
+                        adv = k["Near-bifurcation slope (1–5 km)"] - u["Near-bifurcation slope (1–5 km)"]
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("Kanektok @ bifurcation (1–5 km)",
+                                  f"{k['Near-bifurcation slope (1–5 km)']:.0f} cm/km")
+                        m2.metric("Uyak @ bifurcation (1–5 km)",
+                                  f"{u['Near-bifurcation slope (1–5 km)']:.0f} cm/km")
+                        m3.metric("Kanektok advantage here", f"{adv:+.0f} cm/km",
+                                  help="Reach-averaged, the two gradients differ by only ~3.6 cm/km; "
+                                       "near the bifurcation the local advantage is far larger.")
+
+            # ================= VIEWS 2 & 3: temporal ============================
+            # The window and the coverage gate are fixed (see FINE_WINDOW_KM /
+            # FINE_MIN_COVERAGE); grouping is the only thing left to choose, because it
+            # is the actual question -- year vs season vs month.
+            else:
+                window, min_cov = FINE_WINDOW_KM, FINE_MIN_COVERAGE
+                group_mode = st.selectbox(
+                    "Group by", FINE_GROUP_MODES, index=0, key="fine_group",
+                    help="How passes are bundled into periods. Seasons are the flow regimes "
+                         "used in the repo's temporal analysis (freshet = May, baseflow = "
+                         "Jul–Aug, shoulder = Apr/Jun/Sep–Nov).")
+
+                # --- pass-quality gate ---
+                gate, kept_note = {}, []
+                for reach in reaches:
+                    r = pdata[reach]
+                    cov = _fine_window_coverage(r["mat"], r["grid"], window)
+                    gate[reach] = cov >= min_cov
+                    kept_note.append(f"{reach.replace('_', ' ')}: "
+                                     f"**{int(gate[reach].sum())}** of {len(cov)}")
+                st.caption(f"Slope measured over **{window[0]:.0f}–{window[1]:.0f} km** "
+                           f"(the bifurcation zone), using passes that imaged ≥ {min_cov:.0%} "
+                           f"of it — " + " · ".join(kept_note))
+                if not any(gate[r].any() for r in reaches):
+                    st.warning("No selected pass covers enough of the bifurcation zone to give "
+                               "a fine-scale slope. Return to the homepage and select more "
+                               "passes.")
+                    return
+
+                # ---------- VIEW 2: one profile per period ----------
+                if view == "Compare periods":
+                    zoom_cmp = st.checkbox("Zoom to the bifurcation region (0–8 km)",
+                                           value=False, key="fine_zoom_cmp")
+                    fig_cmp = make_subplots(
+                        rows=len(reaches), cols=1, shared_xaxes=True, vertical_spacing=0.09,
+                        subplot_titles=[r.replace("_", " ") for r in reaches])
+                    summary, period_order, capped = [], [], False
+                    for row, reach in enumerate(reaches, start=1):
+                        r = pdata[reach]
+                        grid, keep = r["grid"], gate[reach]
+                        groups = [(lab, idx[keep[idx]])
+                                  for lab, idx in _fine_group_passes(r["passes"], group_mode)]
+                        groups = [(lab, idx) for lab, idx in groups if len(idx)]
+                        if len(groups) > FINE_MAX_PERIOD_LINES:
+                            groups, capped = groups[-FINE_MAX_PERIOD_LINES:], True
+                        wsl = _fine_window_slope(r["mat"], grid, window)
+                        for gi, (lab, idx) in enumerate(groups):
+                            if lab not in period_order:
+                                period_order.append(lab)
+                            shade = gi / max(len(groups) - 1, 1)
+                            cr, cg, cb, _ = cm.viridis(0.12 + 0.76 * shade)
+                            # Hold each period to the same >=3-pass support as the aggregate
+                            # view, except where the period simply cannot supply three.
+                            med, _, _, _ = _fine_aggregate(r["mat"], idx,
+                                                           min_passes=min(3, len(idx)))
+                            ok = np.isfinite(med)
+                            if not ok.any():
+                                continue
+                            fig_cmp.add_trace(go.Scatter(
+                                x=grid[ok], y=med[ok], mode="lines",
+                                line=dict(color=f"rgb({int(cr*255)},{int(cg*255)},{int(cb*255)})",
+                                          width=2),
+                                legendgroup=lab, name=f"{lab} ({len(idx)})",
+                                showlegend=(row == 1),
+                                hovertemplate=f"<b>{lab}</b><br>Distance: %{{x:.2f}} km<br>"
+                                              "Slope: %{y:.1f} cm/km<extra></extra>"),
+                                row=row, col=1)
+                            summary.append({
+                                "Period": lab, "River": reach.split("_")[0],
+                                "slope": float(np.nanmedian(wsl[idx])), "n": int(len(idx))})
+                    if capped:
+                        st.info(f"Showing the most recent {FINE_MAX_PERIOD_LINES} periods — "
+                                "choose a coarser *Group by* to see the whole record.")
+                    add_bifurcation_line(fig_cmp)
+                    fig_cmp.update_layout(height=330 * len(reaches), template=plotly_template,
+                                          hovermode="x unified", legend_title_text=group_mode)
+                    fig_cmp.update_xaxes(autorange="reversed")
+                    if zoom_cmp:
+                        fig_cmp.update_xaxes(range=[8, 0])
+                    fig_cmp.update_xaxes(title_text="Distance from Anchor Point (km)",
+                                         row=len(reaches), col=1)
+                    fig_cmp.update_yaxes(title_text="Interval Slope (cm/km)")
+                    st.plotly_chart(fig_cmp, width="stretch", theme=None)
+
+                    if summary:
+                        sdf = pd.DataFrame(summary)
+                        rows_out = []
+                        for lab in period_order:
+                            out = {"Period": lab}
+                            sub = sdf[sdf["Period"] == lab].set_index("River")
+                            for river in sdf["River"].unique():
+                                out[f"{river} (cm/km)"] = (round(sub.loc[river, "slope"], 1)
+                                                           if river in sub.index else np.nan)
+                                out[f"{river} n"] = (int(sub.loc[river, "n"])
+                                                     if river in sub.index else 0)
+                            if {"Kanektok", "Uyak"} <= set(sub.index):
+                                out["Advantage (cm/km)"] = round(
+                                    sub.loc["Kanektok", "slope"] - sub.loc["Uyak", "slope"], 1)
+                            rows_out.append(out)
+                        st.markdown(f"**Median slope in the {window[0]:.0f}–{window[1]:.0f} km "
+                                    f"bifurcation zone, by {group_mode.lower()}**")
+                        st.dataframe(pd.DataFrame(rows_out), width="stretch", hide_index=True)
+
+                # ---------- VIEW 3: window slope as a time series ----------
+                else:
+                    fig_ts = make_subplots(
+                        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.11,
+                        subplot_titles=(
+                            f"Slope in the {window[0]:.0f}–{window[1]:.0f} km bifurcation "
+                            "zone, per pass",
+                            "Kanektok − Uyak advantage (paired within date)"))
+                    series = {}
+                    for reach in reaches:
+                        r = pdata[reach]
+                        wsl = _fine_window_slope(r["mat"], r["grid"], window)
+                        ok = gate[reach] & np.isfinite(wsl)
+                        if not ok.any():
+                            continue
+                        s = pd.Series(wsl[ok],
+                                      index=pd.to_datetime(r["passes"])[ok]).sort_index()
+                        series[reach] = s
+                        label = reach.replace("_", " ")
+                        fig_ts.add_trace(go.Scatter(
+                            x=s.index, y=s.values, mode="markers+lines", marker=dict(size=5),
+                            line=dict(color=COLOR_MAP.get(reach, "black"), width=1),
+                            name=f"{label} ({len(s)} passes)",
+                            hovertemplate=f"<b>{label}</b><br>%{{x|%Y-%m-%d}}<br>"
+                                          "Slope: %{y:.0f} cm/km<extra></extra>"),
+                            row=1, col=1)
+
+                    # Pairing within date is what removes stage: a single overpass images
+                    # both channels at the same instant, so the difference is geometry.
+                    adv = None
+                    if "Kanektok_River" in series and "Uyak_Creek" in series:
+                        adv = (series["Kanektok_River"] - series["Uyak_Creek"]).dropna()
+                    if adv is not None and len(adv):
+                        fig_ts.add_trace(go.Scatter(
+                            x=adv.index, y=adv.values, mode="markers+lines",
+                            marker=dict(size=5), line=dict(color="darkgreen", width=1),
+                            name="Kanektok − Uyak", showlegend=False,
+                            hovertemplate="%{x|%Y-%m-%d}<br>Advantage: %{y:+.0f} cm/km"
+                                          "<extra></extra>"),
+                            row=2, col=1)
+                        fig_ts.add_hline(y=0, line_color="gray", line_width=1, row=2, col=1)
+                        fig_ts.add_hline(
+                            y=float(adv.median()), line_dash="dot", line_color="darkgreen",
+                            line_width=1.5, row=2, col=1,
+                            annotation_text=f"median {adv.median():+.0f} cm/km",
+                            annotation_position="top left", annotation_font_size=10,
+                            annotation_font_color="darkgreen")
+                    fig_ts.update_layout(height=700, template=plotly_template,
+                                         hovermode="x unified")
+                    fig_ts.update_yaxes(title_text="Interval Slope (cm/km)", row=1, col=1)
+                    fig_ts.update_yaxes(title_text="Δ Slope (cm/km)", row=2, col=1)
+                    fig_ts.update_xaxes(title_text="Pass date", row=2, col=1)
+                    st.plotly_chart(fig_ts, width="stretch", theme=None)
+
+                    if adv is not None and len(adv):
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("Median advantage", f"{adv.median():+.0f} cm/km",
+                                  help="Kanektok minus Uyak, median over paired passes.")
+                        m2.metric("Passes with Kanektok steeper",
+                                  f"{int((adv > 0).sum())} / {len(adv)}")
+                        m3.metric("Pass-to-pass spread (IQR)",
+                                  f"{adv.quantile(0.75) - adv.quantile(0.25):.0f} cm/km",
+                                  help="How much the advantage swings between passes. If this "
+                                       "dwarfs the median, the advantage is a tendency rather "
+                                       "than a persistent separation.")
+
+                    # Period summary: does the window slope move with season or year?
+                    if series:
+                        all_dates = np.concatenate([s.index.to_numpy() for s in series.values()])
+                        order = [lab for lab, _ in _fine_group_passes(all_dates, group_mode)]
+                        grp = {reach: dict(_fine_group_passes(s.index.to_numpy(), group_mode))
+                               for reach, s in series.items()}
+                        adv_grp = (dict(_fine_group_passes(adv.index.to_numpy(), group_mode))
+                                   if adv is not None and len(adv) else {})
+                        rows_out = []
+                        for lab in order:
+                            out = {"Period": lab}
+                            for reach, s in series.items():
+                                idx = grp[reach].get(lab)
+                                river = reach.split("_")[0]
+                                out[f"{river} (cm/km)"] = (round(float(np.median(s.values[idx])), 1)
+                                                           if idx is not None and len(idx) else np.nan)
+                                out[f"{river} n"] = int(len(idx)) if idx is not None else 0
+                            if lab in adv_grp:
+                                out["Advantage (cm/km)"] = round(
+                                    float(np.median(adv.values[adv_grp[lab]])), 1)
+                            rows_out.append(out)
+                        st.markdown(f"**Median bifurcation-zone slope by "
+                                    f"{group_mode.lower()}**")
+                        st.dataframe(pd.DataFrame(rows_out), width="stretch", hide_index=True)
+
+            # ---------------- shared explainer ----------------
             with st.expander("How to read this graph"):
                 st.markdown("""
                 **What this shows:** the water-surface steepness *along* the river at fine
@@ -2766,11 +3118,33 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                   re-analysis is to see the slope *right there*, which the standard Slope
                   Profile tab's 2 km smoothing (≈ 4.7 km effective resolution) blurs out.
 
+                **The three views**
+                - *Aggregate profile* — every selected pass pooled into one profile.
+                - *Compare periods* — the same profile drawn once per year / season / month,
+                  so you can see whether the fine-scale **shape** shifts over time.
+                - *Slope over time* — the **1–5 km bifurcation zone** condensed to one slope
+                  per pass and plotted against date, with the Kanektok−Uyak advantage paired
+                  within each date (one overpass images both channels at once, so pairing
+                  cancels stage).
+
+                **Why some passes are excluded.** A pass only yields a fine-scale slope where
+                it actually imaged the river. A pass that clipped the edge of the zone would
+                otherwise contribute a slope fit to a sliver of it, which reads as wild
+                scatter in the time series. So passes imaging less than **80 %** of the
+                1–5 km zone are dropped — this is the fine-scale analogue of the reference
+                gradient's span/start gate, and it excludes far more Uyak passes than
+                Kanektok ones. The counts above the chart show exactly how many survived.
+                Seasons are the flow regimes used in the repo's temporal analysis
+                (freshet = May, baseflow = Jul–Aug).
+
                 ― Technical details ―
                 WSE binned to 100 m medians per pass (≥ 30 pixels/bin); slope via a robust
-                sliding **Theil–Sen** fit at the chosen effective resolution; median + IQR
-                aggregated across passes; bins with < 3 passes hidden. The tidal mouth
-                (final ~1–2 km) is trimmed via *Max distance*.
+                sliding **Theil–Sen** fit over a **0.5 km** window — the backwater length
+                scale, and the same resolution as thesis Figure 9; median + IQR aggregated
+                across passes; bins with < 3 passes hidden. A pass's *window slope* is the
+                median of its local slopes inside the window, so the time series and the
+                profile always agree. The reach is cut at **34 km** to drop the tidal mouth,
+                which sits far downstream of the bifurcation.
                 """)
 
         render_finescale()

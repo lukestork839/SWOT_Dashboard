@@ -171,7 +171,43 @@ Revised so we **build an interactive dashboard tab first**, use it to choose the
    far above their ~195/192 reach averages — the reach-average understates the local gradient; Kanektok
    modestly steeper (1–5 km median 259 vs 228, +31 cm/km) but the profiles interweave (a tendency, not
    a persistent separation). Fig 8 caption corrected (σ=2 km → ~4.7 km FWHM; now cross-refs Fig 9).
-5. **Temporal fine-scale result.** Near-bifurcation advantage over time as a supporting figure.
+5. **Temporal fine-scale result.** ⏳ **DASHBOARD DONE 2026-08-04** — the Fine-Scale Slope tab
+   now has a **View** selector with three modes, so the slope can be interrogated *over time*
+   rather than only as one aggregate (the professor's ask on seeing the tab):
+   - *Aggregate profile* — unchanged behaviour (all selected passes pooled).
+   - *Compare periods* — one median profile per **year / season / month / individual pass**,
+     faceted by river, so you can see whether the fine-scale **shape** moves.
+   - *Slope over time* — the analysis window condensed to one slope per pass, plotted against
+     date, plus the **Kanektok−Uyak advantage paired within each date** (one overpass images
+     both channels at once, so pairing cancels stage) and a period-median summary table.
+
+   Two supporting mechanisms:
+   - **Pass-quality gate.** Per-pass coverage of the analysis window (default ≥ 80 % of
+     1–5 km); the fine-scale analogue of the reference gradient's span/start gate. It matters
+     a lot on the Uyak: 90 → **42** passes at 80 %, 60 at 50 %. Kanektok 123 → 89.
+   - **Cached per-pass matrix.** `compute_finescale_pass_matrix` now returns the full
+     (grid × pass) matrix + pass dates; `_fine_aggregate` / `_fine_window_slope` /
+     `_fine_group_passes` reduce it. One expensive Theil–Sen sweep, then every regrouping and
+     gate change is free numpy — no re-query. `compute_finescale_slope` is a thin wrapper, so
+     the aggregate view is byte-for-byte unchanged (verified: 258.8 / 227.5 cm/km at 1–5 km).
+
+   Seasons follow `temporal_analysis.py` flow regimes (freshet = May, baseflow = Jul–Aug,
+   shoulder = Apr/Jun/Sep–Nov) so the fine-scale contrast is comparable to Q1/Q2.
+
+   **⚠️ Result that may change the thesis framing.** With per-date pairing and the coverage
+   gate, the near-bifurcation advantage is **+25 cm/km median, positive in 41 of 42 paired
+   passes**, and steady per year (2024 +23, 2025 +26, 2026 +25; 2023 n=2, ignore). Fig 9's
+   caption currently calls the advantage "a tendency rather than a persistent separation" —
+   that reading came from *unpaired* profiles whose bands overlap. Pairing within date removes
+   the stage/coverage variance that made the bands overlap, and what is left is near-monotonic.
+   Seasonally the advantage is largest at freshet (+33) and baseflow (+30), smallest in the
+   shoulder months (+23); Uyak's own window slope drops ~9 cm/km from freshet (228) to baseflow
+   (219), consistent with (and larger than) the +2.3 cm/km reach-scale seasonal signal in §3.5.
+   **Decide with the advisor whether Fig 9's "tendency" wording should be revised** before the
+   supporting figure is drawn.
+
+   **Still to do:** pick the window/grouping from the tab, then add the static thesis figure
+   (Fig 10) for the near-bifurcation advantage over time.
 6. **Legacy cleanup.** Retire/relabel `slope_calc` (still shown as a biased number on the dashboard
    summary table; not used in any thesis figure).
 
@@ -196,3 +232,6 @@ Revised so we **build an interactive dashboard tab first**, use it to choose the
 - `slope_finescale_prototype/method_comparison_0p5km.png` — three estimators agree at 0.5 km.
 - `slope_finescale_prototype/profile_and_zoom.png` — 0.5 km vs old 4.7 km; bifurcation zoom.
 - `slope_finescale_prototype/temporal_near_bifurcation.png` — advantage persistent 2023–2026.
+- `dashboard_swot.py` — fine-scale computation (`compute_finescale_pass_matrix` + `_fine_*`
+  helpers) and the Fine-Scale Slope tab's three views (aggregate / compare periods / over time).
+- `thesis_figures/core.py::finescale_slope_profile` — the Fig 9 port of the aggregate path.
