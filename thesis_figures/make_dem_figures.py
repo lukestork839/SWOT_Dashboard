@@ -33,7 +33,8 @@ from matplotlib.lines import Line2D
 import numpy as np
 
 from . import config
-from .make_figures import _locator_inset, _mercator_scalebar, _north_arrow
+from .make_figures import (_locator_inset, _mercator_scalebar, _north_arrow,
+                           add_bifurcation_line, style_distance_axis)
 
 SERIES = "DEM_Figures"
 
@@ -44,6 +45,14 @@ R_EARTH_KM = 6371.0088
 BEAR_MIN, BEAR_MAX = 248.0, 294.0     # bearing sector covering both rivers + margin
 ARC_R_MIN, ARC_R_MAX, ARC_R_STEP = 3.0, 34.5, 0.5
 GEOID_M = 13.46                       # EGM2008 at the anchor; ellipsoidal -> orthometric
+
+# --- Radial window shared by every DEM profile figure.
+# The lower bound is set by the arc frame (an iso-distance arc needs a radius large
+# enough to cross both channels cleanly) and by the fact that the two corridors are
+# not separable upstream of the bifurcation at 2.493 km. The upper bound trims the
+# tidal flats at the mouth, where "elevation" stops meaning valley floor.
+DEM_XMIN_KM, DEM_XMAX_KM = 3.0, 34.0
+CORRIDOR_BIN_KM = 0.5                 # matches the dashboard's DEM binned-median profile
 
 DEM_10M = os.path.join(config.REPO_ROOT, "batch_outputs", "arcticdem_rivers.tif")
 ARC_CHANNELS = os.path.join(config.REPO_ROOT, "DEM_Transects", "data", "arcB_channels.parquet")
@@ -494,9 +503,219 @@ def build_dem_fig1(variant: str = "D", zoom: int = 12):
 
 
 # ---------------------------------------------------------------------------
+# D2 -- valley long profile, corridor difference, channel difference
+# ---------------------------------------------------------------------------
+def _corridor_profile(bin_km: float = CORRIDOR_BIN_KM,
+                      xmin: float = DEM_XMIN_KM, xmax: float = DEM_XMAX_KM):
+    """Binned-median elevation profiles from Stream A (the 10 m polygon sample).
+
+    Returns `(per_reach, pooled)`. `per_reach` maps reach name -> DataFrame indexed
+    by bin start with median/p25/p75/n; `pooled` is the same statistics computed over
+    the two polygons' pixels *together*, which is the valley surface: the polygons
+    delineate one floodplain and overlap by 2.3 km2 in its centre, so pooling is the
+    honest estimate of the shared valley floor rather than an average of two averages.
+    """
+    import pandas as pd
+
+    d = pd.read_parquet(config.DEM_PATH, columns=["Reach_Name", "dist_km", "wse"])
+    d = d[(d.dist_km >= xmin) & (d.dist_km <= xmax)]
+    # Bins are labelled by their CENTRE, not their left edge. A bin spanning
+    # [3.0, 3.5) km summarises ground whose mean radius is 3.25 km, and labelling it
+    # 3.0 would plot it a quarter-kilometre too far upstream -- which on a valley
+    # falling at 284 cm/km is a 0.71 m vertical error, comparable to the whole signal
+    # this figure is about. It cancels in the panel (b) difference (both reaches share
+    # the bins) but not in panel (a), where the corridor is read against the arcs.
+    edges = np.arange(xmin, xmax + bin_km / 2, bin_km)
+    centres = edges[:-1] + bin_km / 2
+    d["bin"] = pd.cut(d.dist_km, edges, right=False, labels=centres)
+
+    def stats(frame):
+        g = frame.groupby("bin", observed=True).wse.agg(
+            med="median", n="size",
+            p25=lambda s: s.quantile(0.25), p75=lambda s: s.quantile(0.75))
+        g.index = g.index.astype(float)
+        return g.sort_index()
+
+    per_reach = {r: stats(g) for r, g in d.groupby("Reach_Name")}
+    return per_reach, stats(d)
+
+
+def _channel_profile(xmin: float = DEM_XMIN_KM, xmax: float = DEM_XMAX_KM):
+    """Per-arc DEM water-surface elevation for each channel (Stream B, 2 m arcs).
+
+    These are the elevations the arc method locates inside each channel, so unlike the
+    corridor medians they refer to the channels themselves. Both come from the same
+    arc and therefore the same geoid separation, so their difference is datum-free.
+    """
+    import pandas as pd
+
+    ch = pd.read_parquet(ARC_CHANNELS,
+                         columns=["R_km", "kan_wse_m", "uyak_wse_m"])
+    ch = ch[(ch.R_km >= xmin) & (ch.R_km <= xmax)]
+    return ch.sort_values(by="R_km").reset_index(drop=True)
+
+
+def _signed(v: float) -> str:
+    """Signed value with a typographic minus (U+2212), matching the axis labels."""
+    return f"{v:+.2f}".replace("-", "−")
+
+
+def _sign_shade(ax, x, y, k_color, u_color, alpha=0.32):
+    """Fill between a Kanektok-minus-Uyak series and zero, coloured by sign.
+
+    Same convention as SWOT Figure 6: red where the Kanektok sits higher, blue where
+    the Uyak sits higher (the sub-elevation of the Kanektok).
+    """
+    ax.fill_between(x, y, 0, where=(y >= 0), interpolate=True,
+                    color=k_color, alpha=alpha, linewidth=0, zorder=2)
+    ax.fill_between(x, y, 0, where=(y <= 0), interpolate=True,
+                    color=u_color, alpha=alpha, linewidth=0, zorder=2)
+
+
+def _diff_panel(ax, x, y, k_color, u_color, ylabel, ylim=(-3.0, 3.0), ref=1.0):
+    """Shared furniture for the two difference panels, drawn on one common y-scale.
+
+    Both panels use the identical +/-3 m range on purpose: the whole point of the
+    figure is that the corridor difference and the channel difference are an order of
+    magnitude apart, and that is only legible if they are not each auto-scaled.
+    """
+    ax.axhspan(-ref, ref, color="0.85", alpha=0.55, linewidth=0, zorder=0)
+    _sign_shade(ax, x, y, k_color, u_color)
+    ax.plot(x, y, color="black", lw=1.6, zorder=5)
+    ax.axhline(0, color="black", ls="--", lw=1.2, zorder=4)
+    ax.set_ylabel(ylabel)
+    ax.set_ylim(*ylim)
+
+
+def build_dem_fig2(bin_km: float = CORRIDOR_BIN_KM):
+    """D2 -- Valley long profile, corridor difference and channel difference.
+
+    Three stacked panels on one reversed distance axis, 3-34 km from the anchor.
+    (a) the pooled corridor profile as the valley surface, with the two channels the
+    arc method locates inside it; (b) the Kanektok-minus-Uyak difference of the two
+    *corridor* medians; (c) the same difference for the two *channels*, on the same
+    +/-3 m scale. The pairing is the argument: at floodplain scale the two corridors
+    are one surface, and the metre-scale separation only appears once the measurement
+    is made in the channels.
+    """
+    per_reach, pooled = _corridor_profile(bin_km=bin_km)
+    ch = _channel_profile()
+    k_color = config.river_color("Kanektok_River")
+    u_color = config.river_color("Uyak_Creek")
+
+    fig, (ax_a, ax_b, ax_c) = plt.subplots(
+        3, 1, figsize=(config.FIG_WIDTH_FULL, 8.0), sharex=True,
+        gridspec_kw=dict(height_ratios=[1.45, 1.0, 1.0], hspace=0.12))
+
+    # --- (a) absolute elevation -------------------------------------------------
+    xv, yv = pooled.index.to_numpy(), pooled["med"].to_numpy()
+    ax_a.fill_between(xv, pooled["p25"], pooled["p75"], color="0.55", alpha=0.35,
+                      linewidth=0, zorder=1,
+                      label="Valley corridor, 25–75th percentile")
+    ax_a.plot(xv, yv, color="0.25", lw=1.8, zorder=3, label="Valley corridor median")
+
+    # A single quadratic, not a set of competing trend lines. Its residual is the
+    # concavity statement: it lies on top of the median everywhere, so the valley is
+    # smooth at the scale of the metre-level signal the later panels are about.
+    coef = np.polyfit(xv, yv, 2)
+    fit = np.polyval(coef, xv)
+    resid = yv - fit
+    r2 = 1.0 - resid.var() / yv.var()
+    rmse = float(np.sqrt((resid ** 2).mean()))
+    slope_up = -(2 * coef[0] * DEM_XMIN_KM + coef[1]) * 100.0   # cm/km at the upstream end
+    # Evaluated at the stated window edges, not at the last bin's left edge, so the
+    # quoted gradients and the quoted 3-34 km range refer to the same two points.
+    slope_dn = -(2 * coef[0] * DEM_XMAX_KM + coef[1]) * 100.0   # cm/km at the coast
+    ax_a.plot(xv, fit, color="black", ls=":", lw=1.2, zorder=4,
+              label=f"Quadratic fit (R² = {r2:.4f})")
+
+    ax_a.plot(ch.R_km, ch.kan_wse_m, color=k_color, lw=1.5, zorder=5,
+              label="Kanektok River channel")
+    ax_a.plot(ch.R_km, ch.uyak_wse_m, color=u_color, lw=1.5, zorder=5,
+              label="Uyak Creek channel")
+
+    ax_a.set_ylabel("Orthometric Elevation (m)")
+    iqr = float((pooled["p75"] - pooled["p25"]).median())
+    ax_a.annotate(
+        f"Valley falls {yv[0]:.1f} → {yv[-1]:.1f} m between {xv[0]:.0f} and "
+        f"{DEM_XMAX_KM:.0f} km\n"
+        f"Quadratic residual RMSE {rmse:.2f} m\n"
+        f"Local gradient {slope_up:.0f} → {slope_dn:.0f} cm/km (concave-up)\n"
+        f"Corridor 25–75th spread {iqr:.2f} m — a line width at this scale",
+        xy=(0.895, 0.05), xycoords="axes fraction", fontsize=8.5, color="#333333",
+        ha="right", va="bottom")
+    ax_a.legend(loc="upper left", bbox_to_anchor=(0.05, 1.0), frameon=False,
+                fontsize=8.5, labelspacing=0.35)
+
+    # --- (b) corridor difference ------------------------------------------------
+    K = per_reach["Kanektok_River"]["med"]
+    U = per_reach["Uyak_Creek"]["med"]
+    cd = (K - U).dropna()
+    xb, yb = cd.index.to_numpy(), cd.to_numpy()
+    _diff_panel(ax_b, xb, yb, k_color, u_color,
+                "Corridor Difference (m)\n[Kanektok − Uyak]")
+    inside = float((np.abs(yb) < 1.0).mean()) * 100.0
+    ax_b.annotate(
+        f"Median {_signed(np.median(yb))} m · {inside:.0f}% of bins within ±1 m\n"
+        "floodplain-wide medians, not the channels",
+        xy=(0.895, 0.05), xycoords="axes fraction", fontsize=8.5, color="#333333",
+        ha="right", va="bottom")
+
+    # --- (c) channel difference -------------------------------------------------
+    ok = ch.kan_wse_m.notna() & ch.uyak_wse_m.notna()
+    xc = ch.R_km[ok].to_numpy()
+    yc = (ch.kan_wse_m - ch.uyak_wse_m)[ok].to_numpy()
+    _diff_panel(ax_c, xc, yc, k_color, u_color,
+                "Channel Difference (m)\n[Kanektok − Uyak]")
+    below = int((yc < 0).sum())
+    # Top of the panel, not the bottom: the trace spends most of the reach in the
+    # lower half, so bottom-anchored text lands on top of the data.
+    ax_c.annotate(
+        f"Median {_signed(np.median(yc))} m · Kanektok lower on {below} of "
+        f"{len(yc)} arcs",
+        xy=(0.895, 0.95), xycoords="axes fraction", fontsize=8.5, color="#333333",
+        ha="right", va="top")
+    imin = int(np.argmin(yc))
+    ax_c.plot([xc[imin]], [yc[imin]], marker="o", ms=3.5, color=u_color, zorder=6)
+    # Labelled by position rather than with a leader line: the trough sits in the
+    # busiest part of the trace, and a 20 km arrow across the panel reads worse than
+    # naming the radius and letting the marker be found.
+    ax_c.annotate(f"Max sub-elevation {_signed(yc[imin])} m at {xc[imin]:.1f} km",
+                  xy=(0.02, 0.04), xycoords="axes fraction", fontsize=8.5,
+                  color=u_color, fontweight="bold", ha="left", va="bottom")
+
+    # --- shared furniture -------------------------------------------------------
+    handles = [Patch(facecolor=k_color, alpha=0.32, linewidth=0),
+               Patch(facecolor=u_color, alpha=0.32, linewidth=0),
+               Patch(facecolor="0.85", alpha=0.55, linewidth=0)]
+    ax_b.legend(handles, ["Kanektok higher", "Uyak higher (sub-elevation)", "±1 m"],
+                loc="upper left", bbox_to_anchor=(0.05, 1.0), frameon=False,
+                fontsize=8.5, ncol=3, columnspacing=1.4, handlelength=1.3)
+
+    for ax, tag in zip((ax_a, ax_b, ax_c), ("(a)", "(b)", "(c)")):
+        add_bifurcation_line(ax)
+        ax.annotate(tag, xy=(0.006, 0.965), xycoords="axes fraction",
+                    fontsize=11, fontweight="bold", ha="left", va="top")
+    # Only the bifurcation line on (a) carries its label; repeating it three times
+    # is noise, and (b)/(c) inherit the reader's eye from directly above.
+    for ax in (ax_b, ax_c):
+        for txt in list(ax.texts):
+            if txt.get_text() == "Bifurcation":
+                txt.remove()
+
+    style_distance_axis(ax_c, DEM_XMAX_KM)
+    for ax in (ax_a, ax_b):
+        ax.tick_params(labelbottom=False)
+    # Explicit margins rather than tight_layout: the shared x-axis carries the
+    # below-axis orientation labels, which tight_layout does not account for.
+    fig.subplots_adjust(left=0.125, right=0.985, top=0.985, bottom=0.075, hspace=0.12)
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-BUILDERS = {1: build_dem_fig1}
+BUILDERS = {1: build_dem_fig1, 2: build_dem_fig2}
 VARIANTS = {1: ("A", "B", "C", "D")}
 
 
