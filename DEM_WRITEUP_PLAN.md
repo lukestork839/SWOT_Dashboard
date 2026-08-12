@@ -391,7 +391,7 @@ script or PNG, so this is a presentation job, not new analysis.
 | # | Figure | Panels | Data | Prereq | Status |
 |---|---|---|---|---|---|
 | **D1** | Study area, centerlines & arc geometry | 2 | 10 m DEM + basemap + `arcB_channels` | — | ✅ **DONE 2026-08-11** |
-| **D2** | Valley long profile & concavity (corridor) | 2–3 | Stream A | — | next |
+| **D2** | Valley long profile & concavity (corridor) | 3 | Stream A + `arcB_channels` | — | ✅ **DONE 2026-08-12** |
 | **D3** | **Arc cross-sections with β anatomy** ← flagship | 4 | `arcB_profiles.parquet` | — | |
 | **D4** | Superelevation, β and H_AR/H_M vs radius | 3 | `arcB_channels.parquet` | — | |
 | **D5** | Valley terrain slope | 1–2 | Stream A | — | |
@@ -455,6 +455,49 @@ the 17 %/0 % coverage caveat visual); Quinhagak labelled. North icon + scalebar 
 **Takeaway:** the valley is smooth and concave and the two corridors are the same surface to ~±1 m;
 the *channels* separate by ~1 m with the Uyak consistently higher. Panels (b) and (c) side by side
 make the Stream A / Stream B distinction self-evident to a reader.
+
+### D2 as built — locked 2026-08-12
+
+Built as three stacked panels on one shared reversed axis, 3–34 km. The plan's original
+"channel bed profiles from Phase 2" was dropped: the along-channel machinery was cut with the
+scope narrowing, and `arcB_channels` already carries per-channel water-surface elevation **in the
+radial frame**, which needs none of it.
+
+- `(a)` pooled corridor median + p25–p75 (Stream A, 0.5 km bins) as the valley surface, one
+  quadratic fit, and the two per-arc channel profiles (Stream B) overlain.
+- `(b)` Kanektok − Uyak **corridor** difference; `(c)` the same for the **channels**, both on an
+  identical ±3 m scale with a ±1 m reference band. Forcing one scale is the point of the figure —
+  auto-scaling each panel would destroy the comparison it exists to make.
+- Sign convention and red/blue sign shading are inherited from SWOT Fig 6 (`Kanektok − Uyak`,
+  red = Kanektok higher, blue = Uyak higher / sub-elevation), so D2 reads as its DEM counterpart.
+- **Bug found and fixed 2026-08-12 (bin registration).** Stream A bins were labelled by their left
+  edge, so each corridor median was plotted 250 m too far upstream — 0.71 m of vertical error at
+  the 284 cm/km upstream gradient, comparable to the whole signal. It cancels in the panel (b)
+  difference (both reaches share the bins) but **not** in panel (a), where the corridor is read
+  against the arcs: the corridor−Kanektok gap was understated at +1.31 m, correctly +1.76 m.
+  Bins are now labelled by centre. Worth re-checking wherever else the dashboard bins radially.
+
+Verified numbers now in the caption (all recomputed from tracked artifacts):
+
+| Quantity | Value |
+|---|---|
+| Valley fall, 3 → 34 km | 59.9 → 3.3 m |
+| Quadratic fit | R² = 0.9996, residual RMSE **0.32 m** (linear: 2.2 m) |
+| Local gradient | **284 → 94 cm/km**, concave-up |
+| Corridor p25–p75 spread (pooled) | median **0.78 m** (per-reach: Kan 1.07, Uyak 0.59) |
+| Corridor difference | median **−0.20 m**, **95 %** of 62 bins within ±1 m |
+| Channel difference | median **−1.43 m**, Kanektok lower on **58 of 63** arcs, max −2.51 m at 10.0 km |
+| Sign reversal | 17.0–18.5 km only, Kanektok up to **+1.35 m** — left visible, not smoothed |
+| SWOT equivalent on the same arcs | **−0.95 m** median |
+
+**The 1.43 vs 0.95 gap is stated in the caption, not reconciled away.** The mosaic blends 2010–2021
+acquisitions, so the two channels need not be at the same stage; ~0.5 m of the DEM value is most
+plausibly differential stage, and the DEM number is presented as an upper bound. Agreed with the
+user 2026-08-12: the two analyses are separate instruments and need not agree exactly — that
+disagreement is a result, not an error to hide.
+
+New module constants `DEM_XMIN_KM = 3.0` / `DEM_XMAX_KM = 34.0` / `CORRIDOR_BIN_KM = 0.5` land
+here, which satisfies **P4** for the figure series (the dashboard side of P4 is still open).
 
 ### D3 — Arc cross-sections with the β anatomy  ← flagship
 2×2 panels at four radii spanning the reach: one just below the bifurcation (~4 km), two mid-reach
