@@ -37,6 +37,11 @@ import pandas as pd
 
 from . import config, core
 
+#: Output sub-folder for this series. The SWOT thesis and the DEM writeup are
+#: separate documents with independent numbering, so their renders are kept apart
+#: (see make_dem_figures.SERIES).
+SERIES = "SWOT_Figures"
+
 
 # ---------------------------------------------------------------------------
 # SHARED PLOT HELPERS (thesis conventions used across figures)
@@ -89,7 +94,8 @@ def _stub(n: int, title: str, source: str) -> None:
 # ---------------------------------------------------------------------------
 # FIGURE BUILDERS  (implemented one at a time as specs are finalised)
 # ---------------------------------------------------------------------------
-def _mercator_scalebar(ax, km, center_lat, loc=(0.38, 0.06), color="white"):
+def _mercator_scalebar(ax, km, center_lat, loc=(0.38, 0.06), color="white",
+                       stroke="black"):
     """Draw a ground-accurate scale bar on a Web-Mercator (EPSG:3857) axis.
 
     Web Mercator distances are inflated by 1/cos(lat), so a bar representing
@@ -97,6 +103,10 @@ def _mercator_scalebar(ax, km, center_lat, loc=(0.38, 0.06), color="white"):
     single filled bar (white fill + thin black edge, so it reads on dark imagery and
     has no disconnected end ticks) with a light-stroked, normal-weight label centred
     above it. `loc` is the bar's lower-left corner in axes fraction.
+
+    `stroke` is the label's outline colour and must contrast with `color`; on a pale
+    basemap (e.g. hypsometric topography) pass color="black", stroke="white", or the
+    label is drawn black-on-black and disappears into a blob.
     """
     import matplotlib.patheffects as pe
     from matplotlib.patches import Rectangle
@@ -110,11 +120,11 @@ def _mercator_scalebar(ax, km, center_lat, loc=(0.38, 0.06), color="white"):
                            linewidth=1.0, zorder=9))
     ax.text(bx + L / 2, by + h * 1.5, f"{km:g} km", ha="center", va="bottom",
             fontsize=8, color=color, fontweight="normal",
-            path_effects=[pe.withStroke(linewidth=1.8, foreground="black")], zorder=9)
+            path_effects=[pe.withStroke(linewidth=1.8, foreground=stroke)], zorder=9)
 
 
 def _north_arrow(ax, loc=(0.055, 0.80), color="white", icon_path=None, zoom=0.13,
-                 target_px=150):
+                 target_px=150, stroke="black"):
     """North arrow (Web Mercator is north-up, so no rotation needed).
 
     Uses the Nalaquq village map icon (`icon_path`; the graphic already carries the
@@ -138,14 +148,45 @@ def _north_arrow(ax, loc=(0.055, 0.80), color="white", icon_path=None, zoom=0.13
                             box_alignment=(0.5, 0.0), zorder=9)
         ax.add_artist(ab)
         return
-    stroke = [pe.withStroke(linewidth=3, foreground="black")]
+    fx = [pe.withStroke(linewidth=3, foreground=stroke)]
     ax.annotate("", xy=(loc[0], loc[1] + 0.10), xytext=(loc[0], loc[1]),
                 xycoords="axes fraction",
                 arrowprops=dict(arrowstyle="-|>", color=color, lw=2.2,
-                                path_effects=stroke))
+                                path_effects=fx))
     ax.annotate("N", xy=(loc[0], loc[1] + 0.115), xycoords="axes fraction",
                 ha="center", va="bottom", fontsize=10, fontweight="bold",
-                color=color, path_effects=stroke)
+                color=color, path_effects=fx)
+
+
+def _locator_inset(ax, tf, lon, lat, loc="lower right", width="26%", height="36%",
+                   webm=3857, view=((-172, 51), (-129, 71))):
+    """Alaska locator inset marking the study area as a POINT, not an extent box.
+
+    A locator box is conventionally read as "the exact area of the main map", so it
+    has to be drawn at true scale or not at all. Here it cannot be: the main map covers
+    37 x 13 km, which at Alaska scale is roughly one percent of the view width -- a
+    speck. An earlier version enforced a minimum on-screen box size so it stayed
+    visible, which drew a 132 x 168 km rectangle: 13x too tall and 46x too large by
+    area, misrepresenting the study footprint as most of the lower Kuskokwim delta.
+
+    A point marker makes no false claim about extent, so that is what is drawn: a dark
+    dot with a white ring, sized for legibility rather than for scale. `lon`/`lat` are
+    the study-area centre; `view` is the (SW, NE) lon/lat corner pair of the inset.
+    """
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+    import contextily as cx
+    axins = inset_axes(ax, width=width, height=height, loc=loc, borderpad=0.5)
+    (x0, y0), (x1, y1) = [tf.transform(lo, la) for lo, la in view]
+    axins.set_xlim(x0, x1); axins.set_ylim(y0, y1)
+    cx.add_basemap(axins, crs=webm, source=cx.providers.Esri.NatGeoWorldMap,
+                   zoom=4, attribution=False, zorder=0)
+    mx, my = tf.transform(lon, lat)
+    axins.scatter([mx], [my], marker="o", s=30, color="black", edgecolor="white",
+                  linewidths=1.2, zorder=5)
+    axins.set_xticks([]); axins.set_yticks([])
+    for s in axins.spines.values():
+        s.set(visible=True, edgecolor="0.3", linewidth=0.8)
+    return axins
 
 
 def build_fig1(zoom: int = 12, n_points: int = 90000, pad_frac: float = 0.06):
@@ -265,26 +306,11 @@ def build_fig1(zoom: int = 12, n_points: int = 90000, pad_frac: float = 0.06):
     # --- Alaska locator inset (lower right, over open tundra) -----------------------
     # NOTE: placed lower-right, NOT upper-right -- the reach's eastern end (anchor +
     # bifurcation) sits top-right, and an inset there would hide the key channel split.
-    axins = inset_axes(ax, width="26%", height="36%", loc="lower right", borderpad=0.5)
-    ak = [(-172, 51), (-129, 71)]   # (lon,lat) SW / NE corners of the Alaska view
-    (ax0, ay0), (ax1, ay1) = [tf.transform(lo, la) for lo, la in ak]
-    axins.set_xlim(ax0, ax1); axins.set_ylim(ay0, ay1)
-    cx.add_basemap(axins, crs=WEBM, source=cx.providers.Esri.NatGeoWorldMap,
-                   zoom=4, attribution=False, zorder=0)
-    # Red box marking the map's extent within Alaska. The true study footprint is a
-    # speck at state scale, so enforce a minimum on-screen size (centred on the study
-    # centroid) so the locator box stays visible; it represents "the area shown here".
-    from matplotlib.patches import Rectangle as _Rect
-    bx0, bx1 = xlim; by0, by1 = ylim
-    cxc, cyc = (bx0 + bx1) / 2, (by0 + by1) / 2
-    min_w = 0.055 * (ax1 - ax0); min_h = 0.07 * (ay1 - ay0)
-    bw = max(bx1 - bx0, min_w); bh = max(by1 - by0, min_h)
-    axins.add_patch(_Rect((cxc - bw / 2, cyc - bh / 2), bw, bh,
-                          facecolor=(1, 1, 1, 0.55), edgecolor="white",
-                          linewidth=1.2, zorder=5))
-    axins.set_xticks([]); axins.set_yticks([])
-    for s in axins.spines.values():
-        s.set(visible=True, edgecolor="0.3", linewidth=0.8)
+    # The study area is marked with a point, not an extent box; see _locator_inset().
+    # Point = centre of the analysis extent, not the anchor: the anchor sits at the
+    # reach's eastern end, ~18 km off centre.
+    w, s, e, n = polys.to_crs(4326).total_bounds
+    _locator_inset(ax, tf, (w + e) / 2, (s + n) / 2)
 
     return fig
 
@@ -1030,7 +1056,7 @@ def main(argv=None):
         builder, title = FIGURES[n]
         try:
             fig = builder()
-            paths = config.savefig(fig, f"figure_{n:02d}")
+            paths = config.savefig(fig, f"figure_{n:02d}", subdir=SERIES)
             plt.close(fig)
             built.append(n)
             print(f"Figure {n} ({title}) -> {', '.join(paths)}")

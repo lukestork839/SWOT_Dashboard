@@ -173,15 +173,21 @@ def apply_style() -> None:
     })
 
 
-def savefig(fig, name: str, formats=FORMATS):
+def savefig(fig, name: str, formats=FORMATS, subdir: str | None = None):
     """Save `fig` to OUTPUT_DIR as `name` in each requested format.
 
-    Returns the list of written paths. Creates OUTPUT_DIR if needed.
+    `subdir` selects a series folder under OUTPUT_DIR. The SWOT and DEM writeups are
+    separate documents with independent figure numbering, so their renders are kept
+    apart ("SWOT_Figures" / "DEM_Figures") to stop a Figure 1 in one series from
+    overwriting the Figure 1 in the other.
+
+    Returns the list of written paths. Creates the target directory if needed.
     """
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    out = OUTPUT_DIR if subdir is None else os.path.join(OUTPUT_DIR, subdir)
+    os.makedirs(out, exist_ok=True)
     paths = []
     for fmt in formats:
-        path = os.path.join(OUTPUT_DIR, f"{name}.{fmt}")
+        path = os.path.join(out, f"{name}.{fmt}")
         fig.savefig(path, format=fmt)
         paths.append(path)
     return paths
