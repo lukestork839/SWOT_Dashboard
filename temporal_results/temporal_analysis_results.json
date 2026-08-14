@@ -6,14 +6,12 @@
     "max_start_km": 3.0,
     "ref_dist_km": 15.0,
     "open_water_months": [
-      4,
       5,
       6,
       7,
       8,
       9,
-      10,
-      11
+      10
     ],
     "high_flow_months": [
       5
@@ -24,100 +22,110 @@
     ],
     "typhoon_date": "2025-10-12",
     "slope_estimator": "Theil-Sen on 1km node medians (abs cm/km)",
-    "level_metric": "WSE at 15 km from Theil-Sen fit (m)"
+    "level_metric": "WSE at 15 km from Theil-Sen fit (m)",
+    "multiple_comparison": "Holm step-down over all 16 Mann-Whitney tests (one family across Q1/Q2/Q3); significance = adjusted p < 0.05; adjusted values exported as p_wse_holm / p_slope_holm",
+    "q3_verdict": "bootstrap 95% CI (n=10000, seed=42) on |storm dWSE| - |baseline dWSE|; verdict exceeds/within only if the CI excludes 0, else indistinguishable"
   },
   "record": {
-    "n_passes_fit": 276,
-    "n_full_coverage_open_water": 155,
+    "n_passes_fit": 190,
+    "n_full_coverage_open_water": 188,
     "date_min": "2023-07-31",
-    "date_max": "2026-07-01"
+    "date_max": "2026-08-10"
   },
   "Q1_seasonal": [
     {
       "question": "Q1_slope_pooled",
       "reach": "Kanektok_River",
-      "n_high": 11,
-      "n_low": 19,
-      "slope_high": 195.565,
-      "slope_low": 195.231,
-      "dslope_cm_km": 0.33,
-      "p_slope": 0.3017
+      "n_high": 16,
+      "n_low": 32,
+      "slope_high": 195.396,
+      "slope_low": 195.285,
+      "dslope_cm_km": 0.11,
+      "p_slope": 0.3414,
+      "p_slope_holm": 1.0
     },
     {
       "question": "Q1_wse_seasonal",
       "reach": "Kanektok_River",
       "year": 2024,
-      "n_high": 3,
-      "n_low": 8,
-      "wse_high": 30.175,
-      "wse_low": 30.41,
-      "dwse_m": -0.235,
-      "p_wse": 0.3758
+      "n_high": 5,
+      "n_low": 11,
+      "wse_high": 30.216,
+      "wse_low": 30.421,
+      "dwse_m": -0.205,
+      "p_wse": 0.3773,
+      "p_wse_holm": 1.0
     },
     {
       "question": "Q1_wse_seasonal",
       "reach": "Kanektok_River",
       "year": 2025,
-      "n_high": 4,
-      "n_low": 8,
-      "wse_high": 30.422,
-      "wse_low": 30.191,
-      "dwse_m": 0.231,
-      "p_wse": 0.1091
+      "n_high": 5,
+      "n_low": 11,
+      "wse_high": 30.374,
+      "wse_low": 30.194,
+      "dwse_m": 0.179,
+      "p_wse": 0.0517,
+      "p_wse_holm": 0.6204
     },
     {
       "question": "Q1_wse_seasonal",
       "reach": "Kanektok_River",
       "year": 2026,
-      "n_high": 4,
-      "n_low": 1,
-      "wse_high": 30.285,
-      "wse_low": 30.264,
-      "dwse_m": 0.02,
-      "p_wse": null
+      "n_high": 6,
+      "n_low": 7,
+      "wse_high": 30.224,
+      "wse_low": 30.287,
+      "dwse_m": -0.063,
+      "p_wse": 0.6282,
+      "p_wse_holm": 1.0
     },
     {
       "question": "Q1_slope_pooled",
       "reach": "Uyak_Creek",
-      "n_high": 10,
-      "n_low": 15,
-      "slope_high": 193.536,
-      "slope_low": 191.198,
-      "dslope_cm_km": 2.34,
-      "p_slope": 0.0327
+      "n_high": 16,
+      "n_low": 33,
+      "slope_high": 193.405,
+      "slope_low": 192.031,
+      "dslope_cm_km": 1.37,
+      "p_slope": 0.1501,
+      "p_slope_holm": 1.0
     },
     {
       "question": "Q1_wse_seasonal",
       "reach": "Uyak_Creek",
       "year": 2024,
-      "n_high": 3,
-      "n_low": 5,
-      "wse_high": 29.9,
-      "wse_low": 30.213,
-      "dwse_m": -0.314,
-      "p_wse": 0.0714
+      "n_high": 5,
+      "n_low": 11,
+      "wse_high": 29.899,
+      "wse_low": 30.337,
+      "dwse_m": -0.438,
+      "p_wse": 0.0032,
+      "p_wse_holm": 0.0416
     },
     {
       "question": "Q1_wse_seasonal",
       "reach": "Uyak_Creek",
       "year": 2025,
-      "n_high": 4,
-      "n_low": 6,
-      "wse_high": 30.275,
-      "wse_low": 29.83,
-      "dwse_m": 0.445,
-      "p_wse": 0.1143
+      "n_high": 5,
+      "n_low": 11,
+      "wse_high": 30.243,
+      "wse_low": 29.981,
+      "dwse_m": 0.262,
+      "p_wse": 0.0897,
+      "p_wse_holm": 0.897
     },
     {
       "question": "Q1_wse_seasonal",
       "reach": "Uyak_Creek",
       "year": 2026,
-      "n_high": 3,
-      "n_low": 1,
-      "wse_high": 30.099,
-      "wse_low": 30.003,
-      "dwse_m": 0.095,
-      "p_wse": null
+      "n_high": 6,
+      "n_low": 7,
+      "wse_high": 30.076,
+      "wse_low": 30.343,
+      "dwse_m": -0.267,
+      "p_wse": 0.0734,
+      "p_wse_holm": 0.8074
     }
   ],
   "Q2_interannual": [
@@ -126,36 +134,40 @@
       "reach": "Kanektok_River",
       "slope_basis": "full_open_water_year",
       "wse_basis": "Jul-Aug low flow",
-      "n_slope_2024": 31,
-      "n_slope_2025": 31,
-      "n_wse_2024": 8,
-      "n_wse_2025": 8,
-      "slope_2024": 195.005,
-      "slope_2025": 195.767,
-      "wse_2024": 30.41,
-      "wse_2025": 30.191,
-      "dwse_m": -0.22,
-      "dslope_cm_km": 0.76,
-      "p_wse": 0.0019,
-      "p_slope": 0.0
+      "n_slope_2024": 32,
+      "n_slope_2025": 32,
+      "n_wse_2024": 11,
+      "n_wse_2025": 11,
+      "slope_2024": 195.0,
+      "slope_2025": 195.513,
+      "wse_2024": 30.421,
+      "wse_2025": 30.194,
+      "dwse_m": -0.226,
+      "dslope_cm_km": 0.51,
+      "p_wse": 0.0004,
+      "p_slope": 0.0,
+      "p_wse_holm": 0.006,
+      "p_slope_holm": 0.0
     },
     {
       "question": "Q2_interannual",
       "reach": "Uyak_Creek",
       "slope_basis": "full_open_water_year",
       "wse_basis": "Jul-Aug low flow",
-      "n_slope_2024": 23,
-      "n_slope_2025": 24,
-      "n_wse_2024": 5,
-      "n_wse_2025": 6,
-      "slope_2024": 191.92,
-      "slope_2025": 190.905,
-      "wse_2024": 30.213,
-      "wse_2025": 29.83,
-      "dwse_m": -0.383,
-      "dslope_cm_km": -1.01,
-      "p_wse": 0.1255,
-      "p_slope": 0.3224
+      "n_slope_2024": 32,
+      "n_slope_2025": 32,
+      "n_wse_2024": 11,
+      "n_wse_2025": 11,
+      "slope_2024": 192.366,
+      "slope_2025": 192.425,
+      "wse_2024": 30.337,
+      "wse_2025": 29.981,
+      "dwse_m": -0.356,
+      "dslope_cm_km": 0.06,
+      "p_wse": 0.0025,
+      "p_slope": 0.9091,
+      "p_wse_holm": 0.035,
+      "p_slope_holm": 1.0
     }
   ],
   "Q3_typhoon": [
@@ -163,37 +175,57 @@
       "question": "Q3_typhoon",
       "reach": "Kanektok_River",
       "window": "June (interim)",
-      "n_2025": 3,
-      "n_2026": 4,
-      "slope_2025": 195.394,
-      "slope_2026": 195.435,
-      "wse_2025": 30.467,
-      "wse_2026": 30.381,
-      "dwse_m": -0.087,
-      "dslope_cm_km": 0.04,
-      "p_wse": 0.8571,
+      "n_2025": 5,
+      "n_2026": 5,
+      "slope_2025": 195.398,
+      "slope_2026": 195.504,
+      "wse_2025": 30.469,
+      "wse_2026": 30.315,
+      "dwse_m": -0.154,
+      "dslope_cm_km": 0.11,
+      "p_wse": 0.8413,
       "p_slope": 1.0,
-      "baseline_dwse_m": -0.22,
-      "baseline_dslope_cm_km": 0.76,
-      "wse_vs_baseline": "within"
+      "baseline_dwse_m": -0.226,
+      "baseline_dslope_cm_km": 0.51,
+      "dwse_ci95_m": [
+        -0.23,
+        0.261
+      ],
+      "excess_vs_baseline_ci95_m": [
+        -0.265,
+        0.088
+      ],
+      "wse_vs_baseline": "indistinguishable",
+      "p_wse_holm": 1.0,
+      "p_slope_holm": 1.0
     },
     {
       "question": "Q3_typhoon",
       "reach": "Uyak_Creek",
       "window": "June (interim)",
-      "n_2025": 3,
-      "n_2026": 4,
-      "slope_2025": 193.914,
-      "slope_2026": 193.367,
-      "wse_2025": 30.513,
-      "wse_2026": 30.22,
-      "dwse_m": -0.293,
-      "dslope_cm_km": -0.55,
-      "p_wse": 0.4,
-      "p_slope": 0.6286,
-      "baseline_dwse_m": -0.383,
-      "baseline_dslope_cm_km": -1.01,
-      "wse_vs_baseline": "within"
+      "n_2025": 5,
+      "n_2026": 5,
+      "slope_2025": 193.065,
+      "slope_2026": 193.025,
+      "wse_2025": 30.511,
+      "wse_2026": 30.201,
+      "dwse_m": -0.31,
+      "dslope_cm_km": -0.04,
+      "p_wse": 0.1508,
+      "p_slope": 0.5476,
+      "baseline_dwse_m": -0.356,
+      "baseline_dslope_cm_km": 0.06,
+      "dwse_ci95_m": [
+        -0.526,
+        0.063
+      ],
+      "excess_vs_baseline_ci95_m": [
+        -0.392,
+        0.272
+      ],
+      "wse_vs_baseline": "indistinguishable",
+      "p_wse_holm": 1.0,
+      "p_slope_holm": 1.0
     }
   ],
   "Q3_profile": [
@@ -201,17 +233,17 @@
       "question": "Q3_profile",
       "reach": "Kanektok_River",
       "n_bins": 70,
-      "median_dwse_m": 0.006,
-      "downstream_dwse_m": 0.009,
-      "upstream_dwse_m": -0.002
+      "median_dwse_m": -0.045,
+      "downstream_dwse_m": -0.057,
+      "upstream_dwse_m": -0.026
     },
     {
       "question": "Q3_profile",
       "reach": "Uyak_Creek",
       "n_bins": 72,
-      "median_dwse_m": -0.012,
-      "downstream_dwse_m": -0.009,
-      "upstream_dwse_m": -0.018
+      "median_dwse_m": -0.053,
+      "downstream_dwse_m": -0.063,
+      "upstream_dwse_m": -0.047
     }
   ]
 }

@@ -29,17 +29,32 @@ XOVERCAL_SUSPECT_MASK = 64        # Bit 6: crossover calibration suspect
 XOVERCAL_MISSING_MASK = 8388608   # Bit 23: crossover calibration missing entirely
 
 # MAD-based outlier filtering configuration
+# The filter runs on NODE-MEDIAN RESIDUALS, not raw WSE: the rivers carry
+# ~66 m of real along-stream relief, so raw-domain MAD reads the profile
+# itself as spread and amputates whole upstream reaches on dates where pixel
+# density is downstream-weighted (code review 2026-08, critical finding).
+# Subtracting each pixel's node-median WSE first removes all along-stream
+# structure (linear or concave), leaving only within-node scatter to police.
 MAD_THRESHOLD = 3.5  # Conservative threshold (Iglewicz & Hoaglin, 1993)
 MIN_POINTS_FOR_MAD = 10  # Minimum sample size for reliable MAD
 MIN_POINTS_AFTER_FILTER = 5  # Ensure statistical validity for slope calc
+MAD_NODE_KM = 1.0  # residual reference profile node size (matches REFGRAD_NODE_KM)
+MAD_MIN_NODE_PIXELS = 3  # sparse nodes borrow the nearest well-populated node's median
 
 # Optimization settings
 KEEP_COLUMNS = [
     'Reach_Name', 'Pass_Date', 'dist_km', 'wse',
-    'latitude', 'longitude', 'slope_calc', 'height_uncertainty', 'classification',
+    'latitude', 'longitude', 'height_uncertainty', 'classification',
     'height_raw', 'geoid', 'solid_tide', 'pole_tide', 'load_tide'
 ]
 ROWS_PER_CHUNK = 100000  # Safe chunk size for dashboard loading
+
+# --- QC EXCLUSIONS (single source of truth: qc_registry.py) ---
+# ICE_SAFE_MONTHS: May-Oct ice-season hard line, applied at master rebuild.
+# KNOWN_BAD_PASSES: documented per-date exclusion registry, same filter point.
+# Both live in qc_registry.py so ingestion and thesis figures can never drift;
+# see that module for the empirical calibration evidence.
+from qc_registry import ICE_SAFE_MONTHS, KNOWN_BAD_PASSES
 
 # --- REFERENCE GRADIENT (per-pass robust slope) ---
 # Authoritative reach gradient. See SCIENTIFIC_METHODOLOGY.md ->
@@ -56,24 +71,10 @@ REFGRAD_MIN_NODES = 8        # need >= this many nodes to fit a per-pass slope
 # steep end reports an artificially gentle slope. See SCIENTIFIC_METHODOLOGY.md.
 REFGRAD_MIN_SPAN_KM = 30.0   # coverage gate: pass must span >= this (near the full ~35-36 km)
 REFGRAD_MAX_START_KM = 3.0   # coverage gate: pass must start <= this (includes steep downstream reach)
-REFGRAD_OPEN_WATER_MONTHS = {4, 5, 6, 7, 8, 9, 10, 11}  # Apr-Nov (exclude Dec-Mar ice)
+REFGRAD_OPEN_WATER_MONTHS = ICE_SAFE_MONTHS  # May-Oct (ice-season hard line, see above)
 REFGRAD_HIGH_FLOW_MONTHS = {5}     # May freshet
 REFGRAD_LOW_FLOW_MONTHS = {7, 8}   # Jul-Aug baseflow
 REFGRAD_OUTPUT = os.path.join(OUTPUT_BASE, "reference_gradient_per_pass.parquet")
-
-# --- QC: KNOWN-BAD PASSES (documented exclusion registry) ---
-# Passes dropped when building the master analysis product (parquet/CSV + reference
-# gradient). This is a QC FLAG, not a raw-data edit: the per-date daily CSVs in
-# batch_outputs/data/ are left intact for provenance, so the raw pass remains
-# inspectable; it is only filtered when aggregating the master. Kept in sync with
-# thesis_figures/config.EXCLUDED_PASSES. Each entry: 'YYYY-MM-DD': 'reason (evidence)'.
-KNOWN_BAD_PASSES = {
-    "2025-04-17": (
-        "Spring-breakup ice contamination: reach gradient anomalously steep on BOTH "
-        "channels simultaneously (Uyak 236, Kanektok 224 cm/km vs medians 192/196) -- "
-        "a synchronous basin-wide spike is an ice-event signature, not a real gradient."
-    ),
-}
 
 # --- 📍 THE CONFLUENCE ANCHOR ---
 # 59.82463509° N, 161.33397834° W
@@ -118,31 +119,66 @@ def haversine_vectorized(lat1, lon1, lat2, lon2):
 
     return R * c
 
-def calculate_mad_outliers(wse_values, threshold=MAD_THRESHOLD):
+def calculate_mad_outliers(values, threshold=MAD_THRESHOLD):
     """
     Identify outliers using Modified Z-Score (MAD-based).
 
     Reference: Iglewicz & Hoaglin (1993) "How to Detect and Handle Outliers"
 
     Args:
-        wse_values: Array of WSE measurements (per-reach)
+        values: Array to screen — per-reach node-median WSE residuals
+                (see node_median_residuals), NOT raw WSE
         threshold: Modified Z-score threshold (default 3.5)
 
     Returns:
         Boolean mask (True = keep, False = outlier)
     """
-    median = np.median(wse_values)
-    mad = np.median(np.abs(wse_values - median))
+    median = np.median(values)
+    mad = np.median(np.abs(values - median))
 
     # Edge case: MAD = 0 (all values identical)
     if mad == 0:
-        return np.ones(len(wse_values), dtype=bool)  # Keep all
+        return np.ones(len(values), dtype=bool)  # Keep all
 
     # Modified Z-score (0.6745 makes MAD consistent with std dev)
-    modified_z_scores = 0.6745 * (wse_values - median) / mad
+    modified_z_scores = 0.6745 * (values - median) / mad
 
     # Keep points within threshold
     return np.abs(modified_z_scores) <= threshold
+
+def node_median_residuals(dist_km, wse, node_km=MAD_NODE_KM, min_node_pixels=MAD_MIN_NODE_PIXELS):
+    """Residual WSE after subtracting the per-node median profile.
+
+    Bins pixels into node_km distance nodes (same node structure as the
+    reference gradient) and subtracts each pixel's node-median WSE, so the
+    outlier filter never sees the river's real along-stream relief — only
+    within-node scatter.
+
+    Pixels in sparse nodes (< min_node_pixels) would self-define their own
+    median (residual ~0, shielding isolated artifacts), so they are
+    referenced to the nearest well-populated node's median instead.
+
+    Returns an array of residuals, or None if no node is well populated
+    (caller should skip filtering and keep all points).
+    """
+    node = np.round(np.asarray(dist_km, dtype=float) / node_km) * node_km
+    wse = np.asarray(wse, dtype=float)
+    grp = pd.Series(wse).groupby(node)
+
+    node_counts = grp.size()
+    good = node_counts[node_counts >= min_node_pixels]
+    if good.empty:
+        return None
+
+    reference = grp.transform("median").to_numpy()
+    sparse = grp.transform("size").to_numpy() < min_node_pixels
+    if sparse.any():
+        good_pos = good.index.to_numpy(dtype=float)
+        good_med = grp.median()[good.index].to_numpy(dtype=float)
+        nearest = np.abs(node[sparse, None] - good_pos[None, :]).argmin(axis=1)
+        reference[sparse] = good_med[nearest]
+
+    return wse - reference
 
 def load_polygons():
     print(f"\n📂 Loading polygons from: {POLYGON_PATH}")
@@ -167,22 +203,41 @@ def get_granule_name(granule):
     if "native-id" in meta: return meta["native-id"]
     return "Unknown_Granule"
 
-def extract_date_from_granule(granule):
-    """Extract formatted date (YYYY-MM-DD) from granule metadata without downloading."""
-    granule_name = get_granule_name(granule)
-    try:
-        parts = granule_name.split("_")
-        for part in parts:
-            if "T" in part and len(part) == 15 and part[:8].isdigit():
-                date_str = part.split("T")[0]
-                return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
-    except:
-        pass
-    return None
+def extract_granule_ids(granule):
+    """Extract (formatted_date, cycle, pass_num, tile) from the granule name
+    without downloading.
 
-def is_date_already_processed(formatted_date):
-    """Check if a daily CSV already exists for this date."""
-    csv_path = os.path.join(OUTPUT_BASE, "data", f"{formatted_date}_data.csv")
+    PIXC granule names embed cycle, pass, and tile as the three tokens before
+    the start timestamp, e.g. SWOT_L2_HR_PIXC_001_293_261L_20230731T163944_...
+    One overpass can be split across tile boundaries (sibling granules on the
+    same date, e.g. pass 571 = 260L + 261L), so the date alone does NOT
+    identify a granule. Returns Nones for fields that can't be parsed.
+    """
+    granule_name = get_granule_name(granule)
+    parts = granule_name.split("_")
+    for i, part in enumerate(parts):
+        if "T" in part and len(part) == 15 and part[:8].isdigit():
+            date_str = part.split("T")[0]
+            formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+            if i >= 3:
+                return formatted_date, parts[i - 3], parts[i - 2], parts[i - 1]
+            return formatted_date, None, None, None
+    return None, None, None, None
+
+def granule_csv_stem(formatted_date, cycle, pass_num, tile):
+    """Checkpoint filename stem for one granule.
+
+    Granule-keyed ({date}_gCCC_PPP_TTT) so sibling tiles of the same pass each
+    get their own checkpoint instead of colliding on the calendar date. Falls
+    back to the bare date if cycle/pass/tile couldn't be parsed.
+    """
+    if cycle is None:
+        return formatted_date
+    return f"{formatted_date}_g{cycle}_{pass_num}_{tile}"
+
+def is_granule_already_processed(stem):
+    """Check if a checkpoint CSV already exists for this granule."""
+    csv_path = os.path.join(OUTPUT_BASE, "data", f"{stem}_data.csv")
     return os.path.exists(csv_path)
 
 def resolve_poly_name(row, idx):
@@ -197,24 +252,11 @@ def resolve_poly_name(row, idx):
     return str(raw_id)
 
 def process_granule(granule_result, gdf_polygons):
-    granule_name = get_granule_name(granule_result)
-    
-    try:
-        parts = granule_name.split("_")
-        raw_timestamp = "UnknownDate"
-        for part in parts:
-            if "T" in part and len(part) == 15 and part[:8].isdigit():
-                raw_timestamp = part
-                break
-        
-        if raw_timestamp != "UnknownDate":
-            date_str = raw_timestamp.split("T")[0]
-            formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
-        else:
-            formatted_date = "Unknown_Date"
-    except:
+    formatted_date, cycle, pass_num, tile = extract_granule_ids(granule_result)
+    if formatted_date is None:
         formatted_date = "Unknown_Date"
-    
+    csv_stem = granule_csv_stem(formatted_date, cycle, pass_num, tile)
+
     try:
         files = earthaccess.download(granule_result, TEMP_DIR)
         if not files: return None
@@ -261,8 +303,14 @@ def process_granule(granule_result, gdf_polygons):
                 # Calculate WSE
                 df_exact['wse'] = df_exact['height_raw'] - df_exact['geoid'] - df_exact['solid_tide'] - df_exact['pole_tide'] - df_exact['load_tide']
                 df_exact['Reach_Name'] = poly_name
-                df_exact['Pass_Date'] = formatted_date 
-                
+                df_exact['Pass_Date'] = formatted_date
+                # Acquisition provenance (kept in daily CSVs; pruned from master
+                # by KEEP_COLUMNS). Lets the rebuild verify that Pass_Date is a
+                # valid per-pass key (no multi-pass dates at this site).
+                df_exact['cycle'] = cycle
+                df_exact['pass_num'] = pass_num
+                df_exact['tile'] = tile
+
                 # --- 📏 UNIFIED DISTANCE CALCULATION ---
                 # Calculate straight-line distance from the Professor's Anchor Point
                 df_exact['dist_km'] = haversine_vectorized(
@@ -290,7 +338,12 @@ def process_granule(granule_result, gdf_polygons):
                 # Width-independent: affects both rivers equally, should not reduce data significantly
                 # Reference: SWOT Handbook Section 9.4.2
                 if 'geolocation_qual' in df_exact.columns and df_exact['geolocation_qual'].notna().any():
-                    xover_mask = (df_exact['geolocation_qual'].astype(int) & XOVERCAL_MISSING_MASK) == 0
+                    # NaN flags carry no evidence either way -> keep the pixel
+                    # (fillna(0) leaves the missing-cal bit unset). A bare
+                    # astype(int) raises on partial NaN, and the outer handler
+                    # would silently discard the whole granule.
+                    qual = df_exact['geolocation_qual'].fillna(0).astype('int64')
+                    xover_mask = (qual & XOVERCAL_MISSING_MASK) == 0
                     n_pass = xover_mask.sum()
                     tqdm.write(f"   Quality Filter: {n_pass:,}/{len(df_exact):,} points passed xovercal (crossover cal not missing)")
                     df_exact = df_exact[xover_mask]
@@ -307,17 +360,25 @@ def process_granule(granule_result, gdf_polygons):
                 # Classification filtering (SWOT quality classes)
                 df_final = df_exact[df_exact['classification'].isin(DEFAULT_CLASSES)]
 
-                # MAD-based outlier filtering (per-reach)
+                # MAD-based outlier filtering (per-reach, residual domain)
                 # Purpose: Remove anomalous WSE values (plateau artifacts, bad measurements)
-                # Applied per-reach to account for different elevation ranges
+                # Modified Z-scores are computed on node-median residuals, never raw WSE:
+                # raw-domain MAD reads the ~66 m of real along-stream relief as spread and
+                # amputated whole upstream reaches on downstream-weighted dates.
                 if len(df_final) >= MIN_POINTS_FOR_MAD:
                     for reach_name in df_final['Reach_Name'].unique():
                         reach_mask = df_final['Reach_Name'] == reach_name
-                        reach_wse = df_final.loc[reach_mask, 'wse'].values
+                        reach_rows = df_final.loc[reach_mask]
 
-                        if len(reach_wse) >= MIN_POINTS_FOR_MAD:
+                        if len(reach_rows) >= MIN_POINTS_FOR_MAD:
+                            residuals = node_median_residuals(
+                                reach_rows['dist_km'].values, reach_rows['wse'].values)
+                            if residuals is None:
+                                tqdm.write(f"   MAD Filter ({reach_name}): Skipped (no well-populated nodes)")
+                                continue
+
                             # Calculate outlier mask
-                            keep_mask = calculate_mad_outliers(reach_wse, threshold=MAD_THRESHOLD)
+                            keep_mask = calculate_mad_outliers(residuals, threshold=MAD_THRESHOLD)
                             outliers_removed = (~keep_mask).sum()
 
                             # Safety check: preserve minimum points
@@ -328,8 +389,8 @@ def process_granule(granule_result, gdf_polygons):
                                 df_final = df_final.drop(indices_to_remove)
 
                                 # Log statistics
-                                pct_removed = (outliers_removed / len(reach_wse)) * 100
-                                tqdm.write(f"   MAD Filter ({reach_name}): {outliers_removed}/{len(reach_wse)} outliers removed ({pct_removed:.1f}%)")
+                                pct_removed = (outliers_removed / len(reach_rows)) * 100
+                                tqdm.write(f"   MAD Filter ({reach_name}): {outliers_removed}/{len(reach_rows)} outliers removed ({pct_removed:.1f}%)")
                             else:
                                 tqdm.write(f"   MAD Filter ({reach_name}): Skipped (would remove too many points)")
 
@@ -338,20 +399,20 @@ def process_granule(granule_result, gdf_polygons):
 
         if all_data:
             full_df = pd.concat(all_data, ignore_index=True)
-            
-            # Recalculate Slope for Export
-            for reach_name in full_df['Reach_Name'].unique():
-                subset = full_df[full_df['Reach_Name'] == reach_name]
-                if len(subset) > 5:
-                    slope, _, _, _, _ = stats.linregress(subset['dist_km'], subset['wse'])
-                    full_df.loc[subset.index, 'slope_calc'] = slope * 100
-            
-            # Save CSV
-            cols_export = ['Reach_Name', 'Pass_Date', 'latitude', 'longitude', 'wse', 'dist_km', 'slope_calc', 'height_uncertainty', 'classification', 'height_raw', 'geoid', 'solid_tide', 'pole_tide', 'load_tide']
-            final_cols = [c for c in cols_export if c in full_df.columns]
-            full_df[final_cols].to_csv(os.path.join(OUTPUT_BASE, "data", f"{formatted_date}_data.csv"), index=False)
 
-            tqdm.write(f"   ✅ {formatted_date}: Saved {len(full_df):,} points")
+            # NOTE: the old per-granule pixel-OLS 'slope_calc' export was removed
+            # 2026-08 (code review): raw-pixel OLS is density-biased (understated
+            # both gradients, roughly doubled the inter-river contrast) and was
+            # superseded by the per-pass Theil-Sen reference gradient. With
+            # granule-keyed checkpoints it would also have become per-TILE.
+
+            # Save per-granule checkpoint CSV (granule-keyed: sibling tiles of
+            # the same pass must not overwrite each other)
+            cols_export = ['Reach_Name', 'Pass_Date', 'cycle', 'pass_num', 'tile', 'latitude', 'longitude', 'wse', 'dist_km', 'height_uncertainty', 'classification', 'height_raw', 'geoid', 'solid_tide', 'pole_tide', 'load_tide']
+            final_cols = [c for c in cols_export if c in full_df.columns]
+            full_df[final_cols].to_csv(os.path.join(OUTPUT_BASE, "data", f"{csv_stem}_data.csv"), index=False)
+
+            tqdm.write(f"   ✅ {csv_stem}: Saved {len(full_df):,} points")
             return full_df
         else:
             return None
@@ -465,6 +526,18 @@ def rebuild_master_from_daily_csvs():
         print("   ⚠️ No daily CSV files found to aggregate.")
         return
 
+    # Guard against double-counting during the legacy -> granule-keyed
+    # checkpoint migration: a legacy date-keyed CSV ({date}_data.csv) holds ONE
+    # granule of that date, so if granule-keyed CSVs ({date}_gCCC_PPP_TTT_data.csv)
+    # also exist for the same date, the granule-keyed set supersedes it.
+    granule_keyed_dates = {f[:10] for f in csv_files if "_g" in f}
+    superseded = [f for f in csv_files if "_g" not in f and f[:10] in granule_keyed_dates]
+    if superseded:
+        print(f"   ⚠️ Skipping {len(superseded)} legacy date-keyed CSV(s) superseded by granule-keyed checkpoints:")
+        for f in superseded:
+            print(f"      - {f}")
+        csv_files = [f for f in csv_files if f not in set(superseded)]
+
     print(f"\n📦 Rebuilding and optimizing master files from {len(csv_files)} daily CSVs...")
     all_dataframes = []
 
@@ -482,6 +555,18 @@ def rebuild_master_from_daily_csvs():
 
     final_df = pd.concat(all_dataframes, ignore_index=True)
 
+    # Sanity check: everything downstream (reference gradient, temporal analysis,
+    # dashboard) uses Pass_Date as the per-pass key. That is valid at this site
+    # (CMR audit 2023-07..2026-08: zero dates with two distinct passes; co-dated
+    # granules are always sibling tiles of ONE pass), but warn loudly if new data
+    # ever breaks the assumption.
+    if "pass_num" in final_df.columns:
+        passes_per_date = final_df.dropna(subset=["pass_num"]).groupby("Pass_Date")["pass_num"].nunique()
+        multi_pass_dates = passes_per_date[passes_per_date > 1]
+        if len(multi_pass_dates):
+            print(f"   🚨 {len(multi_pass_dates)} date(s) contain more than one SWOT pass — "
+                  f"Pass_Date is NO LONGER a valid per-pass key: {list(multi_pass_dates.index)[:5]}")
+
     # --- QC: drop documented known-bad passes (provenance kept in daily CSVs) ---
     # Single filter point: master CSV/parquet, partitions, AND the reference-gradient
     # artifact (compute_reference_gradient receives final_df) all inherit the exclusion.
@@ -493,6 +578,18 @@ def rebuild_master_from_daily_csvs():
                 if n:
                     print(f"   🚫 Excluding known-bad pass {d}: {n:,} rows ({KNOWN_BAD_PASSES[d][:60]}…)")
             final_df = final_df[~bad].reset_index(drop=True)
+
+    # --- QC: ice-season hard line (see ICE_SAFE_MONTHS) ---
+    # Single filter point: master CSV/parquet, partitions, and the reference-
+    # gradient artifact all inherit the cutoff. Daily CSVs keep all months.
+    if ICE_SAFE_MONTHS and "Pass_Date" in final_df.columns:
+        month = pd.to_datetime(final_df["Pass_Date"]).dt.month
+        outside = ~month.isin(sorted(ICE_SAFE_MONTHS))
+        if outside.any():
+            n_dates = final_df.loc[outside, "Pass_Date"].nunique()
+            print(f"   🧊 Ice-season hard line: excluding {int(outside.sum()):,} rows "
+                  f"on {n_dates} dates outside months {sorted(ICE_SAFE_MONTHS)} (May-Oct)")
+            final_df = final_df[~outside].reset_index(drop=True)
 
     original_rows = len(final_df)
 
@@ -527,12 +624,14 @@ def rebuild_master_from_daily_csvs():
     # Split into chunks for better dashboard performance and GitHub size limits
     num_chunks = math.ceil(original_rows / ROWS_PER_CHUNK)
 
+    # Clean ALL old partition files first: if the dataset shrank (e.g. QC
+    # exclusions tightened), leftover higher-numbered partitions would silently
+    # re-enter any consumer that globs master_all_data_part_*.parquet.
+    for old_file in glob.glob(os.path.join(OUTPUT_BASE, "master_all_data_part_*.parquet")):
+        os.remove(old_file)
+
     if num_chunks > 1:
         print(f"   ✂️  Creating {num_chunks} optimized partitions for dashboard...")
-
-        # Clean old partitioned files
-        for old_file in glob.glob(os.path.join(OUTPUT_BASE, "master_all_data_part_*.parquet")):
-            os.remove(old_file)
 
         for i in tqdm(range(num_chunks), desc="Creating partitions", unit="partition"):
             start = i * ROWS_PER_CHUNK
@@ -575,17 +674,33 @@ def main():
     # Check for already-processed dates
     print("\n🔍 Checking for existing processed data...")
     skipped_count = 0
+    ice_skipped_count = 0
     processed_count = 0
 
     # Use tqdm progress bar for granule processing
     for granule in tqdm(all_results, desc="Processing granules", unit="granule"):
-        # Extract date from granule metadata (without downloading)
-        formatted_date = extract_date_from_granule(granule)
+        # Extract granule identity from metadata (without downloading).
+        # Skip is keyed per GRANULE, not per date: one overpass can arrive as
+        # multiple sibling tiles on the same date, and a date-keyed skip would
+        # silently drop every tile after the first.
+        formatted_date, cycle, pass_num, tile = extract_granule_ids(granule)
 
-        if formatted_date and is_date_already_processed(formatted_date):
-            tqdm.write(f"   ⏭️  Skipping {formatted_date} (already processed)")
-            skipped_count += 1
-            continue
+        if formatted_date:
+            # Download scope = ICE_SAFE_MONTHS (decision 2026-08-14): only
+            # May-Oct data can enter the analysis products, so ice-season
+            # granules (~half the archive volume, ~146 GB) are not downloaded
+            # at all. The rebuild-time hard line remains the enforcement point
+            # for anything already on disk.
+            month = int(formatted_date[5:7])
+            if month not in ICE_SAFE_MONTHS:
+                ice_skipped_count += 1
+                continue
+
+            stem = granule_csv_stem(formatted_date, cycle, pass_num, tile)
+            if is_granule_already_processed(stem):
+                tqdm.write(f"   ⏭️  Skipping {stem} (already processed)")
+                skipped_count += 1
+                continue
 
         # Process granule (download + process)
         df_result = process_granule(granule, gdf_poly)
@@ -593,7 +708,8 @@ def main():
             processed_count += 1
 
     # Always rebuild master file from ALL daily CSVs (both old and new)
-    print(f"\n📊 Summary: {processed_count} new, {skipped_count} skipped")
+    print(f"\n📊 Summary: {processed_count} new, {skipped_count} already processed, "
+          f"{ice_skipped_count} outside May-Oct (not downloaded)")
     rebuild_master_from_daily_csvs()
 
     print(f"\n✨ Batch Complete!")

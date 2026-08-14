@@ -58,19 +58,16 @@ BIFURCATION_DIST_KM = 2.493
 RESIDUAL_MAD_THRESHOLD = 3.5  # Modified Z-score (Iglewicz & Hoaglin 1993)
 
 # --- QC: FLAGGED / EXCLUDED PASSES -----------------------------------------
-# Documented registry of satellite passes excluded from ALL figures as a single
-# source of truth (core applies it to every data path). This is a QC flag list,
-# NOT a raw-data edit -- the parquet is left intact and inspectable; the pass is
-# only filtered at load/analysis time, preserving provenance and reproducibility.
-# Each entry: 'YYYY-MM-DD': 'reason (evidence)'.
-EXCLUDED_PASSES = {
-    "2025-04-17": (
-        "Spring-breakup ice contamination: reach gradient anomalously steep on BOTH "
-        "channels simultaneously (Uyak 236, Kanektok 224 cm/km vs medians 192/196) -- "
-        "a synchronous basin-wide spike is an ice-event signature, not a real gradient. "
-        "Robust medians are unaffected; excluded so it cannot bias means/bands/extremes."
-    ),
-}
+# Single source of truth: qc_registry.py at the repo root, shared with the
+# ingestion pipeline (which applies the same registry, plus the May-Oct
+# ice-season hard line, when building the master products). This consumer-side
+# application is defense-in-depth so figures stay clean even against a stale
+# master parquet. QC flag list, NOT a raw-data edit -- the parquet is left
+# intact and inspectable; passes are only filtered at load/analysis time.
+import sys as _sys
+if REPO_ROOT not in _sys.path:
+    _sys.path.insert(0, REPO_ROOT)
+from qc_registry import KNOWN_BAD_PASSES as EXCLUDED_PASSES
 
 # --- COLOURS ---------------------------------------------------------------
 # Match the live dashboard EXACTLY: the dashboard's COLOR_MAP uses the CSS named
@@ -173,15 +170,21 @@ def apply_style() -> None:
     })
 
 
-def savefig(fig, name: str, formats=FORMATS):
+def savefig(fig, name: str, formats=FORMATS, subdir: str | None = None):
     """Save `fig` to OUTPUT_DIR as `name` in each requested format.
 
-    Returns the list of written paths. Creates OUTPUT_DIR if needed.
+    `subdir` selects a series folder under OUTPUT_DIR. The SWOT and DEM writeups are
+    separate documents with independent figure numbering, so their renders are kept
+    apart ("SWOT_Figures" / "DEM_Figures") to stop a Figure 1 in one series from
+    overwriting the Figure 1 in the other.
+
+    Returns the list of written paths. Creates the target directory if needed.
     """
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    out = OUTPUT_DIR if subdir is None else os.path.join(OUTPUT_DIR, subdir)
+    os.makedirs(out, exist_ok=True)
     paths = []
     for fmt in formats:
-        path = os.path.join(OUTPUT_DIR, f"{name}.{fmt}")
+        path = os.path.join(out, f"{name}.{fmt}")
         fig.savefig(path, format=fmt)
         paths.append(path)
     return paths

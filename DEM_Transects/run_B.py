@@ -186,7 +186,7 @@ def main():
     print("wrote beta_B_map.png")
 
     # validation: approach B vs recovered ArcGIS original (Kanektok)
-    orig_path = "/tmp/original_beta.parquet"
+    orig_path = os.path.join(HERE, "reference", "original_beta.parquet")
     if os.path.exists(orig_path):
         orig = pd.read_parquet(orig_path).reset_index().sort_values("ORIG_SEQ_1")
         if orig["median"].head(15).median() > orig["median"].tail(15).median():

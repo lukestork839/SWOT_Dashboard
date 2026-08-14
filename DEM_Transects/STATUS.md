@@ -2,11 +2,36 @@
 
 Avulsion analysis for the Kanektok & Uyak. **Full methods, results, and caveats:
 [`AVULSION_ANALYSIS.md`](AVULSION_ANALYSIS.md)** (the single source of truth for the science).
-This file tracks build status only. Last updated 2026-08-03 (B#3: Kanektok-centered cross-section axis + β anatomy overlay).
+This file tracks build status only. Last updated 2026-08-08 (SWOT validation + β correction).
 
 ---
 
 ## ✅ Done
+
+- **SWOT validation + stage handling, and a β correction** (2026-08-08). New
+  `swot_arc_reference.py` → tracked `data/swot_arc_reference.parquet` (per-radius EGM2008 geoid,
+  per-river stage median/p10/p90, pass-paired Uyak−Kanektok, survey-stage water surface). Changes:
+  - **Geoid** constant 13.46 m → **per radius** (13.74 anchor → 13.28 coast). Within-arc differences
+    are unchanged; this is what puts the DEM on SWOT's datum. DEM vs SWOT then agrees to
+    **−0.15 m** (Kanektok) / **+0.14 m** (Uyak).
+  - **Crest window ±350 → ±150 m** (~3 channel widths), set by the bankfull check that freeboard
+    should ≈ channel depth (A/B was 1.87 at ±350 m — an unfillable bank; 1.27 at ±150 m).
+    **β 0.24 → 0.06, H_AR 0.87 → +0.14 m**, β ≤ 0 on 38 % of arcs → **no alluvial ridge**.
+  - **β = 1 is no longer presented as the avulsion threshold** anywhere (Gearon's criterion is
+    βγ ≥ Λ; γ deliberately not evaluated). β is framed as the reproduction of the ArcGIS metric.
+  - **Uyak − Kanektok now from pass-paired SWOT: +0.96 m** (100 % of passes). The DEM-only +1.45 m
+    carried a ~0.34 m differential-stage artifact — the mosaic caught the Kanektok at the 29th
+    percentile of stages and the Uyak at the 76th. (The old docs compared against "+0.19 m (SWOT)",
+    which was actually a DEM corridor-median — corrected.)
+  - **Superelevation quoted at the median observed stage with a p10–p90 band**: Kanektok −1.50 m
+    (−1.75 low / −1.01 high, incised on 100 % of arcs), Uyak −0.49 m.
+  - **Stage-matched bed**: SWOT overflew 2026-05-28/05-30 *inside* the ADCP survey window, so
+    bed = survey-stage WSE − ADCP depth. Survey stage was +0.04 m from the all-pass median (typical).
+  - **Migration QC** columns (`kan/uyak_snap_offset_m`, `_snap_clipped`). DEM mosaic is **2010–2021**
+    vs 2026 field lines; offsets median 38 m / 12 m, at the ±75 m wall on 9 % / 8 % of arcs. WSE is
+    insensitive (0.00 m across ±75→±400 m windows); channel *position* is not.
+  - Dashboard tab shows SWOT water-surface markers with p10–p90 error bars, stage bands on the long
+    profiles, stage-aware superelevation tooltips, and migration/threshold caveats. AppTest clean.
 
 - **Recovered the prior ArcGIS method** (β = (P98−median)/(P98−P2)) and its intended result
   from the project geodatabase (β med 0.96, H_AR 4.30 m) — the notebook run that would have
@@ -16,17 +41,17 @@ This file tracks build status only. Last updated 2026-08-03 (B#3: Kanektok-cente
   against the SWOT dashboard (Uyak marginally higher at matched distance).
 - **The arc method** (`build_arc_B.py`) — radial iso-distance-from-anchor cross-sections, the
   dashboard-comparable side-by-side. Sampled at native 2 m; channels snapped to the DEM low.
-  **Uyak water surface +1.45 m above Kanektok on 92 % of arcs**, but superelevation vs the
-  inter-channel corridor shows the **Kanektok incised on 98 % of arcs (−1.52 m)** and the
-  **Uyak ≈ at grade (−0.21 m)** → against a Kanektok→Uyak avulsion. Figures `arcB_sections.png`,
-  `arcB_sidebyside.png`, `arcB_validity.png`.
-- **Measured Gearon β = H_AR/H_M for the Kanektok** using the boat-ADCP channel depth (bed = DEM
-  water surface − depth). β median **0.24**, below the avulsion threshold of 1 on **100 %** of arcs
-  (H_AR ≈ 0.87 m, H_M ≈ 3.85 m, ADCP depth ≈ 1.30 m). Reconciles + sharpens the retired DEM-only
-  Approach A (β ≈ 0.41 → 0.24 once the real bed deepens H_M). Depth artifact
+  Established the Uyak water surface sits above the Kanektok while the Kanektok is incised below the
+  inter-channel corridor → against a Kanektok→Uyak avulsion. Figures `arcB_sections.png`,
+  `arcB_sidebyside.png`, `arcB_validity.png`. *(The numbers first quoted here — +1.45 m / −1.52 m /
+  −0.21 m — were superseded by the 2026-08-08 SWOT/stage work above; the conclusion was not.)*
+- **Measured Gearon β = H_AR/H_M for the Kanektok** using the boat-ADCP channel depth. Depth artifact
   `data/kanektok_thalweg_depth.parquet` (emitted by `build_kanektok_centerline.py`); figure
   `arcB_beta.png`; shown in the dashboard ✂️ Cross-Sections tab (β / H_AR / H_M metrics + bed/crest
-  markers). Uyak β deferred (ADCP depth near its mouth only).
+  markers). Uyak β deferred (ADCP depth near its mouth only). *(The β ≈ 0.24 / H_AR ≈ 0.87 m first
+  reported here came from a ±350 m crest window and was superseded on 2026-08-08: at a
+  bankfull-consistent ±150 m window β ≈ 0.06 and H_AR ≈ 0, i.e. no alluvial ridge. The
+  "below the avulsion threshold of 1" framing was also retired — that is not Gearon's criterion.)*
 - **Kanektok depth statistics + mouth depth comparison** (`adcp_depth_stats.py`). Kanektok depth
   median **1.22 m** (p10–p90 0.79–1.88, max 3.9 m), ~uniform, slight downstream deepening. At the
   mouth (31–33 km, the only reach both rivers were surveyed) the **Kanektok is 1.26× deeper** than
