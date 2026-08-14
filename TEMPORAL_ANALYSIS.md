@@ -1,5 +1,21 @@
 # Temporal Stability Analysis — Kanektok River & Uyak Creek
 
+> **STATUS (2026-08-14): numbers below are superseded — narrative still valid.**
+> The archive was re-pulled with the fixed ingestion pipeline (granule-keyed
+> checkpoints, residual-domain MAD, May–Oct ice line) and `temporal_analysis.py`
+> was upgraded: significance is now decided **family-wise (Holm step-down over all
+> 16 Mann–Whitney tests)**, and the Q3 vs-baseline verdict carries a **bootstrap
+> 95% CI** instead of comparing two bare point medians. Current results live in
+> `temporal_results/temporal_analysis_results.json` (regenerated 2026-08-14,
+> record through 2026-08-10). Headlines on the new archive: no seasonal slope
+> effect on either river (the old marginal Uyak p=0.033 dissolved to p=0.15 with
+> the recovered coverage); Q2 interannual WSE drops (−0.23 / −0.36 m, drier 2025
+> summer) remain significant after Holm; Q3 storm-window change is
+> *indistinguishable* from the natural baseline (excess CIs span 0). The
+> conclusions below (rivers stable, no typhoon signal) stand; the specific
+> numbers and per-test verdicts in this document await the writeup-regeneration
+> pass (see `docs/THESIS_IMPACT_LOG.md`).
+
 **A one-time analysis of how the two rivers' long-profiles change over time.**
 Companion to the reference-gradient work. The analysis is computed once (offline); its
 pre-computed results are displayed read-only in the dashboard's **⏳ Temporal Results** tab
