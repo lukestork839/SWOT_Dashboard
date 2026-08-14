@@ -258,19 +258,40 @@ def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
     df = pd.DataFrame({'bin': bins, 'wse': y})
     bin_medians = df.groupby('bin')['wse'].median().sort_index()
 
-    x_binned = bin_medians.index.values
-    y_binned = bin_medians.values
+    # Place the bins on an EXPLICIT regular grid with NaN holes. The raw bin
+    # list skips empty bins, and both the Gaussian filter (which smooths over
+    # array positions, not distance) and np.interp would otherwise treat bins
+    # on opposite sides of a coverage hole as adjacent — measured up to
+    # ~280 cm/km of spurious slope on sparse selections.
+    ibin = np.round(bin_medians.index.values / bin_size).astype(int)
+    grid_i = np.arange(ibin.min(), ibin.max() + 1)
+    x_grid = grid_i * bin_size
+    y_grid = np.full(grid_i.shape, np.nan)
+    y_grid[ibin - ibin[0]] = bin_medians.values
 
-    # Gaussian smoothing with sigma in physical distance units
-    # sigma in bins = smooth_km / bin_size
+    # NaN-aware Gaussian smoothing (normalized convolution): smooth the data
+    # with missing bins as zero, smooth the coverage mask the same way, and
+    # divide — each output is a weighted mean of the data the kernel actually
+    # saw. Where real data carries <25% of the kernel weight (deep inside a
+    # hole or far past the data ends) the estimate is untrustworthy: leave NaN
+    # so the profile shows a gap instead of an invented curve.
     sigma_bins = smooth_km / bin_size
-    y_smooth = gaussian_filter1d(y_binned, sigma=sigma_bins, mode='nearest')
+    have = ~np.isnan(y_grid)
+    num = gaussian_filter1d(np.where(have, y_grid, 0.0), sigma=sigma_bins, mode='constant')
+    den = gaussian_filter1d(have.astype(float), sigma=sigma_bins, mode='constant')
+    with np.errstate(invalid='ignore', divide='ignore'):
+        y_smooth = num / den
+    y_smooth[den < 0.25] = np.nan
 
-    # Interpolate onto regular eval grid
-    x_eval = np.linspace(x_binned.min(), x_binned.max(), n_eval)
-    y_fitted = np.interp(x_eval, x_binned, y_smooth)
+    # Interpolate onto regular eval grid, keeping gaps as gaps
+    x_eval = np.linspace(x_grid.min(), x_grid.max(), n_eval)
+    valid = ~np.isnan(y_smooth)
+    y_fitted = np.interp(x_eval, x_grid[valid], y_smooth[valid])
+    coverage = np.interp(x_eval, x_grid, valid.astype(float))
+    y_fitted[coverage < 0.5] = np.nan
 
     # Numerical derivative: slope in m/km -> * 100 for cm/km
+    # (NaN gaps propagate to the slope at and beside gap bins — honest gaps.)
     slope_cm_km = np.gradient(y_fitted, x_eval) * 100
 
     return x_eval, slope_cm_km, y_fitted
@@ -341,15 +362,23 @@ def _fine_slope_theilsen(x, y, res_km):
 
 
 def _fine_regular_grid(sub):
-    """One pass -> (integer 0.1 km index, wse) on a regular grid, short gaps filled."""
+    """One pass -> (integer 0.1 km index, wse) on a regular grid, short gaps filled.
+
+    Gaps STRICTLY WIDER than FINE_FILL_GAP_KM are left as NaN. (pandas
+    `interpolate(limit=N)` alone would fabricate WSE in the first N cells of
+    EVERY gap, however wide — so long gaps are re-masked after interpolating.)
+    """
     sub = sub.sort_values("ibin")
     i0, i1 = int(sub["ibin"].min()), int(sub["ibin"].max())
     idx = np.arange(i0, i1 + 1)
     s = pd.Series(np.nan, index=idx, dtype=float)
     s.loc[sub["ibin"].values] = sub["wse"].values
     max_gap = int(round(FINE_FILL_GAP_KM / FINE_BASE_BIN_KM))
-    s = s.interpolate(limit=max_gap, limit_area="inside")
-    return idx.astype(int), s.to_numpy(dtype=float)
+    filled = s.interpolate(limit_area="inside")
+    isna = s.isna()
+    run_len = isna.groupby((~isna).cumsum()).transform("sum")
+    filled[isna & (run_len > max_gap)] = np.nan
+    return idx.astype(int), filled.to_numpy(dtype=float)
 
 
 # Period bins for the temporal fine-scale views. These MIRROR the flow-regime
@@ -435,15 +464,17 @@ def _fine_aggregate(mat, cols=None, min_passes=0):
         return med, q25, q75, n
     # Reduce only over bins that some pass actually imaged: an all-NaN bin is normal
     # here (coverage gaps), and feeding one to nanmedian just raises a noisy warning.
+    # Steepness = |slope| PER ELEMENT first, THEN quantiles: quantiles of the
+    # signed slopes folded with abs() afterwards mis-order the band wherever a
+    # bin's slopes straddle zero (the median could plot outside its own band).
+    # For same-sign bins the two constructions are identical.
     seen = n > 0
     if seen.any():
-        med[seen] = np.nanmedian(sub[seen], axis=1)
-        q25[seen] = np.nanquantile(sub[seen], 0.25, axis=1)
-        q75[seen] = np.nanquantile(sub[seen], 0.75, axis=1)
-    # Slopes are negative (downhill); plot steepness = |slope|. abs() flips the
-    # band order, so re-derive lo/hi as the min/max of the absolute quartiles.
-    a25, a75 = np.abs(q25), np.abs(q75)
-    med, lo, hi = np.abs(med), np.minimum(a25, a75), np.maximum(a25, a75)
+        a = np.abs(sub[seen])
+        med[seen] = np.nanmedian(a, axis=1)
+        q25[seen] = np.nanquantile(a, 0.25, axis=1)
+        q75[seen] = np.nanquantile(a, 0.75, axis=1)
+    lo, hi = q25, q75
     if min_passes > 0:
         gap = n < min_passes
         med[gap] = lo[gap] = hi[gap] = np.nan
@@ -566,9 +597,40 @@ class VerticalColorbar(MacroElement):
             {% endmacro %}
         """)
 
-# Cache key includes the remote URL so the cached connection invalidates when the data
-# source changes. NOTE: the parameter must NOT start with an underscore — Streamlit excludes
-# underscore-prefixed args from the cache key, which would silently disable this busting.
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_data_version():
+    """Fingerprint of the ACTIVE data source — the cache-busting key.
+
+    The deployment strategy keeps the release-asset URL stable and swaps the
+    file behind it, so the URL itself can never bust a cache (the old
+    url_version=URL scheme was a constant). Local dev: newest mtime + total
+    size of the partition files. Cloud: the asset's ETag/Last-Modified from a
+    HEAD request. The 1 h TTL means a redeployed asset is picked up within an
+    hour with no code change; on probe failure fall back to the URL (old
+    behavior, stale-but-functional).
+    """
+    import glob
+    parts = glob.glob(os.path.join(DATA_DIR, "master_all_data_part_*.parquet"))
+    if parts:
+        newest = max(os.path.getmtime(p) for p in parts)
+        total = sum(os.path.getsize(p) for p in parts)
+        return f"local:{len(parts)}:{int(newest)}:{total}"
+    try:
+        import requests
+        r = requests.head(REMOTE_PARQUET_URL, allow_redirects=True, timeout=10)
+        tag = r.headers.get("ETag") or r.headers.get("Last-Modified") or ""
+        size = r.headers.get("Content-Length", "")
+        if tag or size:
+            return f"remote:{tag}:{size}"
+    except Exception:
+        pass
+    return REMOTE_PARQUET_URL
+
+
+# Cache key = get_data_version() fingerprint so the cached connection invalidates when
+# the data behind the stable release URL changes. NOTE: the parameter must NOT start
+# with an underscore — Streamlit excludes underscore-prefixed args from the cache key,
+# which would silently disable this busting.
 @st.cache_resource
 def get_database_connection(url_version=REMOTE_PARQUET_URL):
     """
@@ -1391,14 +1453,12 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             WITH binned AS (
                 SELECT Reach_Name,
                        ROUND(dist_km) AS dist_bin,
-                       MEDIAN(wse) AS bin_wse,
-                       MEDIAN(slope_calc) AS bin_slope
+                       MEDIAN(wse) AS bin_wse
                 FROM river_data {where_clause}
                 GROUP BY Reach_Name, ROUND(dist_km)
             )
             SELECT Reach_Name,
-                   AVG(bin_wse) AS avg_wse,
-                   AVG(bin_slope) AS avg_slope
+                   AVG(bin_wse) AS avg_wse
             FROM binned
             GROUP BY Reach_Name
         """
@@ -2731,13 +2791,18 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                                       '<extra></extra>'
                     ))
 
+                    # x_eval ascends from the ANCHOR (dist 0, inland confluence)
+                    # to the COAST (~35 km, the mouths) — index 0 is the anchor
+                    # end, index -1 the coast end. nan-aware because the profile
+                    # now leaves coverage holes as honest NaN gaps.
+                    finite = np.isfinite(abs_slope)
                     slope_stats.append({
                         "River": reach,
-                        "Mean Slope (cm/km)": abs_slope.mean(),
-                        "Max Slope (cm/km)": abs_slope.max(),
-                        "Min Slope (cm/km)": abs_slope.min(),
-                        "Slope at Coast (cm/km)": abs_slope[0],
-                        "Slope at Anchor (cm/km)": abs_slope[-1],
+                        "Mean Slope (cm/km)": np.nanmean(abs_slope),
+                        "Max Slope (cm/km)": np.nanmax(abs_slope),
+                        "Min Slope (cm/km)": np.nanmin(abs_slope),
+                        "Slope at Anchor (cm/km)": abs_slope[finite][0] if finite.any() else np.nan,
+                        "Slope at Coast (cm/km)": abs_slope[finite][-1] if finite.any() else np.nan,
                         "Points Used": len(reach_data)
                     })
 
@@ -2813,7 +2878,8 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
             with st.spinner("Computing per-pass slopes…"):
                 pdata = compute_finescale_pass_matrix(
-                    con, REMOTE_PARQUET_URL, where_clause, float(res_km), float(xmax))
+                    con, st.session_state.get("data_version", REMOTE_PARQUET_URL),
+                    where_clause, float(res_km), float(xmax))
 
             if not pdata:
                 st.warning("No data available for the selected filters.")
@@ -3480,10 +3546,14 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             DISP = {"Kanektok_River": "Kanektok River", "Uyak_Creek": "Uyak Creek"}
             REACH_ORDER = ["Kanektok_River", "Uyak_Creek"]
 
-            def _fmt_p(p):
+            def _fmt_p(p, p_adj=None):
+                # Star on the Holm-adjusted p when the JSON carries it (one family
+                # across all the page's Mann-Whitney tests); raw-p fallback keeps
+                # older JSONs rendering until they are regenerated.
                 if p is None or (isinstance(p, float) and np.isnan(p)):
                     return "n/a (n<3)"
-                return f"{p:.3f}" + (" *" if p < 0.05 else "")
+                starred = (p_adj if p_adj is not None else p) < 0.05
+                return f"{p:.3f}" + (" *" if starred else "")
 
             q1_slope = {r["reach"]: r for r in results["Q1_seasonal"]
                         if r["question"] == "Q1_slope_pooled"}
@@ -3715,7 +3785,8 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     "Passes Jul–Aug": r["n_low"],
                     "Steepness May (cm/km)": round(r["slope_high"], 1),
                     "Steepness Jul–Aug (cm/km)": round(r["slope_low"], 1),
-                    "Change (cm/km)": r["dslope_cm_km"], "p-value": _fmt_p(r["p_slope"]),
+                    "Change (cm/km)": r["dslope_cm_km"],
+                    "p-value": _fmt_p(r["p_slope"], r.get("p_slope_holm")),
                 } for r in results["Q1_seasonal"] if r["question"] == "Q1_slope_pooled"]
                 st.markdown("**Steepness (all years combined — it doesn't change with season):**")
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
@@ -3723,24 +3794,30 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     "River": DISP[r["reach"]], "Year": r["year"],
                     "Water level May (m)": round(r["wse_high"], 2),
                     "Water level Jul–Aug (m)": round(r["wse_low"], 2),
-                    "Change (m)": r["dwse_m"], "p-value": _fmt_p(r["p_wse"]),
+                    "Change (m)": r["dwse_m"],
+                    "p-value": _fmt_p(r["p_wse"], r.get("p_wse_holm")),
                 } for r in results["Q1_seasonal"] if r["question"] == "Q1_wse_seasonal"]
                 st.markdown("**Water level (shown per year — this is what rises and falls with flow):**")
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
                 st.caption("The water level goes up and down a little, and which season is "
                            "higher flips from year to year — that's ordinary flow variation, not "
-                           "the river steadily changing. (A p-value below 0.05, marked *, is the "
-                           "statistician's flag that a difference is probably not just chance.)")
+                           "the river steadily changing. (A * marks a difference that is probably "
+                           "not just chance. Because this page runs many comparisons at once, the "
+                           "star is awarded only if the result stays convincing after a "
+                           "Holm correction for multiple testing — the raw p-value is shown "
+                           "either way.)")
 
             with st.expander("Year to year (summer 2024 vs. 2025 — the normal yardstick)"):
                 rows = [{
                     "River": DISP[r["reach"]],
                     "Steepness 2024 (cm/km)": round(r["slope_2024"], 1),
                     "Steepness 2025 (cm/km)": round(r["slope_2025"], 1),
-                    "Change (cm/km)": r["dslope_cm_km"], "p-value (steepness)": _fmt_p(r["p_slope"]),
+                    "Change (cm/km)": r["dslope_cm_km"],
+                    "p-value (steepness)": _fmt_p(r["p_slope"], r.get("p_slope_holm")),
                     "Water level 2024 (m)": round(r["wse_2024"], 2),
                     "Water level 2025 (m)": round(r["wse_2025"], 2),
-                    "Change (m)": r["dwse_m"], "p-value (level)": _fmt_p(r["p_wse"]),
+                    "Change (m)": r["dwse_m"],
+                    "p-value (level)": _fmt_p(r["p_wse"], r.get("p_wse_holm")),
                 } for r in results["Q2_interannual"]]
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
                 st.caption("Steepness is measured over the whole ice-free year; water level is "
@@ -3757,21 +3834,27 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     "Water level 2025 (m)": round(r["wse_2025"], 2),
                     "Water level 2026 (m)": round(r["wse_2026"], 2),
                     "Change (m)": r["dwse_m"], "Normal year-to-year change (m)": r["baseline_dwse_m"],
-                    "Within normal?": "yes" if r["wse_vs_baseline"] == "within" else r["wse_vs_baseline"],
-                    "Steepness change (cm/km)": r["dslope_cm_km"], "p-value (level)": _fmt_p(r["p_wse"]),
+                    "Within normal?": {"within": "yes", "exceeds": "exceeds",
+                                       "indistinguishable": "too close to call"}.get(
+                                          r["wse_vs_baseline"], r["wse_vs_baseline"]),
+                    "Steepness change (cm/km)": r["dslope_cm_km"],
+                    "p-value (level)": _fmt_p(r["p_wse"], r.get("p_wse_holm")),
                 } for r in results["Q3_typhoon"]]
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
                 rows = [{
                     "River": DISP[r["reach"]], "Points compared": r["n_bins"],
                     "Typical change (m)": r["median_dwse_m"],
-                    "Lower river (≤18 km)": r["downstream_dwse_m"],
-                    "Upper river (>18 km)": r["upstream_dwse_m"],
+                    "Upper river (≤18 km)": r["upstream_dwse_m"],
+                    "Lower river (>18 km)": r["downstream_dwse_m"],
                 } for r in results["Q3_profile"]]
                 st.markdown("**Change at each point along the river:**")
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-                st.caption("The change around the storm stays inside the normal year-to-year "
-                           "range, and it's flat all along the river — no upstream storm scar. "
-                           "Preliminary until the summer 2026 (Jul–Aug) data comes in.")
+                st.caption("The change around the storm is no larger than an ordinary "
+                           "year-to-year swing — with only a handful of matching passes the "
+                           "comparison is honestly \"too close to call\" rather than a proven "
+                           "\"no change,\" but nothing stands out, and the change is flat all "
+                           "along the river — no upstream storm scar. Preliminary until the "
+                           "summer 2026 (Jul–Aug) data comes in.")
 
             st.caption(
                 f"**Where the numbers come from.** Satellite record {record['date_min']} – "
@@ -3838,7 +3921,9 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
 
 def main():
-    con = get_database_connection()
+    data_version = get_data_version()
+    st.session_state["data_version"] = data_version
+    con = get_database_connection(data_version)
     if not con:
         st.error("Failed to initialize database connection.")
         st.stop()

@@ -260,15 +260,23 @@ _FINE_ESTIMATORS = {
 
 
 def _fine_regular_grid(sub):
-    """One pass -> (integer 0.1 km index, wse) on a regular grid, short gaps filled."""
+    """One pass -> (integer 0.1 km index, wse) on a regular grid, short gaps filled.
+
+    Gaps STRICTLY WIDER than FINE_FILL_GAP_KM are left as NaN. (pandas
+    `interpolate(limit=N)` alone would fabricate WSE in the first N cells of
+    EVERY gap, however wide — so long gaps are re-masked after interpolating.)
+    """
     sub = sub.sort_values("ibin")
     i0, i1 = int(sub["ibin"].min()), int(sub["ibin"].max())
     idx = np.arange(i0, i1 + 1)
     s = pd.Series(np.nan, index=idx, dtype=float)
     s.loc[sub["ibin"].values] = sub["wse"].values
     max_gap = int(round(FINE_FILL_GAP_KM / FINE_BASE_BIN_KM))
-    s = s.interpolate(limit=max_gap, limit_area="inside")
-    return idx.astype(int), s.to_numpy(dtype=float)
+    filled = s.interpolate(limit_area="inside")
+    isna = s.isna()
+    run_len = isna.groupby((~isna).cumsum()).transform("sum")
+    filled[isna & (run_len > max_gap)] = np.nan
+    return idx.astype(int), filled.to_numpy(dtype=float)
 
 
 def finescale_slope_profile(con, reaches=("Kanektok_River", "Uyak_Creek"),
@@ -326,15 +334,16 @@ def finescale_slope_profile(con, reaches=("Kanektok_River", "Uyak_Creek"),
             pos = ix - 1
             ok = (pos >= 0) & (pos < len(grid))
             mat[pos[ok], j] = sl[ok]
+        # Steepness = |slope| PER ELEMENT first, THEN quantiles: quantiles of
+        # the signed slopes folded with abs() afterwards mis-order the band
+        # wherever a bin's slopes straddle zero (the median could plot outside
+        # its own band). For same-sign bins the constructions are identical.
         with np.errstate(all="ignore"):
-            med = np.nanmedian(mat, axis=1)
-            q25 = np.nanquantile(mat, 0.25, axis=1)
-            q75 = np.nanquantile(mat, 0.75, axis=1)
+            a = np.abs(mat)
+            med = np.nanmedian(a, axis=1)
+            lo = np.nanquantile(a, 0.25, axis=1)
+            hi = np.nanquantile(a, 0.75, axis=1)
             n = np.sum(np.isfinite(mat), axis=1)
-        # Slopes are negative (downhill); plot steepness = |slope|. abs() flips the
-        # band order, so re-derive lo/hi as the min/max of the absolute quartiles.
-        a25, a75 = np.abs(q25), np.abs(q75)
-        med, lo, hi = np.abs(med), np.minimum(a25, a75), np.maximum(a25, a75)
         gap = n < min_passes            # honest gaps: don't interpolate sparse bins
         med[gap] = lo[gap] = hi[gap] = np.nan
         out[str(reach)] = dict(grid=grid, med=med, lo=lo, hi=hi,
