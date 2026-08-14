@@ -229,15 +229,17 @@ SWOT/
 - `haversine_vectorized()`: Calculates great-circle distance from anchor
 - `normalize_longitude()`: Handles 180° meridian crossing
 - `resolve_poly_name()`: Maps polygon IDs to river names
-- `process_granule()`: Main processing logic per satellite pass
-- `extract_date_from_granule()`: Extracts date from metadata without downloading
-- `is_date_already_processed()`: Checks if daily CSV exists for a date
-- `rebuild_master_from_daily_csvs()`: Aggregates all daily CSVs into master files
+- `process_granule()`: Main processing logic per granule (one tile of one pass)
+- `extract_granule_ids()`: Extracts date/cycle/pass/tile from metadata without downloading
+- `is_granule_already_processed()`: Checks if a checkpoint CSV exists for a granule
+  (granule-keyed `{date}_gCCC_PPP_TTT_data.csv` — date-keyed checkpoints silently
+  dropped sibling tiles of the same pass; fixed 2026-08-14)
+- `rebuild_master_from_daily_csvs()`: Aggregates all checkpoint CSVs into master files
 
 **Resumable Download Feature (Added 2026-02-10):**
 - ✅ **Fault-tolerant**: Survives internet interruptions, power loss, crashes
 - ✅ **Checkpoint system**: Each daily CSV acts as a save point
-- ✅ **No redundant work**: Skips already-downloaded dates
+- ✅ **No redundant work**: Skips already-downloaded granules
 - ✅ **Progress visibility**: Shows which dates are skipped vs. processed (with tqdm progress bars)
 - ✅ **Always consistent**: Master file rebuilt from complete dataset each run
 
@@ -327,7 +329,7 @@ con.execute(f"CREATE OR REPLACE VIEW river_data AS SELECT * FROM read_parquet('{
 **Streamlit Cloud Deployment:**
 - URL: https://swotdashboard.streamlit.app/
 - Hosted on Streamlit Cloud servers (free tier), auto-deploys on push to main
-- Data served from GitHub Release `v2.0-data` → `dashboard_data.parquet` (stable filename, currently Apr-Jul 2025 + Apr-May 2026, 1.38M rows, 42MB)
+- Data served from GitHub Release `v2.0-data` → `dashboard_data.parquet` (stable filename; all passes ≥ 2025-04-01 from the current master — see "Update Online Dashboard Data" below for the build recipe and row counts)
 - `requirements.txt` contains dashboard-only deps (no earthaccess, xarray, geopandas)
 - App sleeps after inactivity, wakes in ~30s on next visit
 
@@ -922,20 +924,29 @@ streamlit run dashboard_swot.py
 
 ### Update Online Dashboard Data
 ```bash
-# 1. Generate new parquet from local data (adjust date filter as needed)
+# 1. Generate new parquet from local data.
+#    Deployment window: all passes >= 2025-04-01 (June 2026 decision).
+#    No month filter here — the May–Oct ice line is enforced at ingestion
+#    (qc_registry.ICE_SAFE_MONTHS), so the master only contains safe months.
 python3 -c "
 import duckdb, os
 con = duckdb.connect(':memory:')
 con.execute(\"CREATE VIEW d AS SELECT * FROM read_parquet('batch_outputs/master_all_data_part_*.parquet')\")
-df = con.execute(\"SELECT * FROM d WHERE CAST(Pass_Date AS DATE) >= '2025-04-01' AND CAST(Pass_Date AS DATE) <= '2026-07-31' AND MONTH(CAST(Pass_Date AS DATE)) BETWEEN 4 AND 7 ORDER BY Reach_Name, Pass_Date, dist_km\").fetchdf()
+df = con.execute(\"SELECT * FROM d WHERE CAST(Pass_Date AS DATE) >= '2025-04-01' ORDER BY Reach_Name, Pass_Date, dist_km\").fetchdf()
 for col in df.select_dtypes('float64').columns: df[col] = df[col].astype('float32')
 df['Pass_Date'] = df['Pass_Date'].astype('datetime64[ns]')
 df.to_parquet('dashboard_data.parquet', compression='zstd', index=False)
 print(f'Saved {len(df):,} rows')
 "
-# 2. Upload to GitHub Release (stable filename — no code change needed)
-gh release delete v2.0-data --yes
-gh release create v2.0-data dashboard_data.parquet --title "Dashboard Data" --notes "Description of update"
+# 2. Upload to the existing GitHub Release, overwriting in place
+#    (stable filenames — no code change needed; do NOT delete/recreate the release):
+gh release upload v2.0-data dashboard_data.parquet --clobber
+# Other assets on v2.0-data, same pattern when they change:
+gh release upload v2.0-data batch_outputs/dem_river_elevations.parquet --clobber
+gh release upload v2.0-data batch_outputs/reference_gradient_per_pass.parquet --clobber
+# ORDERING: if the parquet schema changed (columns added/removed), merge the
+# matching code to main FIRST — Streamlit redeploys from main, and the live app
+# queries the columns it expects (e.g. the slope_calc removal, Aug 2026).
 ```
 
 ### Rebuild Master Files (from existing daily CSVs)
