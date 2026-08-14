@@ -713,9 +713,137 @@ def build_dem_fig2(bin_km: float = CORRIDOR_BIN_KM):
 
 
 # ---------------------------------------------------------------------------
+# D5 -- valley terrain slope, and what smoothing does to it
+# ---------------------------------------------------------------------------
+# Derivatives are taken on a 0.1 km corridor grid, finer than the 0.5 km grid D2
+# reports. The figure's whole subject is resolution dependence, and that cannot be
+# demonstrated on a grid whose spacing is comparable to the smallest window shown --
+# a 1 km window on a 0.5 km grid is a three-point fit. The finer grid costs nothing
+# in robustness: each 0.1 km bin still holds ~3 000-4 200 corridor pixels.
+SLOPE_GRID_KM = 0.1
+#: Theil-Sen window widths, spanning 8x. 0.5 km is the backwater scale the fine-scale
+#: slope work targets; 4 km is roughly the effective FWHM of the sigma = 1.5-2 km
+#: Gaussian smoothing whose use this figure exists to caution against.
+SLOPE_RES_KM = (0.5, 2.0, 4.0)
+SLOPE_DIFF_RES_KM = 2.0               # window for the per-corridor difference panel
+SLOPE_STEEP_KM = (3.0, 6.0)           # near-bifurcation reach quoted in the annotation
+SLOPE_BASE_KM = (10.0, 30.0)          # mid-reach baseline quoted against it
+
+
+def _corridor_slope(y, x, res_km):
+    """Downstream steepness (cm/km, positive) of a corridor profile by Theil-Sen.
+
+    Uses `core._fine_slope_theilsen`, the same robust sliding estimator the SWOT
+    fine-scale slope figures use, so the two series are computed the same way. It is
+    also the only one of core's three estimators that is safe here: the Savitzky-Golay
+    and Gaussian variants assume the input sits on core's 0.1 km FINE_BASE_BIN_KM grid
+    and would silently mis-scale on any other spacing. Elevation falls with distance,
+    so the raw slope is negative and is negated to report steepness.
+    """
+    from .core import _fine_slope_theilsen
+    return -_fine_slope_theilsen(x, y, res_km)
+
+
+def build_dem_fig5():
+    """D5 -- Valley terrain slope, and its dependence on smoothing length.
+
+    (a) the pooled corridor's downstream steepness at three Theil-Sen window widths,
+    with the analytic derivative of the D2 quadratic as the regional reference; the
+    near-bifurcation steepening survives every window, while the fine structure either
+    side of it does not. (b) the Kanektok-minus-Uyak difference of the two corridors'
+    slopes -- a deliberate null, and the derivative-domain counterpart of D2 panel (b).
+    """
+    per, pooled = _corridor_profile(bin_km=SLOPE_GRID_KM)
+    x = pooled.index.to_numpy()
+    k_color = config.river_color("Kanektok_River")
+    u_color = config.river_color("Uyak_Creek")
+
+    fig, (ax_a, ax_b) = plt.subplots(
+        2, 1, figsize=(config.FIG_WIDTH_FULL, 6.4), sharex=True,
+        gridspec_kw=dict(height_ratios=[1.35, 1.0], hspace=0.12))
+
+    # --- (a) resolution sweep ---------------------------------------------------
+    y = pooled["med"].to_numpy()
+    greys = ("0.72", "0.42", "0.0")
+    widths = (0.9, 1.4, 1.9)
+    for res, g, lw in zip(SLOPE_RES_KM, greys, widths):
+        ax_a.plot(x, _corridor_slope(y, x, res), color=g, lw=lw, zorder=3,
+                  label=f"Theil–Sen, {res:g} km window")
+
+    # Regional reference: the analytic derivative of the D2 quadratic, fitted on the
+    # same 0.5 km profile D2 reports, so the two figures cannot drift apart.
+    _, pooled_d2 = _corridor_profile()
+    coef = np.polyfit(pooled_d2.index.to_numpy(), pooled_d2["med"].to_numpy(), 2)
+    ax_a.plot(x, -(2 * coef[0] * x + coef[1]) * 100.0, color="black", ls=":", lw=1.3,
+              zorder=4, label="Derivative of the D2 quadratic")
+
+    spans = [np.nanmax(v) - np.nanmin(v)
+             for v in (_corridor_slope(y, x, r) for r in SLOPE_RES_KM)]
+    s_ref = _corridor_slope(y, x, SLOPE_DIFF_RES_KM)
+    steep = np.nanmedian(s_ref[(x >= SLOPE_STEEP_KM[0]) & (x <= SLOPE_STEEP_KM[1])])
+    base = np.nanmedian(s_ref[(x >= SLOPE_BASE_KM[0]) & (x <= SLOPE_BASE_KM[1])])
+    ax_a.axvspan(*SLOPE_STEEP_KM, color=config.BASELINE_COLOR, alpha=0.07,
+                 linewidth=0, zorder=0)
+    ax_a.set_ylabel("Valley Terrain Slope (cm/km)")
+    ax_a.set_ylim(0, 400)
+    ax_a.annotate(
+        f"Near-bifurcation reach ({SLOPE_STEEP_KM[0]:.0f}–{SLOPE_STEEP_KM[1]:.0f} km, shaded) "
+        f"{steep:.0f} cm/km\n"
+        f"against {base:.0f} cm/km through {SLOPE_BASE_KM[0]:.0f}–{SLOPE_BASE_KM[1]:.0f} km — "
+        "steeper at every window\n"
+        f"Full range spanned narrows {spans[0]:.0f} → {spans[-1]:.0f} cm/km from the "
+        f"{SLOPE_RES_KM[0]:g} to the {SLOPE_RES_KM[-1]:g} km window",
+        xy=(0.885, 0.04), xycoords="axes fraction", fontsize=8.5, color="#333333",
+        ha="right", va="bottom")
+    ax_a.legend(loc="upper left", bbox_to_anchor=(0.05, 1.0), frameon=False,
+                fontsize=8.5, labelspacing=0.35)
+
+    # --- (b) the null -----------------------------------------------------------
+    sk = _corridor_slope(per["Kanektok_River"]["med"].to_numpy(), x, SLOPE_DIFF_RES_KM)
+    su = _corridor_slope(per["Uyak_Creek"]["med"].to_numpy(), x, SLOPE_DIFF_RES_KM)
+    d = sk - su
+    good = np.isfinite(d)
+    ax_b.fill_between(x, np.nanpercentile(d, 25), np.nanpercentile(d, 75),
+                      color="0.85", alpha=0.55, linewidth=0, zorder=0)
+    _sign_shade(ax_b, x[good], d[good], k_color, u_color)
+    ax_b.plot(x[good], d[good], color="black", lw=1.4, zorder=5)
+    ax_b.axhline(0, color="black", ls="--", lw=1.2, zorder=4)
+    ax_b.set_ylabel("Slope Difference (cm/km)\n[Kanektok − Uyak]")
+    ax_b.set_ylim(-90, 90)
+    ax_b.annotate(
+        f"Median {np.nanmedian(d):+.0f} cm/km · "
+        f"quartiles {np.nanpercentile(d, 25):+.0f} to {np.nanpercentile(d, 75):+.0f} · "
+        f"Kanektok steeper on {np.nanmean(d[good] > 0) * 100:.0f}% of the reach\n"
+        f"corridor medians {np.nanmedian(sk):.0f} and {np.nanmedian(su):.0f} cm/km — "
+        "the spread swamps the difference",
+        xy=(0.885, 0.03), xycoords="axes fraction", fontsize=8.5, color="#333333",
+        ha="right", va="bottom")
+    handles = [Patch(facecolor=k_color, alpha=0.32, linewidth=0),
+               Patch(facecolor=u_color, alpha=0.32, linewidth=0),
+               Patch(facecolor="0.85", alpha=0.55, linewidth=0)]
+    ax_b.legend(handles, ["Kanektok steeper", "Uyak steeper", "Interquartile range"],
+                loc="upper left", bbox_to_anchor=(0.05, 1.0), frameon=False,
+                fontsize=8.5, ncol=3, columnspacing=1.4, handlelength=1.3)
+
+    # --- shared furniture -------------------------------------------------------
+    for ax, tag in zip((ax_a, ax_b), ("(a)", "(b)")):
+        add_bifurcation_line(ax)
+        ax.annotate(tag, xy=(0.006, 0.965), xycoords="axes fraction",
+                    fontsize=11, fontweight="bold", ha="left", va="top")
+    for txt in list(ax_b.texts):
+        if txt.get_text() == "Bifurcation":
+            txt.remove()
+
+    style_distance_axis(ax_b, DEM_XMAX_KM)
+    ax_a.tick_params(labelbottom=False)
+    fig.subplots_adjust(left=0.125, right=0.985, top=0.985, bottom=0.095, hspace=0.12)
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-BUILDERS = {1: build_dem_fig1, 2: build_dem_fig2}
+BUILDERS = {1: build_dem_fig1, 2: build_dem_fig2, 5: build_dem_fig5}
 VARIANTS = {1: ("A", "B", "C", "D")}
 
 
