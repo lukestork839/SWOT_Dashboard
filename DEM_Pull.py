@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import rasterio
 from rasterio.mask import mask as rio_mask
-from scipy.interpolate import LinearNDInterpolator
+from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 import requests
 import os
 import glob
@@ -154,13 +154,18 @@ def build_geoid_interpolator():
     geoid_df["lon_bin"] = (geoid_df["longitude"] / 0.005).round() * 0.005
     geoid_grid = geoid_df.groupby(["lat_bin", "lon_bin"])["geoid"].mean().reset_index()
 
-    interp = LinearNDInterpolator(
-        list(zip(geoid_grid["lat_bin"], geoid_grid["lon_bin"])),
-        geoid_grid["geoid"].values
-    )
+    points = list(zip(geoid_grid["lat_bin"], geoid_grid["lon_bin"]))
+    values = geoid_grid["geoid"].values
+    # Linear inside the SWOT convex hull; nearest-neighbour extrapolation outside it.
+    # The out-of-hull points cluster exactly where the geoid deviates most from its mean
+    # (river mouths / anchor), so a constant fallback there puts a ~0.25 m datum error
+    # into the coastal bins. The geoid is smooth (~13.2–13.8 m across the site), so
+    # nearest-neighbour is accurate to <2 cm.
+    interp = LinearNDInterpolator(points, values)
+    nn_interp = NearestNDInterpolator(points, values)
     print(f"  Built geoid interpolator from {len(geoid_grid)} grid points "
           f"(geoid range: {geoid_grid['geoid'].min():.2f}–{geoid_grid['geoid'].max():.2f} m)")
-    return interp
+    return interp, nn_interp
 
 
 FALLBACK_GEOID = 13.46  # Mean geoid undulation for study area (m)
@@ -175,14 +180,18 @@ def process_dataframe(df):
 
     # Convert ellipsoidal heights to orthometric (matching SWOT datum)
     print("\nApplying geoid correction (WGS84 ellipsoidal → EGM2008 orthometric)...")
-    geoid_interp = build_geoid_interpolator()
-    if geoid_interp is not None:
+    interpolators = build_geoid_interpolator()
+    if interpolators is not None:
+        geoid_interp, nn_interp = interpolators
         geoid_values = geoid_interp(df["latitude"].values, df["longitude"].values)
-        # Fall back to constant for points outside interpolation hull
+        # Points outside the interpolation hull: nearest-neighbour extrapolation
         nan_mask = np.isnan(geoid_values)
         if nan_mask.any():
-            geoid_values[nan_mask] = FALLBACK_GEOID
-            print(f"  {nan_mask.sum()} points outside SWOT coverage, used fallback ({FALLBACK_GEOID} m)")
+            geoid_values[nan_mask] = nn_interp(
+                df["latitude"].values[nan_mask], df["longitude"].values[nan_mask]
+            )
+            print(f"  {nan_mask.sum()} points outside SWOT coverage, "
+                  f"nearest-neighbour geoid extrapolation")
         df["wse"] = df["wse"] - geoid_values
         print(f"  Subtracted geoid (mean: {np.nanmean(geoid_values):.2f} m)")
     else:

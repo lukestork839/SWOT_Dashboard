@@ -237,7 +237,7 @@ def main():
 
     rows = []
     profiles = []
-    example_R = [8, 16, 24, 32]
+    example_R = [8.0, 16.0, 24.0, 32.0]
     examples = {}
     with rasterio.open(RASTER) as src:
         for R in radii:
@@ -355,8 +355,8 @@ def main():
                          "swot_kan_wse_survey_m": kwse_surv,
                          "swot_diff_uyak_minus_kan": swot_at(R, "diff_pass_paired_m"),
                          "n_valid": int(np.isfinite(z).sum()), "n_tot": len(z)})
-            if int(round(R)) in example_R and int(round(R)) not in examples:
-                examples[int(round(R))] = (arc_m.copy(), z.copy(), kcm, ucm, fp, kbed, kcrest)
+            if R in example_R and R not in examples:
+                examples[R] = (arc_m.copy(), z.copy(), kcm, ucm, fp, kbed, kcrest)
 
     ch = pd.DataFrame(rows)
     # DEM-derived difference. Kept for continuity, but it is NOT the number to quote: the mosaic is a
@@ -379,9 +379,12 @@ def main():
     for tag in ("kan", "uyak"):
         for stat in ("med", "p10", "p90"):
             ch[f"{tag}_superelev_{stat}_m"] = ch[f"swot_{tag}_wse_{stat}_m"] - ch["fp_ref_m"]
-    # Primary superelevation = SWOT median stage, falling back to the DEM where SWOT is thin.
-    ch["kan_superelev_m"] = ch["kan_superelev_med_m"].fillna(ch["kan_superelev_dem_m"])
-    ch["uyak_superelev_m"] = ch["uyak_superelev_med_m"].fillna(ch["uyak_superelev_dem_m"])
+    # Primary superelevation = SWOT median stage, with NO fallback to the DEM-stage version:
+    # the two stage bases differ per-arc by up to ~1.3 m, so where SWOT is thin the curve
+    # gaps rather than silently switching basis mid-profile. The `_dem_` columns remain
+    # available separately for anyone who wants the all-DEM view.
+    ch["kan_superelev_m"] = ch["kan_superelev_med_m"]
+    ch["uyak_superelev_m"] = ch["uyak_superelev_med_m"]
     ch.to_parquet(os.path.join(DATA, "arcB_channels.parquet"), index=False)
 
     # Full arc profiles (elevation vs along-arc distance) for interactive dashboard rendering.
@@ -481,7 +484,7 @@ def _sections_fig(examples):
         if np.isfinite(xk) and np.isfinite(kcrest):
             ax.plot(xk, kcrest, marker="^", color="#08519c", ms=8, label="Kanektok ridge crest")
         ax.set_xlim(left, right)
-        ax.set_title(f"Arc transect at radius {R} km from anchor "
+        ax.set_title(f"Arc transect at radius {R:g} km from anchor "
                      f"(Kanektok -> floodplain -> Uyak)", fontsize=10)
         ax.set_xlabel("distance from Kanektok toward Uyak (km)")
         ax.set_ylabel("elevation (m)")
