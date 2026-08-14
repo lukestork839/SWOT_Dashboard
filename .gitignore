@@ -98,3 +98,6 @@ Quinhagak*
 /dem_channel_slope_phase2/
 /dem_finescale_slope_spike/
 /dem_veg_filter/outputs/
+
+# Personal working documents (thesis drafts, proposals) — never commit
+Project_Info/

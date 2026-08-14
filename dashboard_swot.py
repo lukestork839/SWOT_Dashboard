@@ -258,19 +258,40 @@ def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
     df = pd.DataFrame({'bin': bins, 'wse': y})
     bin_medians = df.groupby('bin')['wse'].median().sort_index()
 
-    x_binned = bin_medians.index.values
-    y_binned = bin_medians.values
+    # Place the bins on an EXPLICIT regular grid with NaN holes. The raw bin
+    # list skips empty bins, and both the Gaussian filter (which smooths over
+    # array positions, not distance) and np.interp would otherwise treat bins
+    # on opposite sides of a coverage hole as adjacent — measured up to
+    # ~280 cm/km of spurious slope on sparse selections.
+    ibin = np.round(bin_medians.index.values / bin_size).astype(int)
+    grid_i = np.arange(ibin.min(), ibin.max() + 1)
+    x_grid = grid_i * bin_size
+    y_grid = np.full(grid_i.shape, np.nan)
+    y_grid[ibin - ibin[0]] = bin_medians.values
 
-    # Gaussian smoothing with sigma in physical distance units
-    # sigma in bins = smooth_km / bin_size
+    # NaN-aware Gaussian smoothing (normalized convolution): smooth the data
+    # with missing bins as zero, smooth the coverage mask the same way, and
+    # divide — each output is a weighted mean of the data the kernel actually
+    # saw. Where real data carries <25% of the kernel weight (deep inside a
+    # hole or far past the data ends) the estimate is untrustworthy: leave NaN
+    # so the profile shows a gap instead of an invented curve.
     sigma_bins = smooth_km / bin_size
-    y_smooth = gaussian_filter1d(y_binned, sigma=sigma_bins, mode='nearest')
+    have = ~np.isnan(y_grid)
+    num = gaussian_filter1d(np.where(have, y_grid, 0.0), sigma=sigma_bins, mode='constant')
+    den = gaussian_filter1d(have.astype(float), sigma=sigma_bins, mode='constant')
+    with np.errstate(invalid='ignore', divide='ignore'):
+        y_smooth = num / den
+    y_smooth[den < 0.25] = np.nan
 
-    # Interpolate onto regular eval grid
-    x_eval = np.linspace(x_binned.min(), x_binned.max(), n_eval)
-    y_fitted = np.interp(x_eval, x_binned, y_smooth)
+    # Interpolate onto regular eval grid, keeping gaps as gaps
+    x_eval = np.linspace(x_grid.min(), x_grid.max(), n_eval)
+    valid = ~np.isnan(y_smooth)
+    y_fitted = np.interp(x_eval, x_grid[valid], y_smooth[valid])
+    coverage = np.interp(x_eval, x_grid, valid.astype(float))
+    y_fitted[coverage < 0.5] = np.nan
 
     # Numerical derivative: slope in m/km -> * 100 for cm/km
+    # (NaN gaps propagate to the slope at and beside gap bins — honest gaps.)
     slope_cm_km = np.gradient(y_fitted, x_eval) * 100
 
     return x_eval, slope_cm_km, y_fitted
@@ -288,6 +309,33 @@ def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
 FINE_BASE_BIN_KM = 0.1          # base grid for per-pass profiles
 FINE_MIN_PIX_BIN = 30           # trust a bin's median only with >= this many pixels
 FINE_FILL_GAP_KM = 0.3          # per pass, interpolate internal gaps up to this wide
+
+# Resolution and reach extent are FIXED rather than exposed as sliders -- both have a
+# single defensible value, and leaving them adjustable invited readings that disagree
+# with thesis Figure 9 for no scientific gain:
+#   * 0.5 km is the backwater length scale here (L_b ~ depth/slope ~ 2 m / 0.00195),
+#     i.e. the scale an avulsion slope-advantage would act on. The resolution sweep
+#     showed it is comfortably resolvable (SNR ~20 Kanektok / ~15 Uyak).
+#   * 34 km trims the tidal mouth: cross-pass WSE spread only rises in the final
+#     ~1-2 km at each outlet (see coastal_noise_diagnostic.py), and that tail is far
+#     downstream of the bifurcation, so cutting it costs nothing.
+FINE_RES_KM = 0.5
+FINE_XMAX_KM = 34.0
+
+# The temporal views condense a stretch of river to one slope per pass. Both the
+# stretch and the pass-quality gate are fixed at their defensible values (sweep run
+# 2026-08-04 over the full local archive):
+#   * 1-5 km brackets the bifurcation (2.5 km) and is FOUR times the 0.5 km fitting
+#     kernel. Narrower windows are unsafe: at 2-3 km (two kernel widths) the measured
+#     advantage inverts to -6 cm/km, an artifact of where the bifurcation step falls
+#     relative to the window edges rather than a real reversal.
+#   * 80 % coverage is where the answer stabilises -- 50 % -> 80 % moves the paired
+#     advantage +30 -> +25 cm/km (partial-coverage Uyak passes were biasing Uyak's
+#     slope low), while 80 % -> 95 % does not move it at all. It costs passes mainly
+#     on the Uyak (90 -> 42; Kanektok 123 -> 89), which is the point: those are the
+#     passes that only clipped the window.
+FINE_WINDOW_KM = (1.0, 5.0)
+FINE_MIN_COVERAGE = 0.80
 
 
 def _fine_slope_theilsen(x, y, res_km):
@@ -314,24 +362,53 @@ def _fine_slope_theilsen(x, y, res_km):
 
 
 def _fine_regular_grid(sub):
-    """One pass -> (integer 0.1 km index, wse) on a regular grid, short gaps filled."""
+    """One pass -> (integer 0.1 km index, wse) on a regular grid, short gaps filled.
+
+    Gaps STRICTLY WIDER than FINE_FILL_GAP_KM are left as NaN. (pandas
+    `interpolate(limit=N)` alone would fabricate WSE in the first N cells of
+    EVERY gap, however wide — so long gaps are re-masked after interpolating.)
+    """
     sub = sub.sort_values("ibin")
     i0, i1 = int(sub["ibin"].min()), int(sub["ibin"].max())
     idx = np.arange(i0, i1 + 1)
     s = pd.Series(np.nan, index=idx, dtype=float)
     s.loc[sub["ibin"].values] = sub["wse"].values
     max_gap = int(round(FINE_FILL_GAP_KM / FINE_BASE_BIN_KM))
-    s = s.interpolate(limit=max_gap, limit_area="inside")
-    return idx.astype(int), s.to_numpy(dtype=float)
+    filled = s.interpolate(limit_area="inside")
+    isna = s.isna()
+    run_len = isna.groupby((~isna).cumsum()).transform("sum")
+    filled[isna & (run_len > max_gap)] = np.nan
+    return idx.astype(int), filled.to_numpy(dtype=float)
+
+
+# Period bins for the temporal fine-scale views. These MIRROR the flow-regime
+# definitions in temporal_analysis.py (HIGH_FLOW_MONTHS = May freshet,
+# LOW_FLOW_MONTHS = Jul-Aug baseflow) so a fine-scale seasonal contrast is directly
+# comparable to the Q1/Q2 conclusions in TEMPORAL_ANALYSIS.md. Order = display order.
+FINE_SEASONS = [
+    ("Freshet (May)", {5}),
+    ("Baseflow (Jul–Aug)", {7, 8}),
+    ("Shoulder (Apr, Jun, Sep–Nov)", {4, 6, 9, 10, 11}),
+    ("Ice (Dec–Mar)", {12, 1, 2, 3}),
+]
+FINE_GROUP_MODES = ["Year", "Season", "Month", "Individual pass"]
+FINE_MAX_PERIOD_LINES = 24      # cap overlaid period profiles (guards 'Individual pass')
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def compute_finescale_slope(_con, url_version, where_clause, res_km, xmax):
-    """Per-pass-then-aggregate fine-scale slope for each river (robust Theil-Sen).
+def compute_finescale_pass_matrix(_con, url_version, where_clause, res_km, xmax):
+    """Per-pass fine-scale slope MATRIX for each river (robust sliding Theil-Sen).
 
-    Returns {reach: dict(grid, med, q25, q75, n)}. Cached on the selection +
-    controls so slider moves are instant after the first compute. `url_version`
-    keys the cache to the deployed data version (same idiom as other loaders).
+    This is the expensive step: one Theil-Sen sweep per pass. It deliberately stops
+    BEFORE aggregating, returning the full (grid x pass) matrix plus the pass dates,
+    so every temporal regrouping (year / season / month / individual pass) and every
+    coverage gate is a free numpy operation on the cached matrix rather than a
+    re-query + re-fit. Aggregate with `_fine_aggregate`.
+
+    Returns {reach: dict(grid, mat, passes, n_passes)} where `mat` holds SIGNED
+    slopes (cm/km, negative = downhill) on a 0.1 km grid, NaN where a pass did not
+    image that bin. Cached on the selection + controls; `url_version` keys the cache
+    to the deployed data version (same idiom as other loaders).
     """
     df = _con.execute(f"""
         SELECT CAST(Pass_Date AS DATE) AS pass,
@@ -366,17 +443,120 @@ def compute_finescale_slope(_con, url_version, where_clause, res_km, xmax):
             pos = ix - 1
             ok = (pos >= 0) & (pos < len(grid))
             mat[pos[ok], j] = sl[ok]
-        with np.errstate(all="ignore"):
-            med = np.nanmedian(mat, axis=1)
-            q25 = np.nanquantile(mat, 0.25, axis=1)
-            q75 = np.nanquantile(mat, 0.75, axis=1)
-            n = np.sum(np.isfinite(mat), axis=1)
-        # Slopes are negative (downhill); plot steepness = |slope|. abs() flips the
-        # band order, so re-derive lo/hi as the min/max of the absolute quartiles.
-        a25, a75 = np.abs(q25), np.abs(q75)
-        out[str(reach)] = dict(grid=grid, med=np.abs(med),
-                               lo=np.minimum(a25, a75), hi=np.maximum(a25, a75),
-                               n=n, n_passes=len(passes))
+        out[str(reach)] = dict(grid=grid, mat=mat,
+                               passes=pd.to_datetime(pd.Series(list(passes))).to_numpy(),
+                               n_passes=len(passes))
+    return out
+
+
+def _fine_aggregate(mat, cols=None, min_passes=0):
+    """Aggregate a per-pass slope matrix across a subset of passes (columns).
+
+    Pure numpy on the cached matrix -- no re-query, no re-fit -- so regrouping by
+    period is instant. Returns (med, lo, hi, n) as ABSOLUTE slope (steepness,
+    cm/km); bins imaged by fewer than `min_passes` passes are set to NaN.
+    """
+    sub = mat if cols is None else mat[:, cols]
+    med = np.full(mat.shape[0], np.nan)
+    q25, q75 = med.copy(), med.copy()
+    n = np.sum(np.isfinite(sub), axis=1) if sub.shape[1] else np.zeros(mat.shape[0], dtype=int)
+    if sub.shape[1] == 0:
+        return med, q25, q75, n
+    # Reduce only over bins that some pass actually imaged: an all-NaN bin is normal
+    # here (coverage gaps), and feeding one to nanmedian just raises a noisy warning.
+    # Steepness = |slope| PER ELEMENT first, THEN quantiles: quantiles of the
+    # signed slopes folded with abs() afterwards mis-order the band wherever a
+    # bin's slopes straddle zero (the median could plot outside its own band).
+    # For same-sign bins the two constructions are identical.
+    seen = n > 0
+    if seen.any():
+        a = np.abs(sub[seen])
+        med[seen] = np.nanmedian(a, axis=1)
+        q25[seen] = np.nanquantile(a, 0.25, axis=1)
+        q75[seen] = np.nanquantile(a, 0.75, axis=1)
+    lo, hi = q25, q75
+    if min_passes > 0:
+        gap = n < min_passes
+        med[gap] = lo[gap] = hi[gap] = np.nan
+    return med, lo, hi, n
+
+
+def _fine_window_mask(grid, window):
+    """Boolean mask for the analysis window (lo, hi) on the 0.1 km grid."""
+    lo, hi = window
+    return (grid >= lo) & (grid <= hi)
+
+
+def _fine_window_coverage(mat, grid, window):
+    """Per-pass fraction of the analysis window that yielded a valid slope.
+
+    This is the pass-quality gate: the fine-scale slope of a pass is only
+    meaningful where that pass actually imaged the river, so a pass that caught
+    only a sliver of the window should not contribute a 'window slope'.
+    """
+    m = _fine_window_mask(grid, window)
+    if not m.any():
+        return np.zeros(mat.shape[1])
+    return np.isfinite(mat[m, :]).mean(axis=0)
+
+
+def _fine_window_slope(mat, grid, window):
+    """Per-pass steepness (|cm/km|) summarised over the analysis window.
+
+    Median of that pass's local sliding-Theil-Sen slopes inside the window -- i.e.
+    exactly the quantity the profile plot draws, condensed to one number per pass,
+    so the time series and the profile can never disagree.
+    """
+    out = np.full(mat.shape[1], np.nan)
+    m = _fine_window_mask(grid, window)
+    if not m.any():
+        return out
+    sub = mat[m, :]
+    valid = np.isfinite(sub).any(axis=0)     # passes that imaged part of the window
+    if valid.any():
+        out[valid] = np.abs(np.nanmedian(sub[:, valid], axis=0))
+    return out
+
+
+def _fine_group_passes(passes, mode):
+    """Group pass dates into ordered periods -> [(label, positional indices), ...].
+
+    Seasons follow FINE_SEASONS (temporal_analysis.py flow regimes); Year/Month/
+    Individual pass are self-explanatory. Groups come back in chronological (or
+    seasonal) display order, not alphabetical.
+    """
+    ts = pd.to_datetime(pd.Series(list(passes)))
+    if mode == "Year":
+        key, lab = ts.dt.year, ts.dt.year.astype(str)
+    elif mode == "Month":
+        key, lab = ts.dt.month, ts.dt.strftime("%b")
+    elif mode == "Season":
+        month = ts.dt.month
+        key = pd.Series(len(FINE_SEASONS), index=ts.index)
+        lab = pd.Series("Unclassified", index=ts.index)
+        for i, (name, months) in enumerate(FINE_SEASONS):
+            sel = month.isin(months)
+            key[sel], lab[sel] = i, name
+    else:  # Individual pass
+        key, lab = ts, ts.dt.strftime("%Y-%m-%d")
+    g = pd.DataFrame({"key": key, "lab": lab})
+    groups = [(name, sub.index.to_numpy()) for name, sub in g.groupby("lab", sort=False)]
+    groups.sort(key=lambda item: g.loc[item[1], "key"].iloc[0])
+    return groups
+
+
+def compute_finescale_slope(_con, url_version, where_clause, res_km, xmax):
+    """All-pass aggregate fine-scale profile (the tab's default view).
+
+    Thin wrapper over the cached matrix so the aggregate view and the temporal
+    views share one compute. Returns {reach: dict(grid, med, lo, hi, n, n_passes)}.
+    """
+    data = compute_finescale_pass_matrix(_con, url_version, where_clause, res_km, xmax)
+    out = {}
+    for reach, r in data.items():
+        med, lo, hi, n = _fine_aggregate(r["mat"])
+        out[reach] = dict(grid=r["grid"], med=med, lo=lo, hi=hi,
+                          n=n, n_passes=r["n_passes"])
     return out
 
 
@@ -417,9 +597,40 @@ class VerticalColorbar(MacroElement):
             {% endmacro %}
         """)
 
-# Cache key includes the remote URL so the cached connection invalidates when the data
-# source changes. NOTE: the parameter must NOT start with an underscore — Streamlit excludes
-# underscore-prefixed args from the cache key, which would silently disable this busting.
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_data_version():
+    """Fingerprint of the ACTIVE data source — the cache-busting key.
+
+    The deployment strategy keeps the release-asset URL stable and swaps the
+    file behind it, so the URL itself can never bust a cache (the old
+    url_version=URL scheme was a constant). Local dev: newest mtime + total
+    size of the partition files. Cloud: the asset's ETag/Last-Modified from a
+    HEAD request. The 1 h TTL means a redeployed asset is picked up within an
+    hour with no code change; on probe failure fall back to the URL (old
+    behavior, stale-but-functional).
+    """
+    import glob
+    parts = glob.glob(os.path.join(DATA_DIR, "master_all_data_part_*.parquet"))
+    if parts:
+        newest = max(os.path.getmtime(p) for p in parts)
+        total = sum(os.path.getsize(p) for p in parts)
+        return f"local:{len(parts)}:{int(newest)}:{total}"
+    try:
+        import requests
+        r = requests.head(REMOTE_PARQUET_URL, allow_redirects=True, timeout=10)
+        tag = r.headers.get("ETag") or r.headers.get("Last-Modified") or ""
+        size = r.headers.get("Content-Length", "")
+        if tag or size:
+            return f"remote:{tag}:{size}"
+    except Exception:
+        pass
+    return REMOTE_PARQUET_URL
+
+
+# Cache key = get_data_version() fingerprint so the cached connection invalidates when
+# the data behind the stable release URL changes. NOTE: the parameter must NOT start
+# with an underscore — Streamlit excludes underscore-prefixed args from the cache key,
+# which would silently disable this busting.
 @st.cache_resource
 def get_database_connection(url_version=REMOTE_PARQUET_URL):
     """
@@ -534,11 +745,19 @@ def load_transect_overlay():
 def load_xsec_B():
     """Approach B — iso-distance-from-anchor arc transects (Kanektok vs Uyak).
 
-    Returns (channels, profiles) or (None, None). channels: one row per radius
-    (R_km, kan_wse_m, uyak_wse_m, kan_arc_m, uyak_arc_m, diff_uyak_minus_kan, fp_ref_m,
-    kan/uyak_superelev_m, and the Kanektok β geometry kan_depth_m/kan_bed_m/kan_crest_m/
-    kan_HAR_m/kan_HM_m/kan_beta, n_valid, n_tot). profiles: full arc cross-sections
-    (R_km, arc_m, elevation_m).
+    Returns (channels, profiles) or (None, None). profiles: full arc cross-sections
+    (R_km, arc_m, elevation_m). channels: one row per radius —
+
+      geometry     R_km, kan_arc_m, uyak_arc_m, fp_ref_m, fp_zone_n/width_m, geoid_m, n_valid, n_tot
+      DEM water    kan_wse_m, uyak_wse_m, diff_uyak_minus_kan
+      SWOT water   swot_{kan,uyak}_wse_{med,p10,p90}_m, swot_kan_wse_survey_m,
+                   swot_diff_uyak_minus_kan  <- the PASS-PAIRED difference; prefer this over the
+                   DEM one, which carries a differential-stage artifact from the multi-date mosaic
+      superelev    {kan,uyak}_superelev_m (primary, at SWOT median stage), _{med,p10,p90}_m (band),
+                   _dem_m (all-DEM variant)
+      β geometry   kan_depth_m, kan_bed_m (stage-matched), kan_bed_dem_m, kan_crest_m, kan_HAR_m,
+                   kan_HM_m, kan_beta, kan_freeboard_over_depth (the bankfull check)
+      migration QC kan/uyak_snap_offset_m, kan/uyak_snap_clipped  (2026 field line vs 2010–2021 DEM)
 
     Reads the committed `data/` copies first (present on the hosted app) and falls back to the
     scratch `outputs/` copies from a local `build_arc_B.py` run.
@@ -699,6 +918,23 @@ def render_cross_sections(chB, profB, plotly_template):
             x=[x_kan], y=[crest], mode="markers", name="Kanektok ridge crest",
             marker=dict(symbol="triangle-up", size=12, color=KAN),
             hovertemplate="Kanektok ridge crest: %{y:.2f} m<extra></extra>"))
+    # Independent SWOT water surface at each channel, with the p10–p90 range across overpasses as the
+    # error bar. The DEM images one arbitrary stage from a 2010–2021 mosaic blend; SWOT shows both
+    # where the water actually sits and how far it moves, so the reader can see the DEM marker land
+    # inside the observed range rather than take the single DEM value on faith.
+    for tag, xc, col, name in (("kan", x_kan, KAN, "Kanektok"), ("uyak", x_uyak, UYAK, "Uyak")):
+        med = crow.get(f"swot_{tag}_wse_med_m", np.nan)
+        p10, p90 = crow.get(f"swot_{tag}_wse_p10_m", np.nan), crow.get(f"swot_{tag}_wse_p90_m", np.nan)
+        if xc is None or not np.isfinite(med):
+            continue
+        err = dict(type="data", symmetric=False, array=[p90 - med], arrayminus=[med - p10],
+                   color=col, thickness=1.5, width=6) if np.isfinite(p10) and np.isfinite(p90) else None
+        fig.add_trace(go.Scatter(
+            x=[xc], y=[med], mode="markers", name=f"{name} SWOT water (p10–p90)",
+            marker=dict(symbol="circle-open", size=13, color=col, line=dict(width=2.5)),
+            error_y=err,
+            hovertemplate=f"{name} SWOT median stage: %{{y:.2f}} m<br>"
+                          f"range p10–p90: {p10:.2f} – {p90:.2f} m<extra></extra>"))
     fig.update_layout(
         title=f"Arc at {R:.1f} km from anchor  (Kanektok → floodplain → Uyak)",
         xaxis=dict(title="Distance from Kanektok toward Uyak (km)", range=[left, right]),
@@ -710,34 +946,59 @@ def render_cross_sections(chB, profB, plotly_template):
     # Two aligned rows of 3: water surfaces on top, superelevation (the avulsion metric) below.
     def _se(v):
         return f"{v:+.2f} m" if pd.notna(v) else "n/a"
-    diff = crow["diff_uyak_minus_kan"]
+
+    # The inter-river difference is quoted from SWOT PASS-PAIRED data, not from the DEM. Both rivers
+    # are measured in the same overpass, so stage cancels exactly. The DEM version is contaminated:
+    # the ArcticDEM mosaic is a multi-date blend that caught the Kanektok near the 29th percentile of
+    # observed stages and the Uyak near the 76th, worth ~0.34 m of spurious "Uyak higher".
+    swot_diff = crow.get("swot_diff_uyak_minus_kan", np.nan)
+    dem_diff = crow["diff_uyak_minus_kan"]
     r1c1, r1c2, r1c3 = st.columns(3)
-    r1c1.metric("Kanektok water surface", f"{crow['kan_wse_m']:.2f} m")
-    r1c2.metric("Uyak water surface", f"{crow['uyak_wse_m']:.2f} m")
-    r1c3.metric("Uyak − Kanektok", f"{diff:+.2f} m",
-                help="Positive → Uyak sits higher at this radius.")
+    r1c1.metric("Kanektok water surface", f"{crow['kan_wse_m']:.2f} m",
+                help="From the 2 m ArcticDEM along this arc (EGM2008). The open circle on the plot "
+                     "is the independent SWOT water surface, with its p10–p90 range across overpasses.")
+    r1c2.metric("Uyak water surface", f"{crow['uyak_wse_m']:.2f} m",
+                help="As for the Kanektok.")
+    r1c3.metric("Uyak − Kanektok (SWOT)",
+                f"{swot_diff:+.2f} m" if pd.notna(swot_diff) else _se(dem_diff),
+                help="Positive → Uyak sits higher at this radius. Taken from SWOT overpasses that "
+                     "measured BOTH rivers at the same moment, so river stage cancels out. "
+                     f"The DEM-only value here is {dem_diff:+.2f} m; it reads high because the "
+                     "multi-date DEM mosaic imaged the two rivers at different stages.")
+
+    # Superelevation is inherently stage-dependent, so it is quoted at the SWOT MEDIAN stage with the
+    # p10–p90 band in the help text rather than at the DEM's single arbitrary blend stage.
+    def _band(tag):
+        p10, p90 = crow.get(f"{tag}_superelev_p10_m", np.nan), crow.get(f"{tag}_superelev_p90_m", np.nan)
+        return (f" Across the observed stage range this runs {p10:+.2f} m (low water) to "
+                f"{p90:+.2f} m (high water)." if pd.notna(p10) and pd.notna(p90) else "")
+
     r2c1, r2c2, r2c3 = st.columns(3)
     r2c1.metric("Kanektok superelevation", _se(crow.get("kan_superelev_m", np.nan)),
-                help="Channel water surface minus the inter-channel floodplain corridor. "
-                     "Negative = incised below the floodplain (not perched); "
-                     "positive = perched above the corridor (avulsion-prone).")
+                help="Channel water surface minus the inter-channel floodplain corridor, at the "
+                     "median observed stage. Negative = incised below the floodplain (not perched); "
+                     "positive = perched above the corridor (avulsion-prone)." + _band("kan"))
     r2c2.metric("Uyak superelevation", _se(crow.get("uyak_superelev_m", np.nan)),
-                help="As for the Kanektok, relative to the same corridor.")
+                help="As for the Kanektok, relative to the same corridor." + _band("uyak"))
     r2c3.metric("Floodplain corridor elev",
                 f"{crow['fp_ref_m']:.2f} m" if pd.notna(crow.get("fp_ref_m", np.nan)) else "n/a",
                 help="Median terrain of the corridor between the channels — the baseline "
                      "each superelevation is measured against.")
 
-    # Kanektok Gearon β = H_AR/H_M, using the measured ADCP channel depth (bed = WSE − depth).
-    st.markdown("**Kanektok avulsion number** — Gearon β = H_AR / H_M "
-                "(ridge height ÷ channel depth; **β ≥ 1 = avulsion-prone**)")
+    # Kanektok Gearon β = H_AR/H_M, using the measured ADCP channel depth for the bed.
+    st.markdown("**Kanektok superelevation ratio** — Gearon β = H_AR / H_M "
+                "(alluvial-ridge height ÷ channel depth)")
     b = crow.get("kan_beta", np.nan)
     r3c1, r3c2, r3c3 = st.columns(3)
     r3c1.metric("Kanektok β", f"{b:.2f}" if pd.notna(b) else "n/a",
-                help="H_AR/H_M with the bed from the boat-ADCP depth. β≥1 means the bed has aggraded "
-                     "to floodplain level (perched). Kanektok β≈0.24 ≪ 1 → firmly not avulsion-prone.")
+                help="H_AR/H_M, with the bed from the boat-ADCP depth at the SWOT-matched survey "
+                     "stage. β near 0 means H_AR ≈ 0 — there is no alluvial ridge standing above the "
+                     "floodplain to superelevate. Note β = 1 is NOT the operative avulsion threshold: "
+                     "Gearon's criterion is β×γ ≥ Λ, and this analysis does not evaluate the gradient "
+                     "term γ. See the how-to-read note below.")
     r3c2.metric("H_AR (ridge height)", _se(crow.get("kan_HAR_m", np.nan)),
-                help="Alluvial-ridge crest minus floodplain — how high the levee stands above the floodplain.")
+                help="Alluvial-ridge crest minus floodplain. Across all arcs the median is ≈ +0.1 m, "
+                     "i.e. effectively no ridge — consistent with the channel being incised.")
     r3c3.metric("H_M (channel depth)",
                 f"{crow['kan_HM_m']:.2f} m" if pd.notna(crow.get("kan_HM_m", np.nan)) else "n/a",
                 help=f"Crest minus bed = freeboard + measured ADCP depth "
@@ -745,10 +1006,19 @@ def render_cross_sections(chB, profB, plotly_template):
 
     # Water-surface long-profiles vs radius with the current arc marked.
     prof_fig = go.Figure()
-    prof_fig.add_trace(go.Scatter(x=chB["R_km"], y=chB["kan_wse_m"], mode="lines",
-                                  name="Kanektok", line=dict(color=COLOR_MAP["Kanektok_River"], width=2)))
-    prof_fig.add_trace(go.Scatter(x=chB["R_km"], y=chB["uyak_wse_m"], mode="lines",
-                                  name="Uyak", line=dict(color=COLOR_MAP["Uyak_Creek"], width=2)))
+    for tag, col, name in (("kan", COLOR_MAP["Kanektok_River"], "Kanektok"),
+                           ("uyak", COLOR_MAP["Uyak_Creek"], "Uyak")):
+        p10, p90 = chB.get(f"swot_{tag}_wse_p10_m"), chB.get(f"swot_{tag}_wse_p90_m")
+        if p10 is not None and p10.notna().any():
+            # Trace-level opacity rather than an rgba fillcolor, so COLOR_MAP can hold CSS colour
+            # names (it does — "firebrick"/"dodgerblue") without needing a name→rgb conversion.
+            band = pd.concat([p90, p10[::-1]]).to_numpy(dtype=float)
+            prof_fig.add_trace(go.Scatter(
+                x=np.concatenate([chB["R_km"].to_numpy(), chB["R_km"].to_numpy()[::-1]]),
+                y=band, fill="toself", fillcolor=col, opacity=0.18, line=dict(width=0),
+                name=f"{name} SWOT stage p10–p90", hoverinfo="skip"))
+        prof_fig.add_trace(go.Scatter(x=chB["R_km"], y=chB[f"{tag}_wse_m"], mode="lines",
+                                      name=f"{name} (DEM)", line=dict(color=col, width=2)))
     prof_fig.add_vline(x=R, line_color="gray", line_dash="dot", line_width=1.5)
     prof_fig.update_layout(
         title="Channel water-surface long profiles at matched radius",
@@ -756,28 +1026,33 @@ def render_cross_sections(chB, profB, plotly_template):
         yaxis_title="Channel water-surface elevation (m)", height=340, template=plotly_template)
     st.plotly_chart(prof_fig, use_container_width=True, theme=None)
 
-    valid = chB.dropna(subset=["kan_wse_m", "uyak_wse_m"])
-    share = (valid["diff_uyak_minus_kan"] > 0).mean() * 100
+    sv = chB.dropna(subset=["swot_diff_uyak_minus_kan"])
     fpv = chB.dropna(subset=["fp_ref_m"])
     kan_perched = (fpv["kan_superelev_m"] > 0).mean() * 100 if len(fpv) else float("nan")
     st.markdown(
         f"**Across all arcs:** the Uyak water surface sits a median "
-        f"**{valid['diff_uyak_minus_kan'].median():+.2f} m** relative to the Kanektok, higher on "
-        f"**{share:.0f}%** of arcs — the same direction as the SWOT water-surface comparison.\n\n"
-        f"**Superelevation vs the floodplain corridor:** the Kanektok is **incised** "
-        f"(median **{fpv['kan_superelev_m'].median():+.2f} m**, perched on only {kan_perched:.0f}% of arcs) "
-        f"while the Uyak sits ≈ at grade (median **{fpv['uyak_superelev_m'].median():+.2f} m**). "
-        "A channel must be *perched above* the corridor to avulse into it — the Kanektok is not, "
-        "so this is direct topographic evidence **against** a Kanektok → Uyak avulsion."
+        f"**{sv['swot_diff_uyak_minus_kan'].median():+.2f} m** above the Kanektok, measured from SWOT "
+        f"overpasses that caught **both rivers at the same moment** so that stage cancels. (The "
+        f"DEM-only value, {chB['diff_uyak_minus_kan'].median():+.2f} m, reads high because the "
+        f"multi-date DEM mosaic imaged the two rivers at different stages.)\n\n"
+        f"**Superelevation vs the floodplain corridor, at the median observed stage:** the Kanektok "
+        f"is **incised** (median **{fpv['kan_superelev_m'].median():+.2f} m**, perched on "
+        f"{kan_perched:.0f}% of arcs) while the Uyak sits closer to grade (median "
+        f"**{fpv['uyak_superelev_m'].median():+.2f} m**). A channel must be *perched above* the "
+        "corridor to avulse into it — the Kanektok is not, so this is direct topographic evidence "
+        "**against** a Kanektok → Uyak avulsion."
     )
     bv = chB.dropna(subset=["kan_beta"])
     if len(bv):
         st.markdown(
-            f"**Gearon avulsion number (β = H_AR/H_M):** using the *measured* boat-ADCP channel depth "
-            f"(bed = water surface − depth), the Kanektok's median **β = {bv['kan_beta'].median():.2f}**, "
-            f"below the avulsion threshold of 1 on **{(bv['kan_beta']<1).mean()*100:.0f}%** of arcs. "
-            "The measured bed deepens the channel (H_M) versus a DEM-only estimate, so β lands *lower* "
-            "than the earlier DEM-inferred value — the field depth sharpens the not-avulsion-prone result."
+            f"**Superelevation ratio (Gearon β = H_AR/H_M):** median **β = {bv['kan_beta'].median():.2f}**, "
+            f"with **H_AR ≈ {bv['kan_HAR_m'].median():+.2f} m** — the Kanektok has essentially **no "
+            f"alluvial ridge** standing above the floodplain, and on "
+            f"**{(bv['kan_beta']<=0).mean()*100:.0f}%** of arcs the near-channel high ground sits "
+            "*below* the floodplain reference outright. That is the same story the incision figure "
+            "tells, in dimensionless form: there is no levee here to perch a channel on top of. "
+            "β is reported as a reproduction of the original ArcGIS metric — **β = 1 is not the "
+            "operative avulsion threshold** (see the note below)."
         )
     with st.expander("How to read this arc cross-section (and its caveat)"):
         st.markdown("""
@@ -797,13 +1072,31 @@ def render_cross_sections(chB, profB, plotly_template):
             - **Superelevation** = channel water surface − corridor elevation. *Negative* means the
               channel is incised below the floodplain (the safe, usual case); *positive* means it is
               perched above the corridor and could spill toward the other river.
+            - **Water surface, and why SWOT is here.** The grey terrain line is the 2 m ArcticDEM.
+              The **open circles** are the independent **SWOT** water surface at each channel, and
+              their **error bars are the p10–p90 range across overpasses** — a river has no single
+              water surface, and at a fixed radius the stage moves ~0.7 m. The DEM is a *mosaic
+              blended from 2010–2021 imagery*, so it captured one arbitrary (and per-river different)
+              stage. It holds up well — the DEM channel water surface lands within ~0.15 m of the
+              SWOT median on both rivers — but because the mosaic caught the Kanektok low in its
+              stage range and the Uyak high, the **Uyak − Kanektok difference is quoted from
+              pass-paired SWOT**, where both rivers are measured in the same overpass and stage
+              cancels exactly. Superelevation is likewise quoted **at the median observed stage**,
+              with the low/high-water range given in each metric's tooltip.
             - **Gearon β = H_AR / H_M** — on the Kanektok at x = 0, ▲ marks the ridge crest and ▼ the
               bed; H_M = crest − bed (channel depth) and H_AR = crest − floodplain (ridge height), and
-              the **β / H_AR / H_M values are listed in the metrics below the plot**. The **bed comes
-              from the boat-ADCP depth** (bed = water surface − measured depth), so H_M is measured,
-              not DEM-guessed. **β ≥ 1** means the bed has aggraded up to floodplain level → perched
-              and avulsion-prone; the Kanektok's β ≈ 0.24 is well below that. (Kanektok only — the
-              Uyak has ADCP depth near its mouth only.)
+              the **β / H_AR / H_M values are listed in the metrics below the plot**. Note that all
+              three are *topographic* surfaces: the water surface is not a term in β — it only serves
+              to place the bed under the **boat-ADCP depth sounding**, and it is taken from the SWOT
+              pass that flew **during the 2026 survey**, so depth and water surface share one stage.
+              The crest is read within **±150 m** of the channel (~3 channel widths, the scale Gearon
+              works at); a wider window climbs onto regional high ground rather than a bank, and
+              yields a "bank" standing far higher above the water than the river is deep — one the
+              river could never fill. **β = 1 is not the operative avulsion threshold.** Gearon's
+              criterion is **β × γ ≥ Λ** (Λ median ≈ 2.1), where γ is a gradient-advantage term this
+              analysis does not evaluate; in their data most avulsed *deltas* sit at β < 0.5. Here β
+              lands near 0 because **H_AR ≈ 0 — there is no alluvial ridge to superelevate.**
+              (Kanektok only — the Uyak has ADCP depth near its mouth only.)
             - Each channel is located by **snapping to the actual DEM channel** from a centerline
               prior. Both priors are **official field-surveyed centerlines** accurate to ~20–50 m —
               the Uyak from a hunter's boat GPS, the Kanektok from a coworker boat-ADCP thalweg run —
@@ -813,6 +1106,15 @@ def render_cross_sections(chB, profB, plotly_template):
               native 2 m resolution so the narrow channel is genuinely resolved (~15–25 samples).
               ArcticDEM images the water surface, not the true bed, so this is
               directly comparable to the SWOT water surface.
+
+            **Channel-migration caveat:** the field centerlines were surveyed in **2026**, but the
+            ArcticDEM mosaic is built from **2010–2021** imagery, so the river has had years to
+            shift. The DEM channel sits a median ~38 m (Kanektok) and ~12 m (Uyak) from the boat
+            line, and on ~9% of arcs the snap runs into the edge of its ±75 m search window, meaning
+            the DEM channel may lie further out still. This does **not** move the water-surface
+            values — widening the search leaves them unchanged to 0.00 m, because the floodplain low
+            is broad and flat — but it does leave the channel *position*, and the crest window
+            anchored on it, uncertain at the few-tens-of-metres level.
 
             **Validity caveat (Merwade et al. 2006):** straight-line radius equals along-channel
             flow distance only where a channel runs straight from the anchor. Here each channel's
@@ -1151,14 +1453,12 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             WITH binned AS (
                 SELECT Reach_Name,
                        ROUND(dist_km) AS dist_bin,
-                       MEDIAN(wse) AS bin_wse,
-                       MEDIAN(slope_calc) AS bin_slope
+                       MEDIAN(wse) AS bin_wse
                 FROM river_data {where_clause}
                 GROUP BY Reach_Name, ROUND(dist_km)
             )
             SELECT Reach_Name,
-                   AVG(bin_wse) AS avg_wse,
-                   AVG(bin_slope) AS avg_slope
+                   AVG(bin_wse) AS avg_wse
             FROM binned
             GROUP BY Reach_Name
         """
@@ -1675,8 +1975,10 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
                         \u2015 Technical details \u2015
                         Difference of median terrain elevation between the two river corridors per
-                        0.5 km bin. Analogous to *alluvial ridge height* (Slingerland & Smith, 1998);
-                        Gearon et al. (2024, *Nature*) use similar metrics to predict avulsion likelihood.
+                        0.5 km bin. Analogous to *alluvial ridge height* (Slingerland & Smith, 1998),
+                        the H_AR term in the superelevation ratio of Gearon et al. (2024, *Nature*).
+                        This is a corridor-wide comparison; for the channel-by-channel version, with
+                        the floodplain between them as the reference, see the ✂️ Cross-Sections tab.
                         """)
 
             with dem_tab3:
@@ -2489,13 +2791,18 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                                       '<extra></extra>'
                     ))
 
+                    # x_eval ascends from the ANCHOR (dist 0, inland confluence)
+                    # to the COAST (~35 km, the mouths) — index 0 is the anchor
+                    # end, index -1 the coast end. nan-aware because the profile
+                    # now leaves coverage holes as honest NaN gaps.
+                    finite = np.isfinite(abs_slope)
                     slope_stats.append({
                         "River": reach,
-                        "Mean Slope (cm/km)": abs_slope.mean(),
-                        "Max Slope (cm/km)": abs_slope.max(),
-                        "Min Slope (cm/km)": abs_slope.min(),
-                        "Slope at Coast (cm/km)": abs_slope[0],
-                        "Slope at Anchor (cm/km)": abs_slope[-1],
+                        "Mean Slope (cm/km)": np.nanmean(abs_slope),
+                        "Max Slope (cm/km)": np.nanmax(abs_slope),
+                        "Min Slope (cm/km)": np.nanmin(abs_slope),
+                        "Slope at Anchor (cm/km)": abs_slope[finite][0] if finite.any() else np.nan,
+                        "Slope at Coast (cm/km)": abs_slope[finite][-1] if finite.any() else np.nan,
                         "Points Used": len(reach_data)
                     })
 
@@ -2552,33 +2859,35 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             "shaded pass-to-pass band. This resolves ~0.5 km structure near the "
             "bifurcation that the standard Slope Profile tab blurs away."
         )
+        st.caption(f"Fixed at **{FINE_RES_KM} km** resolution (the backwater length scale) "
+                   f"over the first **{FINE_XMAX_KM:.0f} km** (tidal mouth trimmed) — the same "
+                   "settings as thesis Figure 9.")
 
         @st.fragment
         def render_finescale():
-            c1, c2 = st.columns(2)
-            with c1:
-                res_km = st.select_slider(
-                    "Resolution (km)", options=[0.25, 0.5, 1.0, 2.0], value=0.5,
-                    key="fine_res",
-                    help="Effective slope resolution. ~0.5 km is the backwater length here; "
-                         "0.25 km is still resolvable given the pixel density.")
-            with c2:
-                xmax = st.slider(
-                    "Max distance (km)", min_value=10, max_value=36, value=34,
-                    key="fine_xmax",
-                    help="Trim the tidal mouth: cross-pass WSE spread rises only in the "
-                         "final ~1–2 km at each river's outlet (see coastal-noise diagnostic).")
+            res_km, xmax = FINE_RES_KM, FINE_XMAX_KM
 
-            zoom = st.checkbox("Zoom to the bifurcation region (0–8 km)", value=False,
-                               key="fine_zoom")
+            view = st.radio(
+                "View", ["Aggregate profile", "Compare periods", "Slope over time"],
+                horizontal=True, key="fine_view",
+                help="**Aggregate** pools every selected pass into one profile. "
+                     "**Compare periods** draws one profile per year / season / month, so you "
+                     "can see whether the fine-scale shape itself moves. **Slope over time** "
+                     "condenses a chosen reach window to one number per pass and plots it "
+                     "against date.")
 
             with st.spinner("Computing per-pass slopes…"):
-                data = compute_finescale_slope(
-                    con, REMOTE_PARQUET_URL, where_clause, float(res_km), float(xmax))
+                pdata = compute_finescale_pass_matrix(
+                    con, st.session_state.get("data_version", REMOTE_PARQUET_URL),
+                    where_clause, float(res_km), float(xmax))
 
-            if not data:
+            if not pdata:
                 st.warning("No data available for the selected filters.")
                 return
+            data = {reach: dict(grid=r["grid"], n_passes=r["n_passes"],
+                                **dict(zip(("med", "lo", "hi", "n"),
+                                           _fine_aggregate(r["mat"]))))
+                    for reach, r in pdata.items()}
 
             # Guard: this per-pass-then-aggregate method needs many overlapping passes.
             # With only a handful (e.g. the welcome-page quick-start, which loads just the
@@ -2599,68 +2908,270 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     "(not the quick-start subset) for a trustworthy result."
                 )
 
-            fig_fine = go.Figure()
-            near_rows = []
-            for reach in selected_reaches:
-                r = data.get(reach)
-                if not r:
-                    continue
-                grid, med, lo, hi, n = r["grid"], r["med"], r["lo"], r["hi"], r["n"]
-                core = n >= 3  # only trust bins imaged by >= 3 passes
-                if not core.any():
-                    continue
-                color = COLOR_MAP.get(reach, "black")
-                rr, gg, bb, _ = mcolors.to_rgba(color)
-                fill = f"rgba({int(rr*255)},{int(gg*255)},{int(bb*255)},0.15)"
+            reaches = [r for r in selected_reaches if r in pdata]
+            if not reaches:
+                st.warning("No data available for the selected rivers.")
+                return
 
-                # IQR band (across passes)
-                fig_fine.add_trace(go.Scatter(
-                    x=np.concatenate([grid[core], grid[core][::-1]]),
-                    y=np.concatenate([hi[core], lo[core][::-1]]),
-                    fill="toself", fillcolor=fill, line=dict(width=0),
-                    name=f"{reach} IQR", showlegend=False, hoverinfo="skip"))
-                # median line
-                fig_fine.add_trace(go.Scatter(
-                    x=grid[core], y=med[core], mode="lines",
-                    line=dict(color=color, width=3),
-                    name=f"{reach} ({r['n_passes']} passes)",
-                    hovertemplate="<b>" + reach + "</b><br>Distance: %{x:.2f} km<br>"
-                                  "Slope: %{y:.1f} cm/km<extra></extra>"))
+            # ================= VIEW 1: aggregate profile (all passes pooled) =====
+            if view == "Aggregate profile":
+                zoom = st.checkbox("Zoom to the bifurcation region (0–8 km)", value=False,
+                                   key="fine_zoom")
+                fig_fine = go.Figure()
+                near_rows = []
+                for reach in reaches:
+                    r = data[reach]
+                    grid, med, lo, hi, n = r["grid"], r["med"], r["lo"], r["hi"], r["n"]
+                    core = n >= 3  # only trust bins imaged by >= 3 passes
+                    if not core.any():
+                        continue
+                    color = COLOR_MAP.get(reach, "black")
+                    rr, gg, bb, _ = mcolors.to_rgba(color)
+                    fill = f"rgba({int(rr*255)},{int(gg*255)},{int(bb*255)},0.15)"
 
-                nb = core & (grid >= 1.0) & (grid <= 5.0)
-                near_rows.append({
-                    "River": reach,
-                    "Near-bifurcation slope (1–5 km)": float(np.nanmedian(med[nb])) if nb.any() else np.nan,
-                    "Passes": int(r["n_passes"]),
-                })
+                    # IQR band (across passes)
+                    fig_fine.add_trace(go.Scatter(
+                        x=np.concatenate([grid[core], grid[core][::-1]]),
+                        y=np.concatenate([hi[core], lo[core][::-1]]),
+                        fill="toself", fillcolor=fill, line=dict(width=0),
+                        name=f"{reach} IQR", showlegend=False, hoverinfo="skip"))
+                    # median line
+                    fig_fine.add_trace(go.Scatter(
+                        x=grid[core], y=med[core], mode="lines",
+                        line=dict(color=color, width=3),
+                        name=f"{reach} ({r['n_passes']} passes)",
+                        hovertemplate="<b>" + reach + "</b><br>Distance: %{x:.2f} km<br>"
+                                      "Slope: %{y:.1f} cm/km<extra></extra>"))
 
-            add_bifurcation_line(fig_fine)
-            fig_fine.update_layout(
-                xaxis_title="Distance from Anchor Point (km)",
-                yaxis_title="Interval Slope (cm/km)",
-                height=600, template=plotly_template, hovermode="x unified",
-                showlegend=True)
-            fig_fine.update_xaxes(autorange="reversed")
-            if zoom:
-                fig_fine.update_xaxes(range=[8, 0])  # reversed axis: [max, min]
+                    nb = core & (grid >= 1.0) & (grid <= 5.0)
+                    near_rows.append({
+                        "River": reach,
+                        "Near-bifurcation slope (1–5 km)": float(np.nanmedian(med[nb])) if nb.any() else np.nan,
+                        "Passes": int(r["n_passes"]),
+                    })
 
-            st.plotly_chart(fig_fine, width="stretch", theme=None)
+                add_bifurcation_line(fig_fine)
+                fig_fine.update_layout(
+                    xaxis_title="Distance from Anchor Point (km)",
+                    yaxis_title="Interval Slope (cm/km)",
+                    height=600, template=plotly_template, hovermode="x unified",
+                    showlegend=True)
+                fig_fine.update_xaxes(autorange="reversed")
+                if zoom:
+                    fig_fine.update_xaxes(range=[8, 0])  # reversed axis: [max, min]
 
-            # Near-bifurcation contrast (the headline of the re-analysis)
-            if len(near_rows) == 2 and all(np.isfinite(x["Near-bifurcation slope (1–5 km)"]) for x in near_rows):
-                k = next((x for x in near_rows if x["River"] == "Kanektok_River"), None)
-                u = next((x for x in near_rows if x["River"] == "Uyak_Creek"), None)
-                if k and u:
-                    adv = k["Near-bifurcation slope (1–5 km)"] - u["Near-bifurcation slope (1–5 km)"]
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Kanektok @ bifurcation (1–5 km)",
-                              f"{k['Near-bifurcation slope (1–5 km)']:.0f} cm/km")
-                    m2.metric("Uyak @ bifurcation (1–5 km)",
-                              f"{u['Near-bifurcation slope (1–5 km)']:.0f} cm/km")
-                    m3.metric("Kanektok advantage here", f"{adv:+.0f} cm/km",
-                              help="Reach-averaged, the two gradients differ by only ~3.6 cm/km; "
-                                   "near the bifurcation the local advantage is far larger.")
+                st.plotly_chart(fig_fine, width="stretch", theme=None)
 
+                # Near-bifurcation contrast (the headline of the re-analysis)
+                if len(near_rows) == 2 and all(np.isfinite(x["Near-bifurcation slope (1–5 km)"]) for x in near_rows):
+                    k = next((x for x in near_rows if x["River"] == "Kanektok_River"), None)
+                    u = next((x for x in near_rows if x["River"] == "Uyak_Creek"), None)
+                    if k and u:
+                        adv = k["Near-bifurcation slope (1–5 km)"] - u["Near-bifurcation slope (1–5 km)"]
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("Kanektok @ bifurcation (1–5 km)",
+                                  f"{k['Near-bifurcation slope (1–5 km)']:.0f} cm/km")
+                        m2.metric("Uyak @ bifurcation (1–5 km)",
+                                  f"{u['Near-bifurcation slope (1–5 km)']:.0f} cm/km")
+                        m3.metric("Kanektok advantage here", f"{adv:+.0f} cm/km",
+                                  help="Reach-averaged, the two gradients differ by only ~3.6 cm/km; "
+                                       "near the bifurcation the local advantage is far larger.")
+
+            # ================= VIEWS 2 & 3: temporal ============================
+            # The window and the coverage gate are fixed (see FINE_WINDOW_KM /
+            # FINE_MIN_COVERAGE); grouping is the only thing left to choose, because it
+            # is the actual question -- year vs season vs month.
+            else:
+                window, min_cov = FINE_WINDOW_KM, FINE_MIN_COVERAGE
+                group_mode = st.selectbox(
+                    "Group by", FINE_GROUP_MODES, index=0, key="fine_group",
+                    help="How passes are bundled into periods. Seasons are the flow regimes "
+                         "used in the repo's temporal analysis (freshet = May, baseflow = "
+                         "Jul–Aug, shoulder = Apr/Jun/Sep–Nov).")
+
+                # --- pass-quality gate ---
+                gate, kept_note = {}, []
+                for reach in reaches:
+                    r = pdata[reach]
+                    cov = _fine_window_coverage(r["mat"], r["grid"], window)
+                    gate[reach] = cov >= min_cov
+                    kept_note.append(f"{reach.replace('_', ' ')}: "
+                                     f"**{int(gate[reach].sum())}** of {len(cov)}")
+                st.caption(f"Slope measured over **{window[0]:.0f}–{window[1]:.0f} km** "
+                           f"(the bifurcation zone), using passes that imaged ≥ {min_cov:.0%} "
+                           f"of it — " + " · ".join(kept_note))
+                if not any(gate[r].any() for r in reaches):
+                    st.warning("No selected pass covers enough of the bifurcation zone to give "
+                               "a fine-scale slope. Return to the homepage and select more "
+                               "passes.")
+                    return
+
+                # ---------- VIEW 2: one profile per period ----------
+                if view == "Compare periods":
+                    zoom_cmp = st.checkbox("Zoom to the bifurcation region (0–8 km)",
+                                           value=False, key="fine_zoom_cmp")
+                    fig_cmp = make_subplots(
+                        rows=len(reaches), cols=1, shared_xaxes=True, vertical_spacing=0.09,
+                        subplot_titles=[r.replace("_", " ") for r in reaches])
+                    summary, period_order, capped = [], [], False
+                    for row, reach in enumerate(reaches, start=1):
+                        r = pdata[reach]
+                        grid, keep = r["grid"], gate[reach]
+                        groups = [(lab, idx[keep[idx]])
+                                  for lab, idx in _fine_group_passes(r["passes"], group_mode)]
+                        groups = [(lab, idx) for lab, idx in groups if len(idx)]
+                        if len(groups) > FINE_MAX_PERIOD_LINES:
+                            groups, capped = groups[-FINE_MAX_PERIOD_LINES:], True
+                        wsl = _fine_window_slope(r["mat"], grid, window)
+                        for gi, (lab, idx) in enumerate(groups):
+                            if lab not in period_order:
+                                period_order.append(lab)
+                            shade = gi / max(len(groups) - 1, 1)
+                            cr, cg, cb, _ = cm.viridis(0.12 + 0.76 * shade)
+                            # Hold each period to the same >=3-pass support as the aggregate
+                            # view, except where the period simply cannot supply three.
+                            med, _, _, _ = _fine_aggregate(r["mat"], idx,
+                                                           min_passes=min(3, len(idx)))
+                            ok = np.isfinite(med)
+                            if not ok.any():
+                                continue
+                            fig_cmp.add_trace(go.Scatter(
+                                x=grid[ok], y=med[ok], mode="lines",
+                                line=dict(color=f"rgb({int(cr*255)},{int(cg*255)},{int(cb*255)})",
+                                          width=2),
+                                legendgroup=lab, name=f"{lab} ({len(idx)})",
+                                showlegend=(row == 1),
+                                hovertemplate=f"<b>{lab}</b><br>Distance: %{{x:.2f}} km<br>"
+                                              "Slope: %{y:.1f} cm/km<extra></extra>"),
+                                row=row, col=1)
+                            summary.append({
+                                "Period": lab, "River": reach.split("_")[0],
+                                "slope": float(np.nanmedian(wsl[idx])), "n": int(len(idx))})
+                    if capped:
+                        st.info(f"Showing the most recent {FINE_MAX_PERIOD_LINES} periods — "
+                                "choose a coarser *Group by* to see the whole record.")
+                    add_bifurcation_line(fig_cmp)
+                    fig_cmp.update_layout(height=330 * len(reaches), template=plotly_template,
+                                          hovermode="x unified", legend_title_text=group_mode)
+                    fig_cmp.update_xaxes(autorange="reversed")
+                    if zoom_cmp:
+                        fig_cmp.update_xaxes(range=[8, 0])
+                    fig_cmp.update_xaxes(title_text="Distance from Anchor Point (km)",
+                                         row=len(reaches), col=1)
+                    fig_cmp.update_yaxes(title_text="Interval Slope (cm/km)")
+                    st.plotly_chart(fig_cmp, width="stretch", theme=None)
+
+                    if summary:
+                        sdf = pd.DataFrame(summary)
+                        rows_out = []
+                        for lab in period_order:
+                            out = {"Period": lab}
+                            sub = sdf[sdf["Period"] == lab].set_index("River")
+                            for river in sdf["River"].unique():
+                                out[f"{river} (cm/km)"] = (round(sub.loc[river, "slope"], 1)
+                                                           if river in sub.index else np.nan)
+                                out[f"{river} n"] = (int(sub.loc[river, "n"])
+                                                     if river in sub.index else 0)
+                            if {"Kanektok", "Uyak"} <= set(sub.index):
+                                out["Advantage (cm/km)"] = round(
+                                    sub.loc["Kanektok", "slope"] - sub.loc["Uyak", "slope"], 1)
+                            rows_out.append(out)
+                        st.markdown(f"**Median slope in the {window[0]:.0f}–{window[1]:.0f} km "
+                                    f"bifurcation zone, by {group_mode.lower()}**")
+                        st.dataframe(pd.DataFrame(rows_out), width="stretch", hide_index=True)
+
+                # ---------- VIEW 3: window slope as a time series ----------
+                else:
+                    fig_ts = make_subplots(
+                        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.11,
+                        subplot_titles=(
+                            f"Slope in the {window[0]:.0f}–{window[1]:.0f} km bifurcation "
+                            "zone, per pass",
+                            "Kanektok − Uyak advantage (paired within date)"))
+                    series = {}
+                    for reach in reaches:
+                        r = pdata[reach]
+                        wsl = _fine_window_slope(r["mat"], r["grid"], window)
+                        ok = gate[reach] & np.isfinite(wsl)
+                        if not ok.any():
+                            continue
+                        s = pd.Series(wsl[ok],
+                                      index=pd.to_datetime(r["passes"])[ok]).sort_index()
+                        series[reach] = s
+                        label = reach.replace("_", " ")
+                        fig_ts.add_trace(go.Scatter(
+                            x=s.index, y=s.values, mode="markers+lines", marker=dict(size=5),
+                            line=dict(color=COLOR_MAP.get(reach, "black"), width=1),
+                            name=f"{label} ({len(s)} passes)",
+                            hovertemplate=f"<b>{label}</b><br>%{{x|%Y-%m-%d}}<br>"
+                                          "Slope: %{y:.0f} cm/km<extra></extra>"),
+                            row=1, col=1)
+
+                    # Pairing within date is what removes stage: a single overpass images
+                    # both channels at the same instant, so the difference is geometry.
+                    adv = None
+                    if "Kanektok_River" in series and "Uyak_Creek" in series:
+                        adv = (series["Kanektok_River"] - series["Uyak_Creek"]).dropna()
+                    if adv is not None and len(adv):
+                        fig_ts.add_trace(go.Scatter(
+                            x=adv.index, y=adv.values, mode="markers+lines",
+                            marker=dict(size=5), line=dict(color="darkgreen", width=1),
+                            name="Kanektok − Uyak", showlegend=False,
+                            hovertemplate="%{x|%Y-%m-%d}<br>Advantage: %{y:+.0f} cm/km"
+                                          "<extra></extra>"),
+                            row=2, col=1)
+                        fig_ts.add_hline(y=0, line_color="gray", line_width=1, row=2, col=1)
+                        fig_ts.add_hline(
+                            y=float(adv.median()), line_dash="dot", line_color="darkgreen",
+                            line_width=1.5, row=2, col=1,
+                            annotation_text=f"median {adv.median():+.0f} cm/km",
+                            annotation_position="top left", annotation_font_size=10,
+                            annotation_font_color="darkgreen")
+                    fig_ts.update_layout(height=700, template=plotly_template,
+                                         hovermode="x unified")
+                    fig_ts.update_yaxes(title_text="Interval Slope (cm/km)", row=1, col=1)
+                    fig_ts.update_yaxes(title_text="Δ Slope (cm/km)", row=2, col=1)
+                    fig_ts.update_xaxes(title_text="Pass date", row=2, col=1)
+                    st.plotly_chart(fig_ts, width="stretch", theme=None)
+
+                    if adv is not None and len(adv):
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("Median advantage", f"{adv.median():+.0f} cm/km",
+                                  help="Kanektok minus Uyak, median over paired passes.")
+                        m2.metric("Passes with Kanektok steeper",
+                                  f"{int((adv > 0).sum())} / {len(adv)}")
+                        m3.metric("Pass-to-pass spread (IQR)",
+                                  f"{adv.quantile(0.75) - adv.quantile(0.25):.0f} cm/km",
+                                  help="How much the advantage swings between passes. If this "
+                                       "dwarfs the median, the advantage is a tendency rather "
+                                       "than a persistent separation.")
+
+                    # Period summary: does the window slope move with season or year?
+                    if series:
+                        all_dates = np.concatenate([s.index.to_numpy() for s in series.values()])
+                        order = [lab for lab, _ in _fine_group_passes(all_dates, group_mode)]
+                        grp = {reach: dict(_fine_group_passes(s.index.to_numpy(), group_mode))
+                               for reach, s in series.items()}
+                        adv_grp = (dict(_fine_group_passes(adv.index.to_numpy(), group_mode))
+                                   if adv is not None and len(adv) else {})
+                        rows_out = []
+                        for lab in order:
+                            out = {"Period": lab}
+                            for reach, s in series.items():
+                                idx = grp[reach].get(lab)
+                                river = reach.split("_")[0]
+                                out[f"{river} (cm/km)"] = (round(float(np.median(s.values[idx])), 1)
+                                                           if idx is not None and len(idx) else np.nan)
+                                out[f"{river} n"] = int(len(idx)) if idx is not None else 0
+                            if lab in adv_grp:
+                                out["Advantage (cm/km)"] = round(
+                                    float(np.median(adv.values[adv_grp[lab]])), 1)
+                            rows_out.append(out)
+                        st.markdown(f"**Median bifurcation-zone slope by "
+                                    f"{group_mode.lower()}**")
+                        st.dataframe(pd.DataFrame(rows_out), width="stretch", hide_index=True)
+
+            # ---------------- shared explainer ----------------
             with st.expander("How to read this graph"):
                 st.markdown("""
                 **What this shows:** the water-surface steepness *along* the river at fine
@@ -2673,11 +3184,33 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                   re-analysis is to see the slope *right there*, which the standard Slope
                   Profile tab's 2 km smoothing (≈ 4.7 km effective resolution) blurs out.
 
+                **The three views**
+                - *Aggregate profile* — every selected pass pooled into one profile.
+                - *Compare periods* — the same profile drawn once per year / season / month,
+                  so you can see whether the fine-scale **shape** shifts over time.
+                - *Slope over time* — the **1–5 km bifurcation zone** condensed to one slope
+                  per pass and plotted against date, with the Kanektok−Uyak advantage paired
+                  within each date (one overpass images both channels at once, so pairing
+                  cancels stage).
+
+                **Why some passes are excluded.** A pass only yields a fine-scale slope where
+                it actually imaged the river. A pass that clipped the edge of the zone would
+                otherwise contribute a slope fit to a sliver of it, which reads as wild
+                scatter in the time series. So passes imaging less than **80 %** of the
+                1–5 km zone are dropped — this is the fine-scale analogue of the reference
+                gradient's span/start gate, and it excludes far more Uyak passes than
+                Kanektok ones. The counts above the chart show exactly how many survived.
+                Seasons are the flow regimes used in the repo's temporal analysis
+                (freshet = May, baseflow = Jul–Aug).
+
                 ― Technical details ―
                 WSE binned to 100 m medians per pass (≥ 30 pixels/bin); slope via a robust
-                sliding **Theil–Sen** fit at the chosen effective resolution; median + IQR
-                aggregated across passes; bins with < 3 passes hidden. The tidal mouth
-                (final ~1–2 km) is trimmed via *Max distance*.
+                sliding **Theil–Sen** fit over a **0.5 km** window — the backwater length
+                scale, and the same resolution as thesis Figure 9; median + IQR aggregated
+                across passes; bins with < 3 passes hidden. A pass's *window slope* is the
+                median of its local slopes inside the window, so the time series and the
+                profile always agree. The reach is cut at **34 km** to drop the tidal mouth,
+                which sits far downstream of the bifurcation.
                 """)
 
         render_finescale()
@@ -3013,10 +3546,14 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             DISP = {"Kanektok_River": "Kanektok River", "Uyak_Creek": "Uyak Creek"}
             REACH_ORDER = ["Kanektok_River", "Uyak_Creek"]
 
-            def _fmt_p(p):
+            def _fmt_p(p, p_adj=None):
+                # Star on the Holm-adjusted p when the JSON carries it (one family
+                # across all the page's Mann-Whitney tests); raw-p fallback keeps
+                # older JSONs rendering until they are regenerated.
                 if p is None or (isinstance(p, float) and np.isnan(p)):
                     return "n/a (n<3)"
-                return f"{p:.3f}" + (" *" if p < 0.05 else "")
+                starred = (p_adj if p_adj is not None else p) < 0.05
+                return f"{p:.3f}" + (" *" if starred else "")
 
             q1_slope = {r["reach"]: r for r in results["Q1_seasonal"]
                         if r["question"] == "Q1_slope_pooled"}
@@ -3248,7 +3785,8 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     "Passes Jul–Aug": r["n_low"],
                     "Steepness May (cm/km)": round(r["slope_high"], 1),
                     "Steepness Jul–Aug (cm/km)": round(r["slope_low"], 1),
-                    "Change (cm/km)": r["dslope_cm_km"], "p-value": _fmt_p(r["p_slope"]),
+                    "Change (cm/km)": r["dslope_cm_km"],
+                    "p-value": _fmt_p(r["p_slope"], r.get("p_slope_holm")),
                 } for r in results["Q1_seasonal"] if r["question"] == "Q1_slope_pooled"]
                 st.markdown("**Steepness (all years combined — it doesn't change with season):**")
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
@@ -3256,24 +3794,30 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     "River": DISP[r["reach"]], "Year": r["year"],
                     "Water level May (m)": round(r["wse_high"], 2),
                     "Water level Jul–Aug (m)": round(r["wse_low"], 2),
-                    "Change (m)": r["dwse_m"], "p-value": _fmt_p(r["p_wse"]),
+                    "Change (m)": r["dwse_m"],
+                    "p-value": _fmt_p(r["p_wse"], r.get("p_wse_holm")),
                 } for r in results["Q1_seasonal"] if r["question"] == "Q1_wse_seasonal"]
                 st.markdown("**Water level (shown per year — this is what rises and falls with flow):**")
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
                 st.caption("The water level goes up and down a little, and which season is "
                            "higher flips from year to year — that's ordinary flow variation, not "
-                           "the river steadily changing. (A p-value below 0.05, marked *, is the "
-                           "statistician's flag that a difference is probably not just chance.)")
+                           "the river steadily changing. (A * marks a difference that is probably "
+                           "not just chance. Because this page runs many comparisons at once, the "
+                           "star is awarded only if the result stays convincing after a "
+                           "Holm correction for multiple testing — the raw p-value is shown "
+                           "either way.)")
 
             with st.expander("Year to year (summer 2024 vs. 2025 — the normal yardstick)"):
                 rows = [{
                     "River": DISP[r["reach"]],
                     "Steepness 2024 (cm/km)": round(r["slope_2024"], 1),
                     "Steepness 2025 (cm/km)": round(r["slope_2025"], 1),
-                    "Change (cm/km)": r["dslope_cm_km"], "p-value (steepness)": _fmt_p(r["p_slope"]),
+                    "Change (cm/km)": r["dslope_cm_km"],
+                    "p-value (steepness)": _fmt_p(r["p_slope"], r.get("p_slope_holm")),
                     "Water level 2024 (m)": round(r["wse_2024"], 2),
                     "Water level 2025 (m)": round(r["wse_2025"], 2),
-                    "Change (m)": r["dwse_m"], "p-value (level)": _fmt_p(r["p_wse"]),
+                    "Change (m)": r["dwse_m"],
+                    "p-value (level)": _fmt_p(r["p_wse"], r.get("p_wse_holm")),
                 } for r in results["Q2_interannual"]]
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
                 st.caption("Steepness is measured over the whole ice-free year; water level is "
@@ -3290,21 +3834,27 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     "Water level 2025 (m)": round(r["wse_2025"], 2),
                     "Water level 2026 (m)": round(r["wse_2026"], 2),
                     "Change (m)": r["dwse_m"], "Normal year-to-year change (m)": r["baseline_dwse_m"],
-                    "Within normal?": "yes" if r["wse_vs_baseline"] == "within" else r["wse_vs_baseline"],
-                    "Steepness change (cm/km)": r["dslope_cm_km"], "p-value (level)": _fmt_p(r["p_wse"]),
+                    "Within normal?": {"within": "yes", "exceeds": "exceeds",
+                                       "indistinguishable": "too close to call"}.get(
+                                          r["wse_vs_baseline"], r["wse_vs_baseline"]),
+                    "Steepness change (cm/km)": r["dslope_cm_km"],
+                    "p-value (level)": _fmt_p(r["p_wse"], r.get("p_wse_holm")),
                 } for r in results["Q3_typhoon"]]
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
                 rows = [{
                     "River": DISP[r["reach"]], "Points compared": r["n_bins"],
                     "Typical change (m)": r["median_dwse_m"],
-                    "Lower river (≤18 km)": r["downstream_dwse_m"],
-                    "Upper river (>18 km)": r["upstream_dwse_m"],
+                    "Upper river (≤18 km)": r["upstream_dwse_m"],
+                    "Lower river (>18 km)": r["downstream_dwse_m"],
                 } for r in results["Q3_profile"]]
                 st.markdown("**Change at each point along the river:**")
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-                st.caption("The change around the storm stays inside the normal year-to-year "
-                           "range, and it's flat all along the river — no upstream storm scar. "
-                           "Preliminary until the summer 2026 (Jul–Aug) data comes in.")
+                st.caption("The change around the storm is no larger than an ordinary "
+                           "year-to-year swing — with only a handful of matching passes the "
+                           "comparison is honestly \"too close to call\" rather than a proven "
+                           "\"no change,\" but nothing stands out, and the change is flat all "
+                           "along the river — no upstream storm scar. Preliminary until the "
+                           "summer 2026 (Jul–Aug) data comes in.")
 
             st.caption(
                 f"**Where the numbers come from.** Satellite record {record['date_min']} – "
@@ -3371,7 +3921,9 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
 
 def main():
-    con = get_database_connection()
+    data_version = get_data_version()
+    st.session_state["data_version"] = data_version
+    con = get_database_connection(data_version)
     if not con:
         st.error("Failed to initialize database connection.")
         st.stop()

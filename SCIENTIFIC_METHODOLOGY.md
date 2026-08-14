@@ -2,9 +2,19 @@
 
 **Document Purpose:** This document provides a complete scientific verification of our SWOT data processing pipeline, with references to the official NASA SWOT handbook and specific code implementations.
 
-**Last Updated:** June 24, 2026
+**Last Updated:** August 14, 2026
 **Reference Document:** SWOT Science Data Products User Handbook (JPL D-109532, May 2024)
 **Study Area:** Kanektok River and Uyak Creek, Alaska
+
+> **August 2026 pipeline revision.** A systematic code review (`docs/CODE_REVIEW_FINDINGS.md`)
+> led to a set of pipeline fixes and a full archive re-pull: granule-keyed checkpoints (recovering
+> ~169 never-ingested sibling-tile granules), the MAD outlier filter moved from raw WSE to
+> node-median residuals, a hard May–Oct ice-season line (`qc_registry.py`), removal of the legacy
+> `slope_calc` column, and family-wise (Holm) significance for the temporal analysis. The canonical
+> reference gradient is now **Kanektok 195.3 / Uyak 192.4 cm/km (advantage 2.9 cm/km)**. Sections
+> below are updated to the revised pipeline; a few verification narratives that were established on
+> the pre-revision archive are marked as such (their method-level conclusions are unaffected).
+> Downstream thesis-number propagation is tracked in `docs/THESIS_IMPACT_LOG.md`.
 
 ---
 
@@ -17,7 +27,7 @@
 | **Crossover Calibration Filter** | ✅ Applied | Exclude pixels missing crossover calibration (bit 23 of `geolocation_qual`) |
 | **PIXC Quality Flags** | ⏳ Pending Expert Review | `geolocation_qual` and `classification_qual` — see [PIXC Quality Flag Reference](#pixc-quality-flag-reference) |
 | **Classification Filter** | ✅ Verified | Classes 3-4 match Table 6.1, empirically validated in QGIS |
-| **MAD Outlier Filter** | ✅ Verified | Modified Z-score (Iglewicz & Hoaglin, 1993), per-reach |
+| **MAD Outlier Filter** | ✅ Verified | Modified Z-score (Iglewicz & Hoaglin, 1993), per-reach on **1 km node-median residuals** (raw-WSE domain retired Aug 2026 — it amputated legitimate upstream reaches on a sloping profile) |
 | **WSE Formula** | ✅ Verified | Formula matches JPL D-109532 Sections 11.3.1-11.3.5 exactly |
 | **Geoid Correction (EGM2008)** | ✅ Verified | ~13.3 m at study site, matches model predictions |
 | **Solid Earth Tide** | ✅ Verified | ~0.024 m magnitude, physically reasonable |
@@ -25,12 +35,14 @@
 | **Load Tide (FES2014)** | ✅ Verified | ~-0.001 m magnitude, appropriate for inland location |
 | **Spatial Filtering** | ✅ Verified | Two-stage filtering (bounding box + exact geometry) |
 | **Distance Calculation** | ✅ Verified | Haversine formula appropriate for <100 km scale |
-| **Reference Gradient** | ✅ Verified | Per-pass Theil–Sen on 1 km nodes, median across passes; density-bias decomposition + season/coverage sensitivity (`gradient_prototype.py`) |
-| **Temporal Stability** | ✅ Q1/Q2 · ⏳ Q3 interim | Seasonal + interannual + typhoon comparisons on the reference-gradient engine; Q2 as natural-variability control for Q3 (`temporal_analysis.py`, `TEMPORAL_ANALYSIS.md`) |
+| **Reference Gradient** | ✅ Verified | Per-pass Theil–Sen on 1 km nodes, median across passes; density-bias decomposition + season/coverage sensitivity (established via `gradient_prototype.py`, now a historical diagnostic — it predates the `slope_calc` removal) |
+| **Temporal Stability** | ✅ Q1/Q2 · ⏳ Q3 interim | Seasonal + interannual + typhoon comparisons on the reference-gradient engine; Q2 as natural-variability control for Q3; significance family-wise (Holm) + bootstrap CIs (`temporal_analysis.py`, `TEMPORAL_ANALYSIS.md`) |
 | **Field Calibration** | ✅ **SUCCESSFULLY VERIFIED** | RTK GPS (±1 cm precision), agreement within 1 m after datum correction |
 | **Code Implementation** | ✅ Verified | All critical steps documented with file:line references |
-| **Ice Season Handling** | ✅ Documented | Dashboard warnings for Oct-May; Classes 3-4 exclude most ice; no PIXC ice flag available |
+| **Ice Season Handling** | ✅ **Enforced at ingestion** | Hard May–Oct line (`qc_registry.ICE_SAFE_MONTHS`), empirically calibrated on the full archive: April shows breakup contamination every year, October is clean, first freeze-up signal mid-November; Classes 3-4 alone are insufficient (smooth ice passes the classifier) |
 | **DEM Elevation Comparison** | ✅ Integrated | ArcticDEM V4 with geoid correction; LiDAR-validated (0.50m RMSE); methods supported by Slingerland & Smith (1998), Gearon et al. (2024) |
+| **DEM Cross-Sections (arc method)** | ✅ **SWOT-CROSS-VALIDATED** | DEM channel water surface agrees with SWOT to **0.15 m** on both rivers (shared EGM2008 datum, per-radius geoid); superelevation quoted at a declared stage with p10–p90 band; inter-river difference from **pass-paired** overpasses; bed stage-matched to the boat-ADCP survey via coincident SWOT passes |
+| **Superelevation ratio β** | ✅ Verified · ⚠️ Read with care | β ≈ 0.06 with H_AR ≈ 0 → **no alluvial ridge**; crest window set by a bankfull consistency check (freeboard ≈ channel depth). **β = 1 is not the avulsion threshold** — Gearon's criterion is βγ ≥ Λ and γ is not evaluated here |
 
 **Overall Assessment:** 🎯 **CORE PROCESSING VERIFIED AND SCIENTIFICALLY SOUND** — PIXC quality flag filtering pending expert review
 
@@ -67,7 +79,7 @@ Which river has a steeper gradient (hydraulic advantage) that could lead to chan
 - **Satellite:** NASA SWOT (Surface Water and Ocean Topography)
 - **Product:** L2_HR_PIXC (High-Resolution Pixel Cloud)
 - **Instrument:** Ka-band Radar Interferometry (KaRIn)
-- **Temporal Coverage:** July 2023 - December 2025 (133 satellite passes)
+- **Temporal Coverage:** July 2023 – August 2026 (95 May–Oct analysis dates from 120 granules with river pixels; winter/shoulder passes retained in daily CSVs but excluded from the master — see the ice-season gate below)
 - **Spatial Resolution:** ~10-100m pixel spacing
 
 ---
@@ -115,7 +127,8 @@ Filters are applied in this order during data ingestion (`SWOT_Pull.py`, `proces
 | 5 | **Geolocation quality** | `geolocation_qual` bit mask | Remove pixels with geolocation errors | ⏳ Not yet applied |
 | 6 | **Classification quality** | `classification_qual` bit mask | Remove uncertain classifications | ⏳ Not yet applied |
 | 7 | **Classification** | Classes 3 & 4 only | Keep only reliable water pixels | ✅ Active |
-| 8 | **MAD outlier filter** | Modified Z-score ≤ 3.5 | Remove anomalous WSE values | ✅ Active |
+| 8 | **MAD outlier filter** | Modified Z-score ≤ 3.5 on **1 km node-median residuals** | Remove anomalous WSE values without amputating the sloping profile | ✅ Active |
+| 9 | **Ice-season + known-bad-pass gate** | Month ∈ May–Oct and pass ∉ `KNOWN_BAD_PASSES` | Exclude ice-affected passes (breakup/freeze-up) from the master | ✅ Active (master build, `qc_registry.py`) |
 
 ### Why Quality Flag Filters Are Not Yet Applied
 
@@ -130,7 +143,7 @@ The flags are documented in detail in the [PIXC Quality Flag Reference](#pixc-qu
 
 ### Current Active Filters — Data Summary
 
-With the currently active filters (cross-track, classification 3-4, MAD outlier):
+With the currently active filters (cross-track, crossover calibration, classification 3-4, residual-domain MAD, May–Oct ice-season gate):
 
 ---
 
@@ -305,39 +318,44 @@ This means our Classes 3-4 filter provides **partial but not complete** protecti
 
 ### Filter 8: MAD Outlier Filter (WSE Anomaly Removal)
 
-**Purpose:** Remove anomalous water surface elevation measurements that deviate significantly from the per-reach median.
+**Purpose:** Remove anomalous water surface elevation measurements (plateau artifacts, terrain-contaminated pixels, residual atmospheric/multipath effects) without touching the river's real along-stream relief.
 
-**Scientific motivation:** Even after PIXC quality filtering, some measurements may include erroneous values from:
-- Plateau artifacts (pixels geolocated onto nearby terrain rather than river surface)
-- Residual atmospheric interference
-- Terrain-induced radar effects (shadow, multipath)
+**Method: Modified Z-Score (MAD) on node-median residuals** *(revised August 2026)*
 
-**Method: Modified Z-Score (Median Absolute Deviation)**
+The filter operates on **residuals from the per-pass node-median profile**, never on raw WSE:
+
+1. Bin the pass's pixels into **1 km distance nodes** (the same node structure as the reference gradient).
+2. Subtract each pixel's node-median WSE → residuals carry only within-node scatter, with all along-stream structure (linear or concave) removed.
+3. Screen the residuals with the modified Z-score:
 
 ```
-Modified Z = 0.6745 × (WSE - median) / MAD
-where MAD = median(|WSE - median|)
+Modified Z = 0.6745 × (residual - median) / MAD
+where MAD = median(|residual - median|)
 Outlier if |Modified Z| > 3.5
 ```
 
+**Why the residual domain matters:** the rivers carry ~66 m of *real* along-stream relief. Raw-domain MAD read the profile itself as spread, and on dates where pixel density is downstream-weighted it amputated whole upstream reaches — a critical finding of the August 2026 code review. 28 % of Uyak dates lost their upstream 13–22 km; the surviving truncated passes biased the published Uyak gradient low. Validated on the stored 2023-09-01 pass: Uyak removal dropped 24.6 % → 1.1 % with the upstream nodes fully restored, while Kanektok now catches real 2–4 m plateau artifacts the wide raw-domain band had missed.
+
 **Parameters:**
 - **Threshold:** 3.5 (conservative, standard in hydrology)
+- **Node size:** 1 km (`MAD_NODE_KM`, matches `REFGRAD_NODE_KM`)
+- **Sparse nodes:** pixels in nodes with < 3 pixels (`MAD_MIN_NODE_PIXELS`) are referenced to the nearest well-populated node's median — otherwise an isolated artifact would self-define its own median (residual ≈ 0) and shield itself
 - **Reference:** Iglewicz & Hoaglin (1993), "How to Detect and Handle Outliers"
 - **Application:** Independent per-reach filtering (Kanektok and Uyak filtered separately)
 
-**Implementation:** `SWOT_Pull.py`, lines 267-287
+**Implementation:** `SWOT_Pull.py` — `calculate_mad_outliers()` (line ~122), `node_median_residuals()` (line ~149), applied per reach in `process_granule()` (lines ~363-395)
 
 **Why per-reach filtering:**
-1. Rivers have different elevation ranges (Kanektok median ~28m, Uyak median ~14m)
-2. Independent hydrologic systems require independent outlier detection
-3. Prevents larger river's variability from affecting smaller river's filtering
+1. Independent hydrologic systems require independent outlier detection
+2. Prevents the larger river's variability from affecting the smaller river's filtering
 
 **Edge case handling:**
 - **N < 10:** Skip MAD filter (insufficient data for reliable median)
+- **No well-populated node:** Skip filtering, keep all points
 - **MAD = 0:** Keep all points (uniform values = no outliers detectable)
 - **Would remove too many:** If <5 points would remain, skip filtering for that reach
 
-**Observed impact:** Kanektok River typically sees 0–1% removal (clean data). Uyak Creek sees 2–49% removal depending on the pass — the narrower channel is more susceptible to terrain-contaminated pixels that survive earlier filters.
+**Observed impact:** both rivers now typically see ~0–2 % removal. The old raw-domain figure of "2–49 % removal on Uyak" was dominated by the amputation artifact, not by genuinely bad pixels.
 
 **Literature support:**
 - SWOT validation studies use IQR and modified Z-score filtering
@@ -604,34 +622,20 @@ dist_km = haversine_vectorized(lat, lon, ANCHOR_LAT, ANCHOR_LON)
 
 **Purpose:** Quantify river steepness (hydraulic gradient)
 
-> **For the authoritative reach gradient, see [Reference Gradient](#reference-gradient-per-pass-robust-regression).**
-> The `slope_calc` field documented here is the *legacy per-pass OLS slope* stored at ingestion.
-> It is retained for the per-pass time series, but the headline reach gradient now uses the
-> verified per-pass robust method (`slope_calc` is OLS and density-biased when pooled).
+**All slope quantities come from the [Reference Gradient](#reference-gradient-per-pass-robust-regression) engine** — per-pass Theil–Sen regression on 1 km node medians, aggregated by the median across passes.
 
-**Implementation:** `SWOT_Pull.py`, lines 309-313 (computed per granule/pass, per reach, then
-broadcast to every pixel of that pass)
-
-```python
-# Linear regression: WSE vs. distance (per pass, per reach)
-slope, _, _, _, _ = stats.linregress(subset['dist_km'], subset['wse'])
-full_df.loc[subset.index, 'slope_calc'] = slope * 100  # cm/km
-```
-
-**Method:** Ordinary least squares linear regression
-**X-axis:** Distance from confluence (km)
-**Y-axis:** Water surface elevation (m)
-**Units:** cm/km (centimeters drop per kilometer of river length)
+> **Legacy `slope_calc` column removed (August 2026).** Ingestion previously stored a per-pass
+> whole-reach OLS slope broadcast to every pixel (`slope_calc`). It was OLS on raw pixels
+> (density-biased), was never displayed anywhere, and had been fully superseded by the reference
+> gradient. The code-review fix campaign removed it from the ingestion schema, the master files,
+> and the dashboard's statistics query. `gradient_prototype.py`, the diagnostic that originally
+> compared the candidate methods, references the removed column and is retained as a historical
+> record only — its conclusions are documented in the Reference Gradient section below.
 
 **Scientific Interpretation:**
-- **Negative slope:** Water flows downhill from mountains toward ocean
-- **Steeper (more negative) slope:** Faster hydraulic gradient
+- Slopes are reported as positive magnitudes in cm/km (drop per kilometer of river length)
+- **Steeper gradient:** Faster hydraulic gradient
 - **River with steeper gradient:** Hydraulically advantaged, more prone to capturing flow
-
-**Quality Metrics Calculated:**
-- `r_value`: Correlation coefficient (how linear the profile is)
-- `p_value`: Statistical significance
-- `std_err`: Standard error of slope estimate
 
 ### Summary Statistics: Distance-Weighted Averaging
 
@@ -671,7 +675,9 @@ SELECT Reach_Name, AVG(bin_wse) AS avg_wse FROM binned GROUP BY Reach_Name
 
 ### Reference Gradient (Per-Pass Robust Regression)
 
-**Status:** ✅ Verified and justified (June 2026). Standalone diagnostic: `gradient_prototype.py`.
+**Status:** ✅ Verified and justified (June 2026); values updated to the revised archive
+(August 2026). Original method-selection diagnostic: `gradient_prototype.py` (historical — it
+predates the `slope_calc` removal and the granule-keyed re-pull).
 
 **Motivation.** The dashboard historically displayed *two* gradient numbers that disagreed by
 1–2 % (e.g. Kanektok 182.3 cm/km on the profile trendline vs 179.8 cm/km in the summary table).
@@ -685,7 +691,7 @@ verification behind it.
 | Old number | What it actually computed | Flaw |
 |---|---|---|
 | Profile trendline (`dashboard_swot.py` tab 1) | OLS slope of WSE vs distance over **all passes pooled**, on **raw pixels**, from a downsampled subset | Point-density-biased (dense downstream pixels flatten the slope); mixes passes at different river stages |
-| Summary table (`stats_df`) | `AVG` over 1 km bins of `MEDIAN(slope_calc)`, where `slope_calc` is the whole-reach OLS slope of one pass **broadcast to every pixel** (`SWOT_Pull.py:309-313`) | The bin-median of a per-pass constant is meaningless spatially; reduces to an oddly pass-weighted average of per-pass OLS slopes |
+| Summary table (`stats_df`) | `AVG` over 1 km bins of `MEDIAN(slope_calc)`, where `slope_calc` was the whole-reach OLS slope of one pass **broadcast to every pixel** (column removed from the schema, Aug 2026) | The bin-median of a per-pass constant is meaningless spatially; reduces to an oddly pass-weighted average of per-pass OLS slopes |
 
 **Chosen method — per-pass robust regression, then median across passes.** This follows the
 SWOT/SWORD convention (pixels → ~200 m *nodes* → reach-scale slope by regression) and the
@@ -704,20 +710,33 @@ robust-estimator practice used in SWORD and in SWOT superelevation studies:
    ~26 % for Uyak vs ~2 % for Kanektok — to clip the steep downstream reach; those partial passes
    report an artificially gentle slope. Requiring full coverage ensures every pass measures the
    same profile, making the two rivers directly comparable (see Verification 3).
-4. **Open-water only** (Apr–Nov). Dec–Mar are excluded: smooth river ice passes the Class 3–4
-   filter and inflates WSE by 0.5–2+ m (see [Filter 7](#filter-7-classification-water-type)).
+4. **Ice-safe months only** (May–Oct, `qc_registry.ICE_SAFE_MONTHS`; enforced at ingestion since
+   August 2026). Smooth river ice passes the Class 3–4 filter and inflates WSE by 0.5–2+ m (see
+   [Filter 7](#filter-7-classification-water-type)). The line was calibrated empirically on the
+   full archive: April shows breakup contamination *every* year (including a breakup pass the
+   manual bad-pass registry had missed), October is consistently clean, and the first freeze-up
+   signal appears mid-November. The earlier Apr–Nov "open-water" window is superseded.
 5. **Aggregate across passes by the median** (not the mean) of the per-pass slopes — robust to
    a minority of noisy passes (matters for Uyak, see below).
 
-**Reference gradient values** (1 km nodes, Theil–Sen, full-coverage gate, median across passes):
+**Reference gradient values** (1 km nodes, Theil–Sen, full-coverage gate, median across passes;
+archive of 2026-08-14 — granule-keyed re-pull, residual-domain MAD, May–Oct):
 
-| River | All open-water | High flow (May) | Low flow (Jul–Aug) | Pass-to-pass std | n passes |
+| River | All ice-safe months | High flow (May) | Low flow (Jul–Aug) | Pass-to-pass std | n passes |
 |---|---|---|---|---|---|
-| **Kanektok River** | **195.4 cm/km** | 195.6 | 195.2 | 0.9 | 88 |
-| **Uyak Creek** | **191.7 cm/km** | 193.5 | 191.2 | 4.3 | 67 |
+| **Kanektok River** | **195.3 cm/km** | 195.4 | 195.3 | 0.4 | 93 |
+| **Uyak Creek** | **192.4 cm/km** | 193.4 | 192.0 | 3.0 | 95 |
+
+*(Pre-revision values for reference: 195.4 / 191.7 cm/km with n = 88 / 67. The August 2026
+re-pull recovered ~169 never-ingested sibling-tile granules, and the residual-domain MAD fix
+ended an upstream-Uyak amputation that had biased Uyak's gradient low — both rivers' n grew and
+Uyak rose 191.7 → 192.4, narrowing the advantage from ≈ 3.6 to **≈ 2.9 cm/km**. Direction and
+conclusion are unchanged.)*
 
 **Verification 1 — the estimate is decomposable and each step is justified.** Building up from
-the old trendline to the proposed method, isolating one effect at a time (open-water data):
+the old trendline to the proposed method, isolating one effect at a time. *(Established June 2026
+on the pre-revision archive via `gradient_prototype.py`; the specific values below are
+point-in-time, but the decomposition logic is archive-independent.)*
 
 | Step | Kanektok | Uyak | Effect added |
 |---|---|---|---|
@@ -733,36 +752,40 @@ more heavily concentrated at the gentle downstream end). Per-pass averaging and 
 are smaller refinements on top.
 
 **Verification 2 — season invariance.** High-flow (May) and low-flow (Jul–Aug) reference values
-differ by only 0.4 cm/km (Kanektok) and 2.3 cm/km (Uyak) — well within pass-to-pass scatter.
-Water-surface slope is therefore approximately stage-invariant here, so a single all-open-water
-number is well justified; the seasonal split is reported but adds little.
+differ by only 0.1 cm/km (Kanektok) and 1.4 cm/km (Uyak) — well within pass-to-pass scatter,
+and neither contrast is significant (Mann–Whitney raw p = 0.34 / 0.15). Water-surface slope is
+therefore approximately stage-invariant here, so a single all-season number is well justified;
+the seasonal split is reported but adds little.
 
-**Verification 3 — coverage gate sensitivity (the dominant control on Uyak scatter).** The
-per-pass slope correlates **−0.97** with where a Uyak pass *starts* (`lo_km`) and **+0.81** with
-its span: partial passes that clip the steep downstream reach report gentle slopes (~151 cm/km),
-forming a long low tail. Season does *not* explain it (slope-vs-month correlation −0.14), and it
-is not measurement noise (the OLS R² is ≈ 1.0 for both the low- and high-slope passes — they fit
-clean lines, just through different reaches). Tightening from the old ≥ 20 km gate to the
-full-coverage gate (≥ 30 km span *and* start ≤ 3 km) collapses Uyak's scatter from **std 12.3 →
-4.3 cm/km** and shifts its median 191.2 → 191.7, toward the full-river slope; Kanektok is
-essentially unchanged (90 → 88 passes; ~100 % of its passes already image the full river). This
-is the clearest justification for the gate: the wide raw Uyak distribution was a *coverage
-artifact on a concave profile*, not real hydraulic variability.
+**Verification 3 — coverage gate sensitivity (the dominant control on Uyak scatter).**
+*(Established June 2026 on the pre-revision archive; the mechanism is geometric and unchanged.)*
+The per-pass slope correlated **−0.97** with where a Uyak pass *starts* (`lo_km`) and **+0.81**
+with its span: partial passes that clip the steep downstream reach report gentle slopes
+(~151 cm/km), forming a long low tail. Season did *not* explain it (slope-vs-month correlation
+−0.14), and it was not measurement noise (the OLS R² is ≈ 1.0 for both the low- and high-slope
+passes — they fit clean lines, just through different reaches). Tightening from the old ≥ 20 km
+gate to the full-coverage gate (≥ 30 km span *and* start ≤ 3 km) collapsed Uyak's scatter and
+shifted its median toward the full-river slope; Kanektok was essentially unchanged (~100 % of its
+passes already image the full river). This is the clearest justification for the gate: the wide
+raw Uyak distribution was a *coverage artifact on a concave profile*, not real hydraulic
+variability. On the revised archive the gate passes 188 of 190 fitted passes — the granule
+re-pull recovered the missing sibling tiles, so most formerly-partial Uyak passes now image the
+full river.
 
-**Verification 4 — precision.** Standard error of the per-pass mean is 0.10 cm/km (Kanektok)
-and 0.53 cm/km (Uyak), far below the ~6–7 cm/km systematic corrections above, so the reference
-values are tightly determined. SWOT's design slope accuracy is 1.7 cm/km over a 10 km reach
-(Biancamaria et al., 2016), consistent with our reach-scale (~35 km) precision.
+**Verification 4 — precision.** Standard error of the per-pass mean is 0.04 cm/km (Kanektok)
+and 0.31 cm/km (Uyak) on the revised archive, far below the ~6–7 cm/km systematic corrections
+above, so the reference values are tightly determined. SWOT's design slope accuracy is 1.7 cm/km
+over a 10 km reach (Biancamaria et al., 2016), consistent with our reach-scale (~35 km) precision.
 
 **Scientific consequence.** The old pooled-OLS numbers made the two rivers look nearly identical
 (~185 and ~180 cm/km), masking a real difference. The de-biased, full-coverage reference gradient
-shows **Kanektok is consistently steeper than Uyak** (195.4 vs 191.7 cm/km, ≈ 3.6 cm/km), across
+shows **Kanektok is consistently steeper than Uyak** (195.3 vs 192.4 cm/km, ≈ 2.9 cm/km), across
 every season — a genuine hydraulic-gradient signal relevant to avulsion susceptibility (a steeper
 competing path is more able to capture flow; Slingerland & Smith, 1998).
 
 **Caveats.**
-- Even after the full-coverage gate, Uyak Creek retains ~5× the pass-to-pass scatter of
-  Kanektok (std 4.3 vs 0.9 cm/km), reflecting its narrower channel and noisier WSE. The median
+- Even after the full-coverage gate, Uyak Creek retains ~7× the pass-to-pass scatter of
+  Kanektok (std 3.0 vs 0.4 cm/km), reflecting its narrower channel and noisier WSE. The median
   is reported as the robust headline; mean and median agree to within ~0.1 cm/km once partial
   passes are removed.
 - The reference gradient is a **whole-reach** quantity. Local steepening/flattening along the
@@ -770,9 +793,10 @@ competing path is more able to capture flow; Slingerland & Smith, 1998).
   resolution scale only when computed over long baselines — sub-kilometre slopes are at or below
   the noise floor and should not be over-interpreted.
 
-**Method parameters** (in `SWOT_Pull.py`, mirrored in `gradient_prototype.py`): `NODE_KM = 1.0`,
-`MIN_NODES = 8`, `MIN_SPAN_KM = 30.0`, `MAX_START_KM = 3.0` (full-coverage gate),
-`OPEN_WATER_MONTHS = {4..11}`, high flow = May, low flow = Jul–Aug.
+**Method parameters** (in `SWOT_Pull.py`): `NODE_KM = 1.0`, `MIN_NODES = 8`,
+`MIN_SPAN_KM = 30.0`, `MAX_START_KM = 3.0` (full-coverage gate),
+`REFGRAD_OPEN_WATER_MONTHS = qc_registry.ICE_SAFE_MONTHS = {5..10}`,
+high flow = May, low flow = Jul–Aug.
 
 **Key references:**
 - Altenau et al. (2021), *SWORD: A Global River Network for SWOT* — node (200 m) → reach (~10 km) regression slope. WRR, doi:10.1029/2021WR030054.
@@ -806,35 +830,43 @@ results — no on-the-fly recomputation.
 
 **Method.** Every number reuses the [Reference Gradient](#reference-gradient-per-pass-robust-regression)
 engine — per-pass **Theil–Sen on 1 km node medians**, the **full-coverage gate**
-(≥ 8 nodes, span ≥ 30 km, start ≤ 3 km), **open-water only** — so all comparisons are
-density-unbiased, robust, and made over the same concave profile. Two per-pass metrics:
-**slope** (cm/km, the hydraulic gradient) and **WSE@15 km** (m, water level at a fixed
-reference distance from the Theil–Sen fit, carrying the flow/storm signal). WSE comparisons are
-**season-matched and year-resolved** (water level is seasonal). **Slope** comparisons instead
-**pool over the largest defensible sample** (Q1 seasonal contrast pooled across all years; Q2
-interannual over the full open-water year) because slope is season-invariant *and*
-coverage-sensitive: a per-year/per-season slice of only 3–5 passes is dominated by one or two
-marginal-coverage passes (a documented artifact — see the Q1/Q2 findings). Medians and
-Mann–Whitney U tests throughout.
-Reads the **full local record**
-(188 passes, 2023–2026; 155 full-coverage open-water passes). **Key design:** Q2 (change under
-no disturbance) is the **natural-variability baseline / control for Q3** — the storm counts as
-an impact only if its signal exceeds normal year-to-year variation.
+(≥ 8 nodes, span ≥ 30 km, start ≤ 3 km), **ice-safe months only** (May–Oct, from
+`qc_registry`) — so all comparisons are density-unbiased, robust, and made over the same concave
+profile. Two per-pass metrics: **slope** (cm/km, the hydraulic gradient) and **WSE@15 km** (m,
+water level at a fixed reference distance from the Theil–Sen fit, carrying the flow/storm
+signal). WSE comparisons are **season-matched and year-resolved** (water level is seasonal).
+**Slope** comparisons instead **pool over the largest defensible sample** (Q1 seasonal contrast
+pooled across all years; Q2 interannual over the full ice-safe year) because slope is
+season-invariant *and* coverage-sensitive: a per-year/per-season slice of only 3–5 passes is
+dominated by one or two marginal-coverage passes (a documented artifact — see the Q1/Q2
+findings). Medians and Mann–Whitney U tests throughout; **significance is decided family-wise**
+— Holm step-down correction over all 16 tests as one family (adjusted values exported as
+`p_wse_holm` / `p_slope_holm`; significant = adjusted p < 0.05). The Q3 vs-baseline verdict uses
+a **bootstrap 95 % CI** (n = 10,000, seeded) on |storm ΔWSE| − |baseline ΔWSE|, with a three-way
+outcome: *exceeds* / *within* / *indistinguishable* (CI spans zero).
+Reads the **full local record** (190 fitted passes, 2023-07-31 → 2026-08-10; 188 pass the
+full-coverage gate). **Key design:** Q2 (change under no disturbance) is the
+**natural-variability baseline / control for Q3** — the storm counts as an impact only if its
+signal exceeds normal year-to-year variation.
 
 **Findings.**
 
 | Question | Result |
 |---|---|
-| **Q1 Seasonal** (May vs Jul–Aug) | Small and **inconsistent**: slope ≈ season-invariant (pooled swing +0.3 Kanektok / +2.3 Uyak cm/km, neither significant, matching the reference gradient); WSE swings only ±0.2–0.5 m and *flips sign* between years. No repeatable seasonal profile shift. *(Slope pooled across years — a per-year slice gave a spurious +8.3 Uyak-2025 swing, same coverage artifact as Q2.)* |
-| **Q2 Interannual** (2024 vs 2025) | Both rivers stable. Slope change trivial (Kanektok +0.8, Uyak −1.0 cm/km); WSE movement ≈ **0.2 m (Kanektok) – 0.4 m (Uyak)**. Kanektok's changes are *statistically* significant only because variance is tiny — magnitude is geomorphically trivial. **Slope uses the full open-water year** (season-invariant per Q1): a Jul–Aug-only slice gave a −6.8 cm/km Uyak "drop" that is *largely* a coverage artifact (an independent fixed-window slope shrinks it to −2.0; annual medians flat at 191.9/190.9/192.6; residual non-robust) — see the adversarial check below. |
-| **Q3 Typhoon** (interim, Jun 2025 vs Jun 2026) | **No detectable signal.** WSE change −0.09 m (Kanektok) / −0.29 m (Uyak) — both **within (below) the normal baseline**; slope change ≤ 0.55 cm/km; along-river change flat. Storm damage was coastal; upstream profile unchanged beyond normal noise. |
+| **Q1 Seasonal** (May vs Jul–Aug) | Small and **inconsistent**: slope ≈ season-invariant (pooled swing +0.1 Kanektok / +1.4 Uyak cm/km, raw p = 0.34 / 0.15 — the pre-revision archive's marginal Uyak p = 0.033 **dissolved** once the amputated passes were recovered); WSE swings only ±0.06–0.44 m and *flips sign* between years — only Uyak-2024 (−0.44 m, Holm-adjusted p = 0.042) survives the family-wise correction. No repeatable seasonal profile shift. |
+| **Q2 Interannual** (2024 vs 2025) | Both rivers stable. Slope change trivial (Kanektok +0.5, Uyak +0.1 cm/km) — Kanektok's is *statistically* significant even after Holm (adjusted p < 0.001) purely because its variance is tiny (std 0.4); the magnitude is geomorphically trivial. WSE moved **−0.23 m (Kanektok) / −0.36 m (Uyak)** (Jul–Aug 2024 → 2025, the drier 2025 summer), both surviving Holm — this is the natural-variability baseline for Q3. |
+| **Q3 Typhoon** (interim, Jun 2025 vs Jun 2026) | **No detectable signal.** WSE change −0.15 m (Kanektok) / −0.31 m (Uyak); slope change ≤ 0.11 cm/km; along-river change flat. Bootstrap excess-vs-baseline 95 % CIs span zero on both rivers (Kanektok [−0.27, +0.09] m; Uyak [−0.39, +0.27] m) → verdict **indistinguishable from natural variability** — the honest small-n (5 vs 5 passes) phrasing of "no upstream storm scar". Storm damage was coastal. |
 
 **Why the dedicated analysis matters.** The retired Seasonal/Typhoon tabs used
 density-biased pooled OLS on raw pixels with no coverage gate, and compared genuine
 summer 2025 against ice-contaminated Mar–Jun 2026. The de-biased robust method with a
 proper control is what makes the Q3 **null result** trustworthy.
 
-**Adversarial verification (`verify_temporal_method.py`).** Because pooling slope is a
+**Adversarial verification (`verify_temporal_method.py`).** *(Run July 2026 on the pre-revision
+archive; specific values are point-in-time. The coverage-artifact mechanism it demonstrates is
+what motivated pooling, and the revised archive — where the recovered granules and residual-domain
+MAD made the artifact-driven anomalies dissolve on their own — is consistent with its verdict.)*
+Because pooling slope is a
 researcher degree of freedom, the pooling decision was stress-tested independently. (1) The
 profile is confirmed concave (near-confluence slope ~3× the downstream slope), so clipping the
 steep reach *mechanically* lowers a pass's slope. (2) The coverage artifact concentrates in
@@ -1096,11 +1128,17 @@ The dashboard includes an ArcticDEM comparison tab that overlays satellite-deriv
 
 ### Data Source
 
-**ArcticDEM V4 2m Mosaic** — A pan-Arctic digital surface model produced by the Polar Geospatial Center (University of Minnesota) from stereo satellite imagery. The mosaic is accessed via Google Earth Engine (`UMN/PGC/ArcticDEM/V4/2m_mosaic`) and exported at 10m resolution, clipped to the river polygon extent.
+**ArcticDEM 2m Mosaic** — A pan-Arctic digital **surface** model produced by the Polar Geospatial Center (University of Minnesota) from stereo satellite imagery. Two extraction paths are used, for two different purposes:
+
+| Path | Script | Resolution | Access | Used by |
+|---|---|---|---|---|
+| Corridor profile | `DEM_Pull.py` | 2 m resampled to **10 m** | Google Earth Engine (`UMN/PGC/ArcticDEM/V4/2m_mosaic`) | DEM Data subtabs 1–5 |
+| Cross-sections | `DEM_2m_Pull.py` | **native 2 m** | PGC S3 COGs via GDAL `/vsicurl` (GEE cannot serve 2 m — 48 MB export cap) | ✂️ Cross-Sections subtab |
 
 - **Coverage:** Full study area (Kanektok River and Uyak Creek corridors)
-- **Native resolution:** 2m (resampled to 10m for export)
-- **Extraction script:** `DEM_Pull.py`
+- **Mosaic version:** v4.1, EPSG:3413
+- **Source imagery window:** **2010-10-03 → 2021-03-02** for the tiles covering this corridor (from the per-tile PGC STAC `start_datetime`/`end_datetime`). The mosaic is a **multi-date blend**, not a single snapshot — this has direct consequences for both channel position and water stage, quantified in [Arc Cross-Section Avulsion Analysis](#arc-cross-section-avulsion-analysis).
+- **Not hydro-flattened.** Unlike Copernicus GLO-30/FABDEM, ArcticDEM mosaics retain the raw stereo surface over water, so the DEM's "water surface" is a photogrammetric estimate rather than an enforced flat plane. Its accuracy is measured against SWOT below.
 
 ### Vertical Datum Alignment
 
@@ -1118,7 +1156,7 @@ The geoid undulation is obtained by building a spatially-varying interpolation s
 - SWOT CSV files are sampled and the latitude/longitude/geoid values are binned to a ~0.005° grid
 - A `scipy.interpolate.LinearNDInterpolator` creates a continuous geoid surface
 - Each ArcticDEM pixel's ellipsoidal height is corrected by subtracting the interpolated geoid value at its location
-- Points outside the SWOT spatial coverage fall back to a constant offset of 13.46m (the study-area mean)
+- Points outside the SWOT convex hull are extrapolated with a `NearestNDInterpolator` built from the same binned grid *(revised August 2026 — the previous constant-13.46 m fallback put up to ~0.25 m of datum error into out-of-hull points, concentrated at the Uyak mouth where the true geoid is ~13.20 m)*; a constant is used only if no SWOT CSVs exist at all
 
 **Geoid variation across the study area:**
 
@@ -1130,6 +1168,8 @@ The geoid undulation is obtained by building a spatially-varying interpolation s
 | 30–40 km | ~13.2 |
 
 The ~0.6m variation over 35 km is small but spatially systematic, justifying the interpolation approach over a single constant.
+
+**Cross-section path (added 2026-08-08):** the arc cross-section analysis originally used a single constant 13.46 m and now takes the geoid **per radius** from the same SWOT `geoid` field, tabulated in `DEM_Transects/data/swot_arc_reference.parquet` (13.74 m at the anchor → 13.28 m at the coast). The distinction matters only for *cross-dataset* comparison: every quantity measured **within a single arc** — β, H_AR, H_M, superelevation, Uyak−Kanektok at matched radius — is a difference between two elevations at effectively the same geoid value, so the choice cancels exactly (verified: all such identities reproduce to 0.0 m under the change). What the per-radius geoid buys is that DEM elevations and SWOT WSE now sit on the same datum, which removed a spurious along-reach tilt in the DEM-vs-SWOT residual (Uyak: −0.14 → **+0.02 m per 10 km**).
 
 ### Independent Validation
 
@@ -1144,7 +1184,7 @@ The ArcticDEM V4 was independently validated against NOAA 2024 QL1 LiDAR for the
 
 ### Dashboard Visualization
 
-The DEM Data tab contains five subtabs:
+The DEM Data tab contains six subtabs:
 
 1. **Terrain Profile** — ArcticDEM median elevation per 0.5 km distance bin for each river, with linear regression trendlines (gradient in cm/km, R² goodness-of-fit). The median is used rather than the mean because it is robust to outlier pixels (e.g., misclassified land cover or DEM artifacts).
 
@@ -1154,7 +1194,9 @@ The DEM Data tab contains five subtabs:
 
 4. **Detrended Terrain Profile** — Removes the regional downstream gradient by fitting a 2nd-order polynomial baseline to both rivers combined. A quadratic is appropriate because river long-profiles are typically concave-up, following S ∝ A^(−m) where A is upstream drainage area (Hack, 1957; Flint, 1974). Residuals reveal where each river corridor deviates from the regional trend — a river consistently above the baseline may indicate a *perched* or *super-elevated* channel, a key precondition for avulsion.
 
-5. **Map View** — Interactive Folium map displaying DEM elevation points within the river polygons. Color-by options: River Name (categorical) or Elevation (viridis continuous colormap). Includes basemap toggle, point opacity control, measurement tools, and click-for-details popups.
+5. **Map View** — Interactive Folium map displaying DEM elevation points within the river polygons. Color-by options: River Name (categorical) or Elevation (viridis continuous colormap). Includes basemap toggle, point opacity control, measurement tools, and click-for-details popups. A toggleable overlay draws the exact cross-section geometry (field centerlines, distance-from-anchor rings, transects, channel crossings, anchor).
+
+6. **✂️ Cross-Sections** — Scrubbable individual cross-sections along arcs of constant distance-from-anchor, spanning Kanektok → floodplain → Uyak, with the superelevation and β metrics per arc. Methods and validation in the next section; full write-up in `DEM_Transects/AVULSION_ANALYSIS.md`.
 
 **Summary Statistics:** Below the subtabs, a per-river summary table displays Avg Elevation (m) and Avg Gradient (cm/km), both computed using the same distance-weighted binned median methodology as the SWOT summary statistics (see [Summary Statistics: Distance-Weighted Averaging](#summary-statistics-distance-weighted-averaging)).
 
@@ -1169,15 +1211,76 @@ DEM data is loaded via DuckDB, consistent with the SWOT data pipeline. The full 
 
 This approach replaced an earlier pandas-based pipeline that stride-downsampled to 15K rows before computing bin statistics. The DuckDB approach provides exact statistics (tested: 0.000 m error vs full-data computation) while keeping memory usage minimal on Streamlit Cloud (~1.4 MB steady-state vs the previous ~233 MB peak).
 
+### Arc Cross-Section Avulsion Analysis
+
+The ✂️ Cross-Sections subtab is driven by `DEM_Transects/build_arc_B.py`. Each cross-section follows an **arc of constant straight-line distance from the shared anchor**, so every point on it sits at the same downstream coordinate the rest of the dashboard uses, and one arc spans Kanektok → floodplain → Uyak. This is the fan/delta radial-distance-from-apex convention (Williams et al. 2006; Edmonds et al. 2011). Full methods, results and caveats: `DEM_Transects/AVULSION_ANALYSIS.md`.
+
+**What is measured, per arc:**
+
+| Quantity | Definition | Source |
+|---|---|---|
+| Channel water surface | P2 of DEM elevations within ±50 m of the DEM-snapped thalweg | 2 m ArcticDEM |
+| Floodplain reference | median terrain of the inter-channel corridor, excluding each ±250 m channel notch | 2 m ArcticDEM |
+| Superelevation | channel water surface − floodplain reference, **at a declared stage** | SWOT stage + DEM floodplain |
+| Ridge crest | lower of the two P98 bank-highs within **±150 m** of the thalweg | 2 m ArcticDEM |
+| Channel bed | survey-stage water surface − measured thalweg depth | SWOT + boat ADCP |
+| β = H_AR/H_M | (crest − floodplain) / (crest − bed) | all of the above |
+
+#### SWOT cross-validation of the DEM water surface
+
+The DEM is a stereo *surface* model over water, so its channel "water surface" needs independent verification. Comparing against SWOT at matched radius on a shared EGM2008 datum:
+
+| River | DEM − SWOT (median stage) | Residual trend |
+|---|---|---|
+| Kanektok | **−0.15 m** | −0.14 m / 10 km |
+| Uyak | **+0.14 m** | **+0.02 m / 10 km** |
+
+Both are well inside ArcticDEM's independently validated 0.50 m RMSE, and the Uyak residual is essentially trend-free. This is a genuine three-way agreement — 2 m DEM, boat ADCP, and SWOT — and it is the strongest validation the cross-section analysis has.
+
+#### Stage: why aggregation choice matters
+
+A river has no single water surface. At a fixed radius the SWOT water surface spans **~0.7 m between p10 and p90** across ~40 overpasses (Kanektok 0.72 m, Uyak 0.64 m; seasonality is weak, June running +0.21 m on the Kanektok and all other months within ±0.09 m). Two consequences are handled explicitly:
+
+1. **Superelevation is stage-dependent**, so it is quoted at the **median observed stage** with the p10–p90 range carried alongside rather than at whatever single stage the DEM caught. Kanektok: **−1.50 m** median stage (−1.75 m low water, −1.01 m high water), incised on **100 %** of arcs at every stage in the observed range. Uyak: **−0.49 m** (−0.77 / −0.14).
+
+2. **The multi-date mosaic imaged the two rivers at different stages.** Geoid-corrected, the DEM water surface sits at the **29th percentile** of observed stages on the Kanektok but the **76th** on the Uyak — a ~0.34 m differential bias pointing exactly the way that inflates "Uyak higher". The inter-river comparison is therefore taken from **pass-paired SWOT** (both rivers measured within the *same* overpass, so stage cancels identically): **+0.96 m, Uyak higher on 100 % of passes**, from 2 495 pass-radius pairs across 49 passes. The DEM-only value (+1.45 m) is retained in the artifact for continuity but is not the number reported.
+
+#### Channel bed: stage-matched by construction
+
+`bed = water surface − depth` is only a true bed if both terms are at the same stage. SWOT overflew on **2026-05-28 and 2026-05-30, inside the 2026-05-28 → 06-03 boat-ADCP survey window**, so the water surface used for the bed is the one measured at the stage the depths were sounded at. This removes the mismatch inherent in pairing a 2026 depth with a 2010–2021 DEM (worth +0.05 m on the bed). The survey itself caught a typical stage — **+0.04 m** from the all-pass median — so β carries no stage bias.
+
+#### Setting the crest window: the bankfull consistency check
+
+The ridge crest is the parameter β is most sensitive to after the floodplain reference, and it is not self-evident how far from the channel to look. Two independent diagnostics set it:
+
+- **The P98 never settles.** Sweeping the half-window, β climbs monotonically (−0.16 at ±75 m, 0.06 at ±150, 0.21 at ±250, 0.24 at ±350, 0.28 at ±500) while the crest pixel's distance from the thalweg tracks the window boundary (57 m → 292 m). A real levee would produce a local maximum the search converges on; this is the signature of **no levee**.
+- **Bankfull consistency.** A bank the river can actually fill should have freeboard *A* = (crest − water surface) comparable to the channel depth *B* (ADCP median 1.30 m). Measured A/B by window: 0.66 @ ±60 m, 1.02 @ ±100, **1.27 @ ±150**, 1.72 @ ±250, **1.87 @ ±350**. At ±350 m the "bank" stood 1.9× the channel depth above the water — one the Kanektok could never overtop.
+
+The window is therefore **±150 m**, ~3 channel widths on a ~50 m river, which is the scale Gearon et al. work at. This supersedes an earlier ±350 m (~7 channel widths) that was reaching regional high ground.
+
+#### Result, and how β should be read
+
+**β median 0.06, H_AR median +0.14 m**, with the near-channel high ground sitting *below* the floodplain reference outright (β ≤ 0) on **38 %** of arcs. The defensible statement is not "β is safely under a threshold" but **there is no alluvial ridge to superelevate** — the same fact the −1.50 m incision reports, in dimensionless form.
+
+**β = 1 is not the operative avulsion threshold, and is not presented as one.** Gearon et al. (2024) show the criterion is **βγ ≥ Λ** (their eq. 4) with Λ median **2.1**; the paper states plainly that "β only accounts for half of Λ" and that "roughly 60 % of deltas in our dataset have β < 0.5" — near the sink, rivers that *did* avulse carry low β because the gradient-advantage term γ is high. This analysis deliberately does not evaluate γ (a corridor-median floodplain has no location, so the ridge-flank slope S_AR has no defensible run length), so β is reported as a **reproduction of the prior ArcGIS metric** `(P98 − median)/(P98 − P2)` and the avulsion argument rests on the incision result rather than on β alone.
+
+#### Channel migration
+
+The field centerlines were surveyed in **2026**; the DEM mosaic is built from **2010–2021** imagery, so the boat line is a prior for a channel the DEM may not show in the same place. Measured: the DEM channel sits a median **38 m** (Kanektok) and **12 m** (Uyak) from the field line, and on **9 % / 8 %** of arcs the snap reaches the edge of its ±75 m search window, meaning the DEM channel may lie further out still.
+
+Critically, this does **not** propagate into the water surface: widening the search from ±75 m to ±400 m moves the picked WSE by **0.00 m**, because the floodplain low is a broad flat wet surface and the low-percentile pick finds it wherever it lands. What remains uncertain is the channel *position* — the x = 0 origin of each section, the crest window anchored on it, and the corridor edges — at the few-tens-of-metres level. Per-arc QC columns `kan/uyak_snap_offset_m` and `kan/uyak_snap_clipped` expose this.
+
 ### Scientific Basis & Methodological Justification
 
 The DEM analyses are grounded in the following theoretical and empirical framework:
 
 **Avulsion mechanics:** Slingerland & Smith (1998) established that avulsions are controlled by (a) the cross-valley slope ratio between the existing channel and potential avulsion path, (b) the alluvial ridge height (elevation of the channel corridor above the surrounding floodplain), and (c) sediment supply. The elevation difference and slope profiles directly quantify factors (a) and (b) from terrain data.
 
-**Topographic prediction of avulsion:** Gearon et al. (2024, *Nature*) demonstrated that landscape topography alone — specifically cross-corridor elevation gradients and slope ratios — can predict avulsion likelihood with high accuracy across a global dataset of 174 avulsions. The DEM analyses implemented here follow the same approach of extracting topographic metrics along competing channel corridors.
+**Topographic metrics for avulsion:** Gearon et al. (2024, *Nature*) catalogued 174 satellite-era avulsions and, on the 58 with sufficient data quality, measured two dimensionless topographic ratios from DEM and ICESat-2 cross-sections: superelevation **β = H_AR/H_M** (alluvial-ridge height over channel depth) and gradient advantage **γ = S_AR/S_M**. Their central result is that these combine as **βγ ≥ Λ** (Λ median 2.1) and that their *relative* importance shifts from source to sink — high β / low γ on fans near the mountain front, the reverse on deltas near the shoreline. The cross-section analysis here adopts their β definition and their crest convention (the lower of the two bank highs), while deliberately not evaluating γ; see [Arc Cross-Section Avulsion Analysis](#arc-cross-section-avulsion-analysis) for why β alone must not be read as a pass/fail avulsion test.
 
-**Geoid correction validation:** Wang et al. (2022, *Water Resources Research*) validated the approach of using interpolated EGM2008 geoid values to align satellite-derived elevations with terrestrial references, reporting geoid interpolation uncertainties of ~±0.5 m — consistent with the approach used in `DEM_Pull.py`.
+**Remote detection of an in-progress avulsion:** Wang et al. (2023, *Water Resources Research*) documented an active avulsion in the Peace-Athabasca Delta using water-surface slope, discharge, channel width and floodplain inundation from remote sensing, and identified SWOT as the instrument that would extend this to global repeat coverage. That is directly the template this project follows — a slope/WSE-based assessment of whether one distributary is gaining advantage over another — and it is the precedent for treating water-surface gradient as an avulsion diagnostic rather than relying on topography alone.
+
+**Geoid correction:** the geoid surface used to align ArcticDEM with SWOT is not borrowed from a literature estimate — it is built from the **same per-pixel NASA EGM2008 values used inside the SWOT WSE calculation itself** (`wse = height − geoid − tides`), so the two datasets are aligned by construction rather than by an external model. The residual accuracy of that alignment is measured directly, not assumed: the DEM channel water surface lands within **0.15 m** of the SWOT median stage on both rivers (see [Arc Cross-Section Avulsion Analysis](#arc-cross-section-avulsion-analysis)), against ArcticDEM's LiDAR-validated 0.50 m RMSE.
 
 **Profile shape:** The 2nd-order polynomial baseline for detrending follows the empirical observation that alluvial river long-profiles are well-approximated by a power law or low-order polynomial (Hack, 1957; Flint, 1974). Higher-order fits risk overfitting to local features that the detrending aims to reveal.
 
@@ -1185,15 +1288,20 @@ The DEM analyses are grounded in the following theoretical and empirical framewo
 - Elevation difference alone is a necessary but not sufficient predictor of avulsion — discharge, sediment load, and bank cohesion also play a role (Slingerland & Smith, 1998)
 - The linear trendline approximates a profile that is naturally concave-up; R² is reported so users can assess fit quality
 - DEM terrain within the river polygons includes banks and bars, not just the active channel bed — this is appropriate for corridor-scale avulsion analysis but differs from SWOT's water-surface-only measurement
-- Geoid correction introduces ~±0.5 m systematic uncertainty (Wang et al., 2022); this affects absolute elevation but not relative comparisons between the two rivers at the same distance
+- The ArcticDEM mosaic is a **2010–2021 multi-date blend**, so (a) the channel may have migrated relative to the 2026 field centerlines, and (b) the two rivers were imaged at different water stages. Both are quantified and handled in [Arc Cross-Section Avulsion Analysis](#arc-cross-section-avulsion-analysis); the inter-river comparison is taken from pass-paired SWOT rather than from the DEM for this reason
+- β is reported as a reproduction of the prior ArcGIS superelevation metric, **not** as a threshold test against β = 1; Gearon's operative criterion is βγ ≥ Λ and the gradient term γ is not evaluated here
+- The floodplain reference is the median of a ~2.7 km-wide inter-channel corridor, which is a regional datum rather than Gearon's local ridge-toe pick; it sits ~0.29 m below the floodplain immediately beside the Kanektok, and because it has no location it cannot support a ridge-flank slope S_AR
 
 ### References
 
+- Edmonds, D.A., et al. (2011). Predicting delta avulsions: implications for coastal wetland restoration. *Journal of Geophysical Research*, 116, F04022. doi:10.1029/2010JF001955
 - Flint, J.J. (1974). Stream gradient as a function of order, magnitude, and discharge. *Water Resources Research*, 10(5), 969–973.
-- Gearon, J.H., et al. (2024). Landscape dynamics and the Phanerozoic diversification of the biosphere. *Nature*, 634, 92–95.
+- Gearon, J.H., et al. (2024). Rules of river avulsion change downstream. *Nature*, 634, 91–95. doi:10.1038/s41586-024-07964-2
 - Hack, J.T. (1957). Studies of longitudinal stream profiles in Virginia and Maryland. *USGS Professional Paper 294-B*.
+- Merwade, V.M., Legleiter, C.J. & Kyriakidis, P.C. (2006). Uncertainty in flood inundation mapping: current issues and future directions / channel-fitted coordinates for meandering rivers. *Mathematical Geosciences*. — basis for the Euclidean-vs-flow-distance caveat on the radial frame
 - Slingerland, R. & Smith, N.D. (1998). Necessary conditions for a meandering-river avulsion. *Geology*, 26(5), 435–438.
-- Wang, J., et al. (2022). Monitoring the Athabasca River avulsion with SWOT. *Water Resources Research*, 58, e2022WR034114.
+- Wang, B., et al. (2023). Athabasca River avulsion underway in the Peace-Athabasca Delta, Canada. *Water Resources Research*, 59, e2022WR034114. doi:10.1029/2022WR034114
+- Williams, R.M.E., et al. (2006). Evidence for episodic alluvial fan formation. *Geophysical Research Letters*, 33, L10201. doi:10.1029/2005GL025618
 
 ---
 
@@ -1215,9 +1323,10 @@ The DEM analyses are grounded in the following theoretical and empirical framewo
 | **Geolocation Quality Filter** | `SWOT_Pull.py` | — | Not yet applied (pending expert review) |
 | **Classification Quality Filter** | `SWOT_Pull.py` | — | Not yet applied (pending expert review) |
 | **Classification Filter** | `SWOT_Pull.py` | 21, 265 | `DEFAULT_CLASSES = [3, 4]` |
-| **MAD Outlier Filter** | `SWOT_Pull.py` | 79-103, 267-287 | `calculate_mad_outliers()` function |
-| **Gradient Calculation** | `SWOT_Pull.py` | 299-304 | `scipy.stats.linregress()` |
-| **Daily CSV Export** | `SWOT_Pull.py` | 306-309 | Output with selected columns |
+| **MAD Outlier Filter** | `SWOT_Pull.py` | 122-147, 149-180, ~363-395 | `calculate_mad_outliers()` + `node_median_residuals()` (residual domain) |
+| **Ice-Season / Bad-Pass Registry** | `qc_registry.py` | — | `ICE_SAFE_MONTHS = {5..10}`, `KNOWN_BAD_PASSES` — single source for ingestion, thesis figures, temporal analysis |
+| **Reference Gradient** | `SWOT_Pull.py` | 438+ | `compute_reference_gradient()` — per-pass Theil–Sen on 1 km node medians, full-coverage gate |
+| **Daily CSV Export** | `SWOT_Pull.py` | — | Granule-keyed output (`{date}_gCCC_PPP_TTT_data.csv`) with selected columns |
 | **DEM Export (GEE)** | `DEM_Pull.py` | 56-84 | `export_dem_from_gee()` — ArcticDEM V4 via `getDownloadURL()` |
 | **DEM Polygon Sampling** | `DEM_Pull.py` | 87-127 | `sample_dem_within_polygons()` — rasterio mask per river |
 | **Geoid Correction** | `DEM_Pull.py` | 130-170 | `build_geoid_interpolator()` — EGM2008 from SWOT CSVs |
@@ -1248,13 +1357,15 @@ Calculate Distance from Confluence (Haversine)
          ↓
 [Filter 7: Classification (Classes 3-4)]
          ↓
-[Filter 8: MAD Outlier Filter (per-reach, threshold 3.5)]
+[Filter 8: MAD Outlier Filter (per-reach, node-median residuals, threshold 3.5)]
          ↓
-Calculate Slope per River Reach (Linear Regression)
+Export Daily CSV (YYYY-MM-DD_gCCC_PPP_TTT_data.csv — granule-keyed)
          ↓
-Export Daily CSV (YYYY-MM-DD_data.csv)
+[Filter 9: Ice-season gate (May–Oct) + KNOWN_BAD_PASSES (qc_registry.py)]
          ↓
 Aggregate into Master Dataset
+         ↓
+Reference Gradient (per-pass Theil–Sen on 1 km nodes, full-coverage gate)
          ↓
 Optimize for Dashboard (data types, partitioning, compression)
          ↓
@@ -1280,7 +1391,8 @@ Use this checklist to verify our processing against the SWOT handbook:
 - [x] Classification definitions match Table 6.1 (Handbook Page 76)
 - [x] Justified exclusion of Classes 5-7 (low-coherence, dark water)
 - [x] Empirically validated with QGIS visual inspection
-- [x] MAD outlier filter: Modified Z-score threshold 3.5, per-reach
+- [x] MAD outlier filter: Modified Z-score threshold 3.5, per-reach, on 1 km node-median residuals
+- [x] Ice-season gate: May–Oct hard line + known-bad-pass registry (`qc_registry.py`)
 
 ### Water Surface Elevation Formula
 - [x] Correct formula: `WSE = height - geoid - solid_earth_tide - pole_tide - load_tide`
@@ -1301,15 +1413,28 @@ Use this checklist to verify our processing against the SWOT handbook:
 - [x] Vectorized implementation for efficiency
 
 ### Gradient Analysis
-- [x] Linear regression method documented
+- [x] Reference gradient: per-pass Theil–Sen on 1 km node medians, median across passes
+- [x] Full-coverage gate (≥ 8 nodes, span ≥ 30 km, start ≤ 3 km) documented and justified
 - [x] Units clearly specified (cm/km)
-- [x] Statistical metrics calculated (R², p-value, std error)
+- [x] Legacy per-pass OLS `slope_calc` removed from the schema (Aug 2026)
 
 ### Field Calibration
 - [x] RTK GPS measurements collected (±1 cm precision)
 - [x] Vertical datum difference identified and documented (NAVD88 vs EGM2008)
 - [x] Datum offset calculated: ~9.6 m at calibration site
 - [x] SWOT processing verified accurate within measurement uncertainties
+
+### DEM Cross-Sections (arc method)
+- [x] DEM and SWOT on a shared vertical datum (per-radius EGM2008 from the SWOT `geoid` field)
+- [x] DEM channel water surface cross-validated against SWOT (0.15 m on both rivers)
+- [x] Within-arc quantities verified geoid-invariant (β, H_AR, H_M, superelevation reproduce to 0.0 m)
+- [x] Superelevation quoted at a **declared** stage with the p10–p90 range reported
+- [x] Inter-river difference taken from **pass-paired** overpasses so stage cancels
+- [x] Channel bed stage-matched to the boat-ADCP survey via coincident SWOT passes (2026-05-28/30)
+- [x] Crest window justified by channel geometry + a bankfull consistency check, not tuned to a result
+- [x] β framed as a reproduction of the prior ArcGIS metric; **β = 1 explicitly not claimed as a threshold**
+- [x] DEM acquisition window (2010–2021) stated, and channel-migration offsets quantified with QC columns
+- [x] Sensitivity of β to each input reported (floodplain > crest ≫ bed)
 
 ### Code Documentation
 - [x] All critical steps have code references (file:line_number)
@@ -1366,4 +1491,4 @@ If you use or evaluate this methodology, please cite:
 
 **Document Status:** IN PROGRESS — PIXC quality flag filtering pending expert review
 **Verification Status:** ✅ Core processing VERIFIED AGAINST JPL D-109532
-**Last Reviewed:** April 1, 2026
+**Last Reviewed:** August 14, 2026 (post-code-review pipeline revision — see `docs/CODE_REVIEW_FINDINGS.md`)

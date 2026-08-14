@@ -1,5 +1,8 @@
-# Upstream reference repo (cloned for reading; not part of our codebase)
-reference/
+# Upstream reference repo (cloned for reading; not part of our codebase),
+# EXCEPT the two small committed provenance extracts for the beta analysis.
+reference/*
+!reference/avulsion_transects.gpkg
+!reference/original_beta.parquet
 
 # Regenerable scratch: figures, HTML maps, draft centerlines, scratch parquets.
 # All rebuilt by the scripts; the dashboard cross-section tab treats these as a local-only feature.
@@ -8,9 +11,11 @@ outputs/
 # Large local rasters
 *.tif
 
-# Parquet is scratch by default, EXCEPT the small canonical depth artifacts committed under data/.
+# Parquet is scratch by default, EXCEPT the small canonical depth artifacts committed under data/
+# and the recovered original-beta table under reference/.
 *.parquet
 !data/*.parquet
+!reference/original_beta.parquet
 
 # Transient SQLite/GeoPackage journals from editors (QGIS etc.) — never commit these
 *.gpkg-wal
