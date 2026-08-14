@@ -44,7 +44,7 @@ The two polygons are not channels. Measured:
 | **Mean width** | **1 442 m** | **1 725 m** |
 | Channel width (field) | ~50 m | ~30 m |
 | Channel as fraction of swath | **3.5 %** | **1.7 %** |
-| Mutual overlap | **2.33 km²**, polygons touch (min distance 0 m) | |
+| Mutual overlap | **2.33 km²** (radially 0.3–3.7 km, i.e. at the bifurcation — *not* mid-valley), polygons touch (min distance 0 m) | |
 
 So the median of a ~1.5 km-wide swath is **the floodplain surface, not the channel** — the channel
 contributes a few percent of the pixels and cannot move a median. And because the two swaths
@@ -392,9 +392,9 @@ script or PNG, so this is a presentation job, not new analysis.
 |---|---|---|---|---|---|
 | **D1** | Study area, centerlines & arc geometry | 2 | 10 m DEM + basemap + `arcB_channels` | — | ✅ **DONE 2026-08-11** |
 | **D2** | Valley long profile & concavity (corridor) | 3 | Stream A + `arcB_channels` | — | ✅ **DONE 2026-08-12** |
-| **D3** | **Arc cross-sections with β anatomy** ← flagship | 4 | `arcB_profiles.parquet` | — | |
-| **D4** | Superelevation, β and H_AR/H_M vs radius | 3 | `arcB_channels.parquet` | — | |
-| **D5** | Valley terrain slope | 1–2 | Stream A | — | |
+| **D3** | **Arc cross-sections with β anatomy** ← flagship | 4 | `arcB_profiles.parquet` | **P1** | ⏸ **PINNED 2026-08-12** |
+| **D4** | Superelevation, β and H_AR/H_M vs radius | 3 | `arcB_channels.parquet` | **P1** | ⏸ **PINNED 2026-08-12** |
+| **D5** | Valley terrain slope | 2 | Stream A | — | ✅ **DONE 2026-08-12** |
 | **D6** | ADCP channel depth *(was D7)* | 2 | depth parquets | — | |
 | **A1** | ArcticDEM vs LiDAR & why no filter | 3 | veg-filter outputs | P3 | |
 | **A2** | Crest-window sweep & bankfull check *(was D5)* | 2 | new sweep artifact | **P1** | |
@@ -498,6 +498,60 @@ disagreement is a result, not an error to hide.
 
 New module constants `DEM_XMIN_KM = 3.0` / `DEM_XMAX_KM = 34.0` / `CORRIDOR_BIN_KM = 0.5` land
 here, which satisfies **P4** for the figure series (the dashboard side of P4 is still open).
+
+### β figures pinned — D3, D4 and A2, 2026-08-12
+
+Pinned as a block at the user's call, and the data supports it. β is defined against a bank crest,
+and the crest half-window is not settled: sweeping it takes β from **−0.16 at ±75 m through 0.06 at
+the adopted ±150 m to +0.28 at ±500 m** — a *sign change* driven purely by an analyst choice, with
+the crest pixel's distance from the thalweg tracking the window boundary (57 → 292 m), the signature
+of no local maximum. Two consequences:
+
+1. **A2 justifies D3's window, so A2 comes first.** Drawing crest markers in the flagship figure
+   before the sweep that defends the window is backwards. A2 needs **P1**, which is unbuilt.
+2. `AVULSION_ANALYSIS.md` §4 already flags an open refinement that would move the same markers: the
+   crest is read along the slightly oblique arc rather than a true flow-perpendicular section.
+
+Also noted while scoping D3: the plan's suggested radii (~4, 12, 20, 30 km) give β = +0.22, +0.24,
++0.42, −0.42 against a distribution whose median is **+0.06** (p10 −0.28, p90 +0.30, β ≤ 0 on 37 %).
+Three of four sit well above the median and one above the p90 — an unrepresentative sample. When D3
+is unpinned, select by a **stated rule** (proposal: within each quarter of the reach take the arc
+whose β is closest to that quarter's median), so the spatial progression survives without the
+selection bias. Second open question: shared vs per-panel x-limits, given the Kanektok–Uyak
+separation grows from ~300 m to 5.9 km (median 3.16 km).
+
+### D5 as built — locked 2026-08-12
+
+Two panels, same reversed axis and window as D2, of which D2 is the integral.
+
+- `(a)` pooled corridor steepness at Theil–Sen windows **0.5 / 2 / 4 km**, plus the analytic
+  derivative of D2's quadratic as the regional reference.
+- `(b)` Kanektok − Uyak corridor slope difference at the 2 km window — a **deliberate null**, the
+  derivative-domain twin of D2 panel (b), kept in at the user's call.
+
+| Quantity | Value |
+|---|---|
+| Near-bifurcation (3–6 km) vs mid-reach (10–30 km) | **244** vs **183 cm/km**, steeper at every window |
+| Full slope range spanned, 0.5 km → 4 km window | **363 → 177 cm/km** |
+| Corridor slope difference | median **+4 cm/km**, IQR −9…+17, Kanektok steeper on **59 %** |
+| Corridor medians | **193** / **191 cm/km** (max excursion 86) |
+
+**Why this figure exists:** it answers the §1.2 criticism of the original Fig 3 directly. "No
+knickpoints" cannot be read off a derivative smoothed at σ = 1.5–2 km, because that removes them by
+construction. Showing three windows makes the resolution dependence the reader's to judge.
+
+Two decisions locked here, inherited by any later slope figure:
+
+- **Theil–Sen only.** It is the sole estimator in `core.py` that is grid-agnostic; `_fine_slope_savgol`
+  and `_fine_slope_gaussian` both assume core's 0.1 km `FINE_BASE_BIN_KM` spacing and would silently
+  mis-scale on another grid. New constants: `SLOPE_GRID_KM`, `SLOPE_RES_KM`, `SLOPE_DIFF_RES_KM`.
+- **0.1 km corridor grid for derivatives** (0.5 km stays the reported profile grid). Still
+  3 072 / 4 235 px per bin, so no robustness cost.
+
+**Error found and fixed 2026-08-12 (overlap location).** The D1 and D2 captions said the 2.33 km²
+corridor overlap lay "in the centre of the valley". Measured: it lies radially at **0.3–3.7 km**, at
+the bifurcation, where the two floodplains have not yet separated — it touches only the first
+kilometre of the plotted range. Both captions and §1.1 corrected.
 
 ### D3 — Arc cross-sections with the β anatomy  ← flagship
 2×2 panels at four radii spanning the reach: one just below the bifurcation (~4 km), two mid-reach
