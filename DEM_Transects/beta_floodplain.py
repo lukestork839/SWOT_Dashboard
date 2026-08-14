@@ -13,7 +13,11 @@ The Uyak is part of the floodplain, not a separate channel. Per transect:
 Faithful to the prior ArcGIS notebook. NO cross-valley detrend: the floodplain's downhill
 slope from the perched Kanektok toward the low Uyak IS the avulsion signal.
 
-Transect source: the user's real `Avulsion_Lines_2` (default) sampled on the 2 m ArcticDEM.
+Transect source: the real `Avulsion_Lines_2` + `Guide_Lines_2`, committed as
+reference/avulsion_transects.gpkg (exported from the recovered ArcGIS gdb — see
+recover_original_beta.py for the gdb archive location; set AVULSION_TRANSECTS to
+read another copy). The validation overlay reads reference/original_beta.parquet,
+the recovered ArcGIS result (also rebuilt by recover_original_beta.py).
 
 Run:  python3 DEM_Transects/beta_floodplain.py
 """
@@ -34,7 +38,8 @@ from shapely.geometry import Point
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-GDB = "/tmp/clean_and_complete.gdb"
+SRC = os.environ.get("AVULSION_TRANSECTS",
+                     os.path.join(HERE, "reference", "avulsion_transects.gpkg"))
 RASTER = os.path.join(ROOT, "batch_outputs", "arcticdem_rivers_2m.tif")
 OUT = os.path.join(HERE, "outputs")
 
@@ -73,9 +78,9 @@ def analyse(d, z):
 
 
 def main():
-    al = gpd.read_file(GDB, layer="Avulsion_Lines_2").to_crs(3413)
+    al = gpd.read_file(SRC, layer="Avulsion_Lines_2").to_crs(3413)
     al = al.sort_values("ORIG_SEQ").reset_index(drop=True)
-    kan = gpd.read_file(GDB, layer="Guide_Lines_2").to_crs(3413).geometry.iloc[1]
+    kan = gpd.read_file(SRC, layer="Guide_Lines_2").to_crs(3413).geometry.iloc[1]
 
     rows = []
     with rasterio.open(RASTER) as src:
@@ -143,8 +148,8 @@ def main():
     plt.close(fig)
     print("wrote beta_floodplain_summary.png")
 
-    # overlay vs recovered ArcGIS original
-    op = "/tmp/original_beta.parquet"
+    # overlay vs recovered ArcGIS original (committed; rebuild with recover_original_beta.py)
+    op = os.path.join(HERE, "reference", "original_beta.parquet")
     if os.path.exists(op):
         o = pd.read_parquet(op).reset_index().sort_values("ORIG_SEQ_1")
         if o["median"].head(15).median() > o["median"].tail(15).median():

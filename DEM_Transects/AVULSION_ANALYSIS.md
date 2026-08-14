@@ -30,7 +30,7 @@ beta   = H_AR / Hm      (fraction of bank relief that is ridge standing above fl
 
 The original workflow (`~/Downloads/V6…ipynb`) drew a **straight guide line** down the Kanektok, hung **parallel** transects off it, and used **two clip zones** — a near-channel `River_Elevation` zone (→ P98, P2) and a broad `Total_Elevation` zone (→ median).
 
-We recovered the intended result directly from the intact elevation-point layers in the project geodatabase (`clean_and_complete.gdb`; the notebook run that would have saved β to `Avulsion_Lines_2` had errored, leaving those columns empty):
+We recovered the intended result directly from the intact elevation-point layers in the project geodatabase (`clean_and_complete.gdb`; the notebook run that would have saved β to `Avulsion_Lines_2` had errored, leaving those columns empty). The recovered table is committed at `reference/original_beta.parquet` and can be rebuilt from the gdb with `recover_original_beta.py`:
 
 > **Recovered original:** β median **0.96**, H_AR median **4.30 m**, ~30 % of transects "perched" (β > 1).
 
@@ -139,5 +139,5 @@ A well-supported near-grade / null result, consistent across three independent d
 | Official Kanektok centerline | `data/kanektok_centerline_official.gpkg` (field boat-ADCP thalweg via `build_kanektok_centerline.py`) — Kanektok prior |
 | Kanektok thalweg depth | `data/kanektok_thalweg_depth.parquet` (Day-03 pings: radius + River_Depth) — the β bed / H_M term |
 | ADCP field survey | `~/Downloads/ADCP Data/` (coworker boat ADCP, May–Jun 2026; River_Depth + shear velocity) — Kanektok centerline + depth source; Uyak depth (mouth only) reserved for the deferred Uyak model |
-| Prior ArcGIS geometry & Z points | `clean_and_complete.gdb` (`Guide_Lines_2`, `Avulsion_Lines_2`, `River_Elevation_2`, `Total_Elevation_2_Clipped`) |
+| Prior ArcGIS geometry & Z points | `clean_and_complete.gdb` (`Guide_Lines_2`, `Avulsion_Lines_2`, `River_Elevation_2`, `Total_Elevation_2_Clipped`). The gdb is too large to commit; it is archived at `~/Downloads/clean_and_complete.gdb.zip`. Committed extracts: `reference/avulsion_transects.gpkg` (the two vector layers) and `reference/original_beta.parquet` (the recovered β table; rebuild with `recover_original_beta.py`) |
 | Shared anchor / dist_km | identical to `dashboard_swot.py` (verified) |
