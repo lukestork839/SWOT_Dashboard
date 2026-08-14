@@ -56,15 +56,15 @@ MIN_SPAN_KM = 30.0     # full-coverage gate: pass must span >= this
 MAX_START_KM = 3.0     # full-coverage gate: pass must start <= this (steep reach)
 REF_DIST_KM = 15.0     # water-level reference distance (inside every gated pass's coverage)
 
-# Apr-Nov open-water window. Empirically validated (2026-07): the shoulder months
-# (Apr, Nov) supply 37/136 = 27% of gated open-water passes -- real statistical
-# power, not filler -- and their per-pass slopes match the core May-Oct summer to
-# within ~1 cm/km (Kanektok Apr 196.7 / Nov 195.5 vs core 195.3; Uyak Apr 191.2 /
-# Nov 190.4 vs core 192.7), i.e. no ice-inflation signature. So the shoulders are
-# kept. Dec-Mar are dropped: although the gradient is season-invariant enough that
-# even winter slopes match (~195 / ~192), winter WSE is ice-affected and must be
-# excluded from the freshet/baseflow (Q1) and typhoon (Q3) water-level comparisons.
-OPEN_WATER_MONTHS = {4, 5, 6, 7, 8, 9, 10, 11}
+# Open-water window, single-sourced from the QC registry (May-Oct hard line,
+# empirically calibrated 2026-08: April breakup interference in every observed
+# year, October clean, first freeze-up mid-Nov). The master parquet is already
+# filtered to these months at rebuild, so this is a consistency guard, not an
+# extra filter. (The earlier Apr-Nov window's shoulder-month slope validation is
+# recorded in TEMPORAL_ANALYSIS.md; the shoulders are now excluded because their
+# WSE — the Q1/Q3 metric — is ice-contaminated even where slope survives.)
+from qc_registry import ICE_SAFE_MONTHS
+OPEN_WATER_MONTHS = ICE_SAFE_MONTHS
 HIGH_FLOW_MONTHS = {5}      # May freshet
 LOW_FLOW_MONTHS = {7, 8}    # Jul-Aug baseflow
 
@@ -134,14 +134,51 @@ def _round(p):
 
 
 def _mwu(a, b):
-    """Mann-Whitney U (two-sided) with small-n guard. Returns (p, note)."""
+    """Mann-Whitney U (two-sided) with small-n guard. Returns (p, note).
+
+    The note reports the RAW p only — per-test verdicts at raw alpha=0.05 are
+    not meaningful across a family of ~14 tests. Significance is decided once,
+    family-wise, by holm_adjust() before export (see the FAMILY-WISE block in
+    the output)."""
     a = np.asarray(a, float); b = np.asarray(b, float)
     a = a[~np.isnan(a)]; b = b[~np.isnan(b)]
     if len(a) < 3 or len(b) < 3:
         return np.nan, f"(n too small: {len(a)} vs {len(b)})"
     p = stats.mannwhitneyu(a, b, alternative="two-sided").pvalue
-    sig = "significant" if p < 0.05 else "not significant"
-    return p, f"p={p:.3f} ({sig}, n={len(a)} vs {len(b)})"
+    return p, f"raw p={p:.3f} (n={len(a)} vs {len(b)}; family-wise verdict below)"
+
+
+def holm_adjust(row_lists):
+    """Holm step-down adjustment over the WHOLE family of Mann-Whitney tests.
+
+    Walks every result row, collects each valid raw p (p_wse / p_slope), and
+    writes back the Holm-adjusted value as p_wse_holm / p_slope_holm. Holm
+    controls the family-wise error rate with no independence assumption, so a
+    single verdict rule (adjusted p < 0.05) is defensible across all Q1/Q2/Q3
+    contrasts. Returns the (test_label, raw_p, adj_p) list for reporting.
+    """
+    tests = []
+    for rows in row_lists:
+        for row in rows:
+            for key in ("p_wse", "p_slope"):
+                if row.get(key) is not None:
+                    label = f"{row['question']}/{row['reach']}" + \
+                            (f"/{row['year']}" if "year" in row else "") + f"/{key}"
+                    tests.append((row, key, label))
+    if not tests:
+        return []
+    m = len(tests)
+    order = sorted(range(m), key=lambda i: tests[i][0][tests[i][1]])
+    adj, running_max = [1.0] * m, 0.0
+    for rank, i in enumerate(order):
+        p = tests[i][0][tests[i][1]]
+        running_max = max(running_max, min(1.0, (m - rank) * p))  # step-down, monotone
+        adj[i] = running_max
+    report = []
+    for (row, key, label), a in zip(tests, adj):
+        row[key + "_holm"] = round(float(a), 4)
+        report.append((label, row[key], row[key + "_holm"]))
+    return report
 
 
 def q1_seasonal(df):
@@ -235,7 +272,10 @@ def q2_interannual(df, low_months, low_label):
         ps, ss = _mwu(s24, s25)
         print(f"     -> normal year-over-year change  WSE {dwse:+.2f} m   [{ns}]")
         print(f"                                      slope {dslp:+.1f} cm/km [{ss}]")
-        baseline[reach] = {"dwse": dwse, "dslope": dslp}
+        baseline[reach] = {"dwse": dwse, "dslope": dslp,
+                           # raw season-matched WSE samples, kept so Q3 can bootstrap
+                           # the baseline median alongside the storm-window median
+                           "w24": w24.to_numpy(), "w25": w25.to_numpy()}
         rows.append({"question": "Q2_interannual", "reach": reach,
                      "slope_basis": "full_open_water_year", "wse_basis": low_label,
                      "n_slope_2024": len(s24), "n_slope_2025": len(s25),
@@ -246,6 +286,31 @@ def q2_interannual(df, low_months, low_label):
                      "dslope_cm_km": round(dslp, 2) if np.isfinite(dslp) else None,
                      "p_wse": _round(pw), "p_slope": _round(ps)})
     return baseline, rows
+
+
+def _boot_excess_ci(pre, post, base_a, base_b, n_boot=10000, seed=42):
+    """Bootstrap 95% CI on |storm dWSE| − |baseline dWSE| (the 'excess' over natural
+    variability), resampling all four small samples. Returns (dwse_ci, excess_ci) as
+    (lo, hi) tuples, or None if any sample is too small to resample meaningfully.
+
+    With n=3–4 passes per window the resampling grid is coarse — this is not a
+    precise interval, but it makes the verdict's sensitivity to single passes
+    explicit instead of comparing two bare point medians. Fixed seed: the exported
+    JSON must be reproducible run-to-run."""
+    arrs = [np.asarray(v, float) for v in (pre, post, base_a, base_b)]
+    arrs = [a[~np.isnan(a)] for a in arrs]
+    if any(len(a) < 2 for a in arrs):
+        return None
+    pre, post, base_a, base_b = arrs
+    rng = np.random.default_rng(seed)
+    d = (np.median(rng.choice(post, (n_boot, len(post))), axis=1)
+         - np.median(rng.choice(pre, (n_boot, len(pre))), axis=1))
+    bb = (np.median(rng.choice(base_b, (n_boot, len(base_b))), axis=1)
+          - np.median(rng.choice(base_a, (n_boot, len(base_a))), axis=1))
+    excess = np.abs(d) - np.abs(bb)
+    dwse_ci = tuple(np.percentile(d, [2.5, 97.5]))
+    excess_ci = tuple(np.percentile(excess, [2.5, 97.5]))
+    return dwse_ci, excess_ci
 
 
 def q3_typhoon(df, baseline):
@@ -273,10 +338,31 @@ def q3_typhoon(df, baseline):
         bw, bs = base.get("dwse", np.nan), base.get("dslope", np.nan)
         print(f"     -> vs natural baseline (Q2)  WSE change {dwse:+.2f} m  vs  normal {bw:+.2f} m")
         print(f"                                  slope change {dslp:+.1f} cm/km  vs  normal {bs:+.1f} cm/km")
-        verdict = None
+        # Verdict on |storm change| vs |natural baseline|, with a bootstrap CI instead
+        # of comparing two bare point medians (n=3-4 passes each; a single pass moving
+        # ~0.1 m flips the point comparison). Three-way, decided by the excess CI:
+        #   exceeds           — CI of |storm| − |baseline| entirely > 0
+        #   within            — CI entirely < 0
+        #   indistinguishable — CI spans 0 (the honest small-n outcome)
+        verdict, dwse_ci, excess_ci = None, None, None
         if np.isfinite(dwse) and np.isfinite(bw):
-            verdict = ("exceeds" if abs(dwse) > abs(bw) else "within")
-            print(f"        => WSE storm-window change {verdict.upper()} the normal interannual swing.")
+            boot = _boot_excess_ci(a["wse_ref_m"], b["wse_ref_m"],
+                                   base.get("w24", []), base.get("w25", []))
+            if boot is not None:
+                dwse_ci, excess_ci = boot
+                if excess_ci[0] > 0:
+                    verdict = "exceeds"
+                elif excess_ci[1] < 0:
+                    verdict = "within"
+                else:
+                    verdict = "indistinguishable"
+                print(f"        => WSE storm-window change is {verdict.upper()} vs the normal "
+                      f"interannual swing (excess 95% CI [{excess_ci[0]:+.2f}, {excess_ci[1]:+.2f}] m; "
+                      f"dWSE 95% CI [{dwse_ci[0]:+.2f}, {dwse_ci[1]:+.2f}] m, bootstrap n=10000)")
+            else:
+                verdict = "exceeds" if abs(dwse) > abs(bw) else "within"
+                print(f"        => WSE storm-window change {verdict.upper()} the normal interannual "
+                      f"swing (point medians only — samples too small to bootstrap)")
         rows.append({"question": "Q3_typhoon", "reach": reach, "window": "June (interim)",
                      "n_2025": len(a), "n_2026": len(b),
                      "slope_2025": _med(a["slope_cm_km"]), "slope_2026": _med(b["slope_cm_km"]),
@@ -286,6 +372,8 @@ def q3_typhoon(df, baseline):
                      "p_wse": _round(pw), "p_slope": _round(ps),
                      "baseline_dwse_m": round(bw, 3) if np.isfinite(bw) else None,
                      "baseline_dslope_cm_km": round(bs, 2) if np.isfinite(bs) else None,
+                     "dwse_ci95_m": [round(float(x), 3) for x in dwse_ci] if dwse_ci else None,
+                     "excess_vs_baseline_ci95_m": [round(float(x), 3) for x in excess_ci] if excess_ci else None,
                      "wse_vs_baseline": verdict})
     return rows
 
@@ -332,10 +420,13 @@ def q3_profile(con):
         if len(d) == 0:
             print(f"  {reach}: no overlapping bins")
             continue
-        up = d[d["dist_km"] > 18]["dwse"]     # upstream half
-        dn = d[d["dist_km"] <= 18]["dwse"]    # downstream half (toward confluence/coast)
+        # dist_km is radial from the INLAND confluence anchor (WSE ~66 m there,
+        # ~0 m at the 35 km mouths): small distance = upstream/upper river,
+        # large distance = downstream/lower river toward the coast.
+        up = d[d["dist_km"] <= 18]["dwse"]    # upstream half (near the anchor)
+        dn = d[d["dist_km"] > 18]["dwse"]     # downstream half (toward the coast)
         print(f"  {reach}: bins={len(d)}  overall median dWSE={d['dwse'].median():+.2f} m  "
-              f"(downstream<=18km {dn.median():+.2f} m | upstream>18km {up.median():+.2f} m)")
+              f"(upstream<=18km {up.median():+.2f} m | downstream>18km {dn.median():+.2f} m)")
         rows.append({"question": "Q3_profile", "reach": reach, "n_bins": len(d),
                      "median_dwse_m": round(float(d["dwse"].median()), 3),
                      "downstream_dwse_m": round(float(dn.median()), 3) if len(dn) else None,
@@ -364,6 +455,16 @@ def main():
     baseline, q2 = q2_interannual(df, LOW_FLOW_MONTHS, "Jul-Aug low flow")
     q3 = q3_typhoon(df, baseline)
     q3p, q3_curve = q3_profile(con)
+
+    # One family-wise significance decision across ALL Mann-Whitney tests above.
+    holm_report = holm_adjust([q1, q2, q3])
+    print("\n" + "=" * 90)
+    print(f"FAMILY-WISE SIGNIFICANCE (Holm step-down over {len(holm_report)} "
+          f"Mann-Whitney tests, alpha=0.05)")
+    print("=" * 90)
+    for label, raw, adj in sorted(holm_report, key=lambda t: t[1]):
+        sig = "SIGNIFICANT" if adj < 0.05 else "not significant"
+        print(f"  {label:<45s} raw p={raw:.4f}  Holm p={adj:.4f}  -> {sig}")
     print()
 
     # --- export results for the writeup + dashboard display ---
@@ -381,6 +482,13 @@ def main():
             "typhoon_date": TYPHOON_DATE,
             "slope_estimator": "Theil-Sen on 1km node medians (abs cm/km)",
             "level_metric": f"WSE at {REF_DIST_KM:.0f} km from Theil-Sen fit (m)",
+            "multiple_comparison": (
+                f"Holm step-down over all {len(holm_report)} Mann-Whitney tests "
+                "(one family across Q1/Q2/Q3); significance = adjusted p < 0.05; "
+                "adjusted values exported as p_wse_holm / p_slope_holm"),
+            "q3_verdict": (
+                "bootstrap 95% CI (n=10000, seed=42) on |storm dWSE| - |baseline dWSE|; "
+                "verdict exceeds/within only if the CI excludes 0, else indistinguishable"),
         },
         "record": {
             "n_passes_fit": int(len(allp)),
