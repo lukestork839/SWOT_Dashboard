@@ -1,6 +1,16 @@
 # SWOT Data Processing Documentation
 ## Kanektok River - Uyak Creek Avulsion Risk Assessment
 
+> **⚠️ SUPERSEDED (August 2026).** This early document describes a pipeline version that is no
+> longer current, and it is **not maintained**. Known divergences from the shipping pipeline:
+> the strict `geolocation_qual == 0` / `classification_qual == 0` filters described below were
+> later **disabled** (they removed nearly all narrow-river data; only the crossover-calibration
+> bit is excluded), the MAD outlier filter now runs on **1 km node-median residuals** rather than
+> raw WSE, checkpoints are **granule-keyed** rather than date-keyed, a hard **May–Oct ice-season
+> gate** (`qc_registry.py`) is applied at master build, the legacy `slope_calc` column has been
+> **removed**, and all point/date counts are stale. For the current, verified methodology see
+> **`SCIENTIFIC_METHODOLOGY.md`** (kept up to date) and `README.md`.
+
 **Study Location:** Kanektok River distributary system, Alaska
 **Reference Point:** 59.82463509°N, -161.33397834°W (upriver of bifurcation point where Uyak diverges from Kanektok)
 **Scientific Objective:** Assess avulsion risk by comparing hydraulic gradients between parallel channels

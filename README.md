@@ -36,7 +36,7 @@ python -m pip install -r requirements-full.txt   # Full deps (ingestion + dashbo
 streamlit run dashboard_swot.py
 ```
 
-Open `http://localhost:8501` in your browser. Without local data, the dashboard loads a remote dataset (Apr-Jul 2025 + Apr-May 2026, 1.38M points) from GitHub Releases via DuckDB. Run `SWOT_Pull.py` to download the full archive locally.
+Open `http://localhost:8501` in your browser. Without local data, the dashboard loads a remote dataset (May 2025 onward, ~2.6M points) from GitHub Releases via DuckDB. Run `SWOT_Pull.py` to download the full archive locally.
 
 ---
 
@@ -72,7 +72,7 @@ Both datasets use the same DuckDB httpfs pattern: locally, DuckDB reads from dis
 
 ## Downloading Full Data
 
-The online dashboard serves Apr-Jul 2025 and Apr-May 2026 open water data (1.38M points, 29 passes). To download the complete SWOT archive (July 2023 onwards) for local use, you need a free NASA Earthdata account.
+The online dashboard serves ice-safe (May-Oct) data from May 2025 onward (~2.6M points, 50 pass dates). To download the complete SWOT archive (July 2023 onwards) for local use, you need a free NASA Earthdata account.
 
 ### 1. Create a NASA Earthdata Account
 
@@ -94,17 +94,16 @@ On first run, `earthaccess` will prompt for your NASA Earthdata credentials and 
 
 For each satellite pass in your date range:
 
-1. Checks if that date is already processed (skips if so -- **resumable**)
+1. Checks if that **granule** is already processed (skips if so -- **resumable**; checkpoints are granule-keyed, so sibling tiles on the same calendar day are never dropped)
 2. Downloads the SWOT NetCDF file (~500 MB each, temporary)
 3. Extracts pixel cloud data within the river polygon boundaries (`river_poly.zip`)
 4. Applies the quality filter chain (see [Scientific Methodology](#scientific-methodology))
 5. Computes WSE with geoid and tide corrections
 6. Computes distance from the anchor point (Haversine)
-7. Calculates per-reach gradient (linear regression)
-8. Saves a daily CSV checkpoint to `batch_outputs/data/YYYY-MM-DD_data.csv`
-9. Deletes the temporary NetCDF file
+7. Saves a granule CSV checkpoint to `batch_outputs/data/YYYY-MM-DD_gCCC_PPP_TTT_data.csv` (cycle / pass / tile in the name)
+8. Deletes the temporary NetCDF file
 
-After processing all passes, it rebuilds the master files:
+After processing all passes, it rebuilds the master files (applying the May-Oct ice-season and known-bad-pass gates from `qc_registry.py` -- excluded dates remain available as daily CSVs):
 - `batch_outputs/master_all_data.csv` -- full dataset (all columns)
 - `batch_outputs/master_all_data.parquet` -- optimized single file
 - `batch_outputs/master_all_data_part_*.parquet` -- partitioned for dashboard performance
@@ -196,9 +195,10 @@ All corrections verified against the SWOT Science Data Products User Handbook (J
 | 3 | Cross-track distance | 10-60 km from nadir | Avoids nadir gap and far-swath noise |
 | 4 | Crossover calibration | Bit 23 of `geolocation_qual` = 0 | Excludes pixels without crossover correction (meter-scale errors) |
 | 5 | Classification | Classes 3 and 4 only | Keeps high-quality water pixels (Handbook Table 6.1) |
-| 6 | MAD outlier removal | Modified Z-score <= 3.5, per-reach | Removes anomalous WSE measurements |
+| 6 | MAD outlier removal | Modified Z-score <= 3.5, per-reach, on **1 km node-median residuals** | Removes anomalous WSE measurements without touching the river's real along-stream relief |
+| 7 | Ice-season + bad-pass gate | Month in May-Oct and pass not in `KNOWN_BAD_PASSES` (`qc_registry.py`) | Excludes ice-affected passes from the master (winter/shoulder data stays in the daily CSVs) |
 
-**Note on the two MAD applications:** this ingestion filter runs on *raw WSE per pass*, where the downstream gradient inflates the spread so much that localized contamination (e.g. spring-ice blobs in a couple of passes) can pass through. The Detrended Profile tab therefore re-applies the *same* Modified Z-Score (> 3.5, per river) to the *residuals* — the domain where such points actually stand out — to flag them in its statistics and plot. This is a display-layer safeguard; no data is deleted.
+**Note on the MAD domain (revised Aug 2026):** the filter subtracts each pixel's 1 km node-median WSE before screening, so it only ever sees within-node scatter. The previous raw-WSE version read the ~66 m of real downstream relief as spread — it both let localized contamination through *and* amputated legitimate upstream reaches on dates where pixel density was downstream-weighted. The Detrended Profile tab additionally applies a display-layer Modified Z-Score flag on its residuals (no data deleted).
 
 **Pending expert review:** `geolocation_qual` and `classification_qual` bit-mask filters are implemented but disabled. They remove nearly all data for narrow rivers (~50-100m wide) like Uyak Creek due to land/water mixing effects. See `SCIENTIFIC_METHODOLOGY.md` for the full PIXC quality flag reference.
 
@@ -215,11 +215,11 @@ Convention: 0 km = anchor point (~2.5 km upriver of the bifurcation), ~36 km = c
 
 ### Ice Season Awareness
 
-At ~59.8N, peak ice contamination occurs December through March. Analysis of 170 satellite passes (2023-2026) shows that smooth river ice passes through the Class 3-4 quality filter and is misclassified as water -- Uyak Creek shows 80-95% Class 4 pixels during peak freeze (vs 35-55% in open water). October-November are ice-free in the data despite traditional freeze-up assumptions; April-May are transitional but mostly usable.
+At ~59.8N, smooth river ice passes through the Class 3-4 quality filter and is misclassified as water -- Uyak Creek shows 80-95% Class 4 pixels during peak freeze (vs 35-55% in open water), inflating WSE by 0.5-2+ m. An empirical audit of the full archive (Aug 2026) found April breakup contamination **every** year, consistently clean October data, and the first freeze-up signal in mid-November.
 
-- The dashboard **excludes Dec-Mar data by default** to prevent misinterpretation
-- Users can uncheck "Exclude ice season" in the sidebar to include winter data, which triggers a warning banner
-- Data is preserved in full (not deleted) for potential ice studies
+- The pipeline therefore enforces a **hard May-Oct line at ingestion** (`qc_registry.ICE_SAFE_MONTHS`): the master files and all analyses contain only ice-safe months
+- Winter/shoulder passes are still downloaded and preserved in the daily CSVs (not deleted) for potential ice studies
+- The dashboard additionally shows a warning banner if winter dates ever appear in a selection
 - Uyak Creek (narrow, shallow) freezes more completely than Kanektok River (wider, deeper)
 
 ### DEM Elevation Comparison
@@ -247,12 +247,13 @@ SWOT_Dashboard/
 ├── SWOT_Pull.py                     # Data ingestion: NASA download + processing pipeline
 ├── DEM_Pull.py                      # ArcticDEM extraction: GEE download + geoid correction
 ├── dashboard_swot.py                # Visualization: Streamlit dashboard (~2500 lines)
-├── rebuild_master.py                # Utility: rebuild master parquets from daily CSVs
+├── qc_registry.py                   # Single source: ice-safe months (May-Oct) + known-bad passes
+├── rebuild_master.py                # Utility: rebuild master parquets from granule CSVs
 ├── requirements.txt                 # Dashboard dependencies (used by Streamlit Cloud)
 ├── requirements-full.txt            # Full dependencies including ingestion pipeline
 ├── river_poly.zip                   # River boundary polygons (GeoPackage format)
 ├── batch_outputs/                   # Full dataset directory (gitignored, created by SWOT_Pull.py)
-│   ├── data/                        #   Daily CSV checkpoints (YYYY-MM-DD_data.csv)
+│   ├── data/                        #   Granule CSV checkpoints (YYYY-MM-DD_gCCC_PPP_TTT_data.csv)
 │   ├── master_all_data.csv          #   Combined dataset, all columns
 │   ├── master_all_data.parquet      #   Single optimized parquet
 │   ├── master_all_data_part_*.parquet  # Partitioned for dashboard performance
@@ -297,6 +298,7 @@ All configurable constants are at the top of `SWOT_Pull.py`:
 | `CROSS_TRACK_MIN/MAX` | 10,000 / 60,000 m | Cross-track distance filter range |
 | `XOVERCAL_MISSING_MASK` | Bit 23 (8388608) | Crossover calibration missing flag |
 | `MAD_THRESHOLD` | 3.5 | Modified Z-score threshold for outlier detection |
+| `MAD_NODE_KM` | 1.0 | Node size for the residual reference profile (matches the reference gradient) |
 | `MIN_POINTS_FOR_MAD` | 10 | Minimum points to apply MAD filter |
 | `KEEP_COLUMNS` | (see code) | Columns preserved in output parquets |
 | `ROWS_PER_CHUNK` | 100,000 | Rows per partition file |
@@ -394,7 +396,7 @@ The Folium map renders individual circle markers in Python, which is expensive. 
 
 ### Download interrupted mid-run
 
-Just run `SWOT_Pull.py` again with the same date range. It checks for existing daily CSVs and skips already-processed dates automatically.
+Just run `SWOT_Pull.py` again with the same date range. It checks for existing granule CSVs and skips already-processed granules automatically.
 
 ---
 
