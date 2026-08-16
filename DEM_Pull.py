@@ -208,6 +208,9 @@ def main():
 
     # Load river polygons
     gdf = gpd.read_file(POLYGON_PATH)
+    # Identity today (file is already 4326) but guards future polygon swaps;
+    # bounds below feed a lon/lat GEE Rectangle and rio_mask on a 4326 raster.
+    gdf = gdf.to_crs("EPSG:4326")
     print(f"Loaded {len(gdf)} river polygons from {POLYGON_PATH}")
 
     # Step 1: Export DEM from GEE (skips if already downloaded)

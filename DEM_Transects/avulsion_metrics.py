@@ -3,7 +3,8 @@ Avulsion topographic metrics — superelevation (beta), gradient advantage (gamm
 and the avulsion threshold (Lambda), following Gearon et al. (2024, Nature 634, 91-95)
 and the follow-up Gearon et al. (2025, GRL).
 
-This is the production core of the DEM_Transects analysis. The formulas are ported
+The production scripts (build_arc_B.py, beta_floodplain.py) compute beta inline;
+this module mirrors those formulas for the validation harness. They are ported
 verbatim from the authors' released code (github.com/jameshgrn/rulesofriveravulsion,
 Zenodo 10.5281/zenodo.13693548, MIT) so our pipeline produces numbers directly
 comparable to the published dataset. The validation harness in

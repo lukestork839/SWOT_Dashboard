@@ -2,7 +2,7 @@
 # For the full ingestion pipeline (SWOT_Pull.py), use: pip install -r requirements-full.txt
 
 # Dashboard framework
-streamlit>=1.35.0   # >=1.35 for st.plotly_chart(on_select=...) selection events
+streamlit>=1.49.0   # >=1.49 for the width="stretch" API (used throughout); also covers on_select
 plotly>=5.17.0
 
 # Data & computation
@@ -16,6 +16,3 @@ pyarrow>=14.0.0           # pandas parquet engine for the DEM cross-section arti
 folium>=0.15.0
 streamlit-folium>=0.15.0
 matplotlib>=3.7.0         # Used for colormaps only
-
-# Progress bars (used by dashboard loading indicator)
-tqdm>=4.65.0
