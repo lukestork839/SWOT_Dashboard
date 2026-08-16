@@ -37,7 +37,9 @@ ICE_SAFE_MONTHS = {5, 6, 7, 8, 9, 10}
 KNOWN_BAD_PASSES = {
     "2025-04-17": (
         "Spring-breakup ice contamination: reach gradient anomalously steep on BOTH "
-        "channels simultaneously (Uyak 236, Kanektok 224 cm/km vs medians 192/196) -- "
-        "a synchronous basin-wide spike is an ice-event signature, not a real gradient."
+        "channels simultaneously (Uyak 236, Kanektok 224 cm/km vs medians 192/196 "
+        "as of the 2026-07 archive; medians drift as the archive grows, the spike "
+        "does not) -- a synchronous basin-wide spike is an ice-event signature, "
+        "not a real gradient."
     ),
 }

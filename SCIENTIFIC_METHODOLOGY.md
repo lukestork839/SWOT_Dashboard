@@ -70,7 +70,7 @@
 ## Overview
 
 ### Scientific Objective
-Assess avulsion risk by comparing hydraulic gradients between two parallel river channels (Kanektok River and Uyak Creek) at their confluence in Alaska.
+Assess avulsion risk by comparing hydraulic gradients between two parallel river channels (Kanektok River and Uyak Creek) near their bifurcation in Alaska.
 
 ### Key Question
 Which river has a steeper gradient (hydraulic advantage) that could lead to channel switching (avulsion)?
@@ -304,10 +304,10 @@ This means our Classes 3-4 filter provides **partial but not complete** protecti
 **Ice seasons for our study area:**
 | Season | Months | Reliability for WSE |
 |--------|--------|-------------------|
-| Open water | Jun-Sep | High — reliable |
-| Freeze-up | Oct-Nov | Caution — partial ice possible |
+| Open water | May-Oct | High — reliable (empirically calibrated: May and Oct verified clean; see ICE_SAFE_MONTHS) |
+| Freeze-up | Nov | Low — first freeze-up observed 2025-11-12 |
 | Frozen | Dec-Mar | Low — ice surface, not water |
-| Break-up | Apr-May | Caution — mixed ice/water |
+| Break-up | Apr | Low — breakup contamination observed every April on record |
 
 **References:**
 - SWOT Handbook Table 6.1 (JPL D-109532, page 76) — classification values
@@ -557,18 +557,20 @@ df_exact = gdf_temp[gdf_temp.geometry.within(polygon)]
 
 ## Distance Calculation
 
-### The Confluence Anchor Method
+### The Anchor-Point Method
 
 **Scientific Requirement:** To compare gradients between two rivers, all distance measurements must reference a common point.
 
-**Our Approach:** Fixed confluence anchor point
+**Our Approach:** Fixed anchor point, ~2.5 km upriver of the bifurcation. (Earlier
+documents called this a "confluence"; that terminology was wrong — the rivers split
+apart here, they do not meet. The 0 km point is simply the anchor.)
 
 ```python
 ANCHOR_LAT = 59.82463509  # Anchor point (North)
 ANCHOR_LON = -161.33397834  # Anchor point (West)
 ```
 
-**Implementation:** `SWOT_Pull.py`, lines 31-34 (constants) and lines 42-51 (function)
+**Implementation:** `SWOT_Pull.py` — `ANCHOR_LAT`/`ANCHOR_LON` constants and `haversine_vectorized()`
 
 ### Haversine Distance Formula
 
@@ -599,8 +601,17 @@ def haversine_vectorized(lat1, lon1, lat2, lon2):
 
 **Justification:**
 - **Accuracy:** Haversine is appropriate for distances < 100 km
-- **Our Study Area:** Maximum distance ~70 km (coast to confluence)
+- **Our Study Area:** Maximum distance ~36 km (anchor to coast; data max ≈ 36.2 km)
 - **Error:** < 0.5% for distances of this scale
+
+**Distance-metric convention (applies to every published cm/km value):** all radial
+distances in this project — SWOT `dist_km`, DEM profiles, and the DEM arc radii — use
+spherical great-circle geometry (R = 6371 km class radii). The spherical metric
+understates true ellipsoidal ground distance by ~0.36% at this latitude, which inflates
+every per-km slope by the same uniform factor (~0.7 cm/km at a 195 cm/km gradient).
+Because the factor is identical for both rivers and all epochs, no comparison in this
+work is affected; switching to ellipsoidal (`pyproj.Geod`) distances would shift all
+published numbers in lockstep and must never be done piecemeal.
 
 **Application:**
 
@@ -608,11 +619,11 @@ def haversine_vectorized(lat1, lon1, lat2, lon2):
 dist_km = haversine_vectorized(lat, lon, ANCHOR_LAT, ANCHOR_LON)
 ```
 
-**Result:** Each pixel has a `dist_km` value representing its distance from the confluence anchor point.
+**Result:** Each pixel has a `dist_km` value representing its distance from the anchor point.
 
 **Coordinate Convention:**
-- 0 km = Confluence (where rivers meet)
-- ~70 km = River mouth (coast)
+- 0 km = Anchor point (~2.5 km upriver of the bifurcation)
+- ~36 km = River mouth (coast)
 
 ---
 
@@ -703,8 +714,8 @@ robust-estimator practice used in SWORD and in SWOT superelevation studies:
 2. Fit one reach slope per pass with the **Theil–Sen estimator** (median of all pairwise
    slopes), in cm/km. Theil–Sen is robust to outliers (breakdown point ≈ 29 %), unlike OLS.
 3. **Full-coverage gate:** keep only passes that image the **full river** — ≥ 8 nodes, an
-   along-stream span **≥ 30 km**, *and* a downstream start **≤ 3 km** from the confluence. Both
-   rivers are strongly **concave** (steep near the confluence, ~210–240 cm/km in the first 6 km;
+   along-stream span **≥ 30 km**, *and* a downstream start **≤ 3 km** from the anchor. Both
+   rivers are strongly **concave** (steep near the anchor, ~210–240 cm/km in the first 6 km;
    gentle toward the mouth, ~80 cm/km in the last 6 km), so a per-pass slope depends entirely on
    *which* reach the pass imaged. SWOT swath geometry causes a substantial fraction of passes —
    ~26 % for Uyak vs ~2 % for Kanektok — to clip the steep downstream reach; those partial passes
@@ -868,7 +879,7 @@ what motivated pooling, and the revised archive — where the recovered granules
 MAD made the artifact-driven anomalies dissolve on their own — is consistent with its verdict.)*
 Because pooling slope is a
 researcher degree of freedom, the pooling decision was stress-tested independently. (1) The
-profile is confirmed concave (near-confluence slope ~3× the downstream slope), so clipping the
+profile is confirmed concave (near-anchor slope ~3× the downstream slope), so clipping the
 steep reach *mechanically* lowers a pass's slope. (2) The coverage artifact concentrates in
 small samples — the dataset-wide slope↔start correlation is weak (−0.07 to −0.13); the −0.94
 was subsample-specific. (3) An independent **fixed-window slope** (coverage held constant, no
@@ -1243,7 +1254,7 @@ A river has no single water surface. At a fixed radius the SWOT water surface sp
 
 1. **Superelevation is stage-dependent**, so it is quoted at the **median observed stage** with the p10–p90 range carried alongside rather than at whatever single stage the DEM caught. Kanektok: **−1.50 m** median stage (−1.75 m low water, −1.01 m high water), incised on **100 %** of arcs at every stage in the observed range. Uyak: **−0.49 m** (−0.77 / −0.14).
 
-2. **The multi-date mosaic imaged the two rivers at different stages.** Geoid-corrected, the DEM water surface sits at the **29th percentile** of observed stages on the Kanektok but the **76th** on the Uyak — a ~0.34 m differential bias pointing exactly the way that inflates "Uyak higher". The inter-river comparison is therefore taken from **pass-paired SWOT** (both rivers measured within the *same* overpass, so stage cancels identically): **+0.96 m, Uyak higher on 100 % of passes**, from 2 495 pass-radius pairs across 49 passes. The DEM-only value (+1.45 m) is retained in the artifact for continuity but is not the number reported.
+2. **The multi-date mosaic imaged the two rivers at different stages.** Geoid-corrected, the DEM water surface sits at the **29th percentile** of observed stages on the Kanektok but the **76th** on the Uyak — a ~0.27 m differential bias (per-arc median, recomputed 2026-08) pointing exactly the way that inflates "Uyak higher". The inter-river comparison is therefore taken from **pass-paired SWOT** (both rivers measured within the *same* overpass, so stage cancels identically): **+0.96 m, Uyak higher on 100 % of passes**, from 2 495 pass-radius pairs across 49 passes. The DEM-only value (+1.45 m) is retained in the artifact for continuity but is not the number reported.
 
 #### Channel bed: stage-matched by construction
 
@@ -1348,7 +1359,7 @@ Extract Variables (lat, lon, height, geoid, tides, classification,
 [Filter 2: Exact Polygon Clipping (.within())]
          ↓
 Calculate WSE = height - geoid - solid_tide - pole_tide - load_tide
-Calculate Distance from Confluence (Haversine)
+Calculate Distance from Anchor Point (Haversine)
          ↓
 [Filter 3: Cross-Track Distance (10-60 km)]
 [Filter 4: Crossover Calibration (exclude missing — bit 23 of geolocation_qual)]
@@ -1408,7 +1419,7 @@ Use this checklist to verify our processing against the SWOT handbook:
 - [x] Polygon boundaries refined and documented
 
 ### Distance Calculation
-- [x] Common reference point (confluence anchor) for both rivers
+- [x] Common reference point (anchor point) for both rivers
 - [x] Haversine formula appropriate for scale (<100 km)
 - [x] Vectorized implementation for efficiency
 
@@ -1466,7 +1477,7 @@ A: Version D exclusively (`SWOT_L2_HR_PIXC_D`). Version D is the latest science 
 A: Not yet. Testing showed these bit-flag filters are too aggressive for narrow rivers — they remove nearly all Uyak Creek data (only 2.8% passes `classification_qual < 4`). The flags fire on most narrow river pixels due to land/water boundary effects, not genuinely bad data. We are consulting with SWOT domain experts to determine which specific bit flags to exclude. Currently, we rely on cross-track distance, classification (Classes 3-4), and MAD outlier filtering for quality control. See the [PIXC Quality Flag Reference](#pixc-quality-flag-reference) section for the full flag analysis.
 
 **Q: Is the Haversine formula accurate enough?**
-A: Yes. For distances < 100 km, Haversine error is < 0.5%. Our maximum distance is ~70 km. For higher precision, we could use Vincenty formula, but it's unnecessary at this scale.
+A: Yes. For distances < 100 km, Haversine error is < 0.5%. Our maximum distance is ~36 km. For higher precision, we could use Vincenty formula, but it's unnecessary at this scale (see the distance-metric convention note in the Distance Calculation section: the ~0.36% spherical understatement is uniform across rivers and epochs, so comparisons are unaffected).
 
 **Q: Have you validated against ground truth?**
 A: Yes. November 2025 field campaign with RTK GPS (±1 cm). SWOT measurements agree within 1 m after accounting for 9.6 m vertical datum offset (NAVD88 vs EGM2008).
