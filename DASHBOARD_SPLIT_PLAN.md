@@ -78,9 +78,29 @@ idx 32 (dead LOESS branch — core raises on unknown detrend methods).
 
 **PR B — split `render_dashboard()` (~2,600 lines) into `dashboard_tabs/` modules.**
 One module per tab; fragments stop closing over ambient locals (explicit params).
-Absorbs the three hygiene-triage deferrals (HYGIENE_TRIAGE idx 32 LOESS remnant,
-idx 33 rounding helper, idx 42 dual detrend fits). No visual change; gate re-run;
-manual smoke of every tab locally + on Cloud after merge.
+Strictly mechanical (decided 2026-08-16): the regression gate must show ZERO
+diffs — that is the proof the move changed nothing. No visual change; gate
+re-run; manual smoke of every tab locally + on Cloud after merge. (Hygiene
+idx 32 was already resolved in PR A.)
+EXECUTED 2026-08-16. dashboard_swot.py 3,651 → ~450 lines (welcome page,
+selection preamble, TabContext build, tab dispatch, summary block); ten tab
+modules + dem_cross_sections.py + common.py (TabContext, presentation
+constants, plot/map helpers, all Streamlit cache wrappers). Bodies moved
+verbatim (audited line-by-line against the pre-split file); regression gate
+passed in --strict mode with 0 diffs on the untouched gate code, and an
+AppTest smoke rendered all 17 tabs without exceptions. One genuine bug found
+by the smoke and fixed: the cross-section artifact paths were __file__-relative
+and broke when the code moved into the package — now anchored to the repo root.
+Also removed six dead swot_core imports left by PR A and a stray f-prefix.
+
+**PR B2 — the two numbers-touching hygiene deferrals, isolated.**
+Split out of PR B (2026-08-16) so the tiny numerical shifts are the ONLY change
+in their diff. idx 33: one shared binning helper, standardized on
+half-away-from-zero (DuckDB's convention — the 6 SQL sites do the heavy binning;
+the 4 `np.round` banker's sites adopt the helper; moves 24 exact-boundary
+points). idx 42: Map View reuses the canonical detrend fit instead of its own
+2nd-order fit (≤9 cm apart today). Gate re-run with these as the pre-declared
+allowances; baseline re-snapshot.
 
 **PR C — village app.**
 `dashboard_village.py` composing the provisional set: Welcome (plain-language),
