@@ -112,8 +112,8 @@ ice table still labels Oct–Nov "Caution" though Oct is inside `ICE_SAFE_MONTHS
 | idx | Verdict | Rationale |
 |---|---|---|
 | 32 | DEFER-SPLIT → RESOLVED (split PR A, 2026-08-16) | LOESS detrend branch was dead (method hardcoded); the swot_core extraction removed it — `swot_core.stats.calculate_detrending` raises on unknown methods instead of silently falling through to LOESS |
-| 33 | DEFER-SPLIT | np.round (banker's) vs DuckDB ROUND (half-away) binning convention — needs one shared helper across 6 SQL + 4 Python sites; natural swot_core consolidation. Affects only exact-.5-boundary points (24 today) |
-| 42 | DEFER-SPLIT | Two coexisting 2nd-order detrend fits (map vs tab, ≤9 cm apart) — coefficient plumbing through the cache layer is a swot_core job |
+| 33 | DEFER-SPLIT → PR B2 | np.round (banker's) vs DuckDB ROUND (half-away) binning convention — one shared helper across 6 SQL + 4 Python sites, standardized on half-away-from-zero (decided 2026-08-16). Affects only exact-.5-boundary points (24 today). Isolated in split PR B2 so the tiny numerical shift is the only change in its diff |
+| 42 | DEFER-SPLIT → PR B2 | Two coexisting 2nd-order detrend fits (map vs tab, ≤9 cm apart) — Map View will reuse the canonical detrend fit. Isolated in split PR B2 with idx 33 (PR B itself stayed strictly mechanical, gated at zero diffs) |
 | 54 | DEFER-Q3 | `TYPHOON_DATE` doesn't drive the June comparison windows; derive windows from it when the definitive Q3 rerun happens (~Sep 2026). Trivial comment demotion applied now |
 | 17 | DEFER-REBUILD | Snap-window "clipped" QC flag can miss wall-limited picks; fixing changes an artifact QC column and breaks byte-identity checks — batch into the next arcB rebuild |
 
