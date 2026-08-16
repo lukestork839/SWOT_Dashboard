@@ -13,7 +13,7 @@ dimensions, consistent typography, and vector + high-DPI raster export.
 | File | Role |
 |------|------|
 | `config.py` | Publication style (`apply_style`), colours, paths, dimensions, `savefig`. Change styling for **all** figures here. |
-| `core.py` | Data access (DuckDB) + computations **ported verbatim** from `dashboard_swot.py` (detrending, Theil–Sen gradient, 100 m binning, Gaussian slope, elevation difference). No Streamlit. |
+| `core.py` | Thin façade over the shared **`swot_core`** package (the single implementation of detrending, Theil–Sen gradient, binning, slope, elevation difference used by the dashboards AND the figures). No Streamlit. Formerly a hand-synced verbatim port; unified in the dashboard-split PR A. |
 | `make_figures.py` | One `build_figN()` per figure + CLI. Renders to `output/`. |
 | `output/` | Generated `figure_NN.pdf` / `.png` (created on first run). |
 
