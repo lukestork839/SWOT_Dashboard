@@ -269,16 +269,26 @@ def render_dashboard(con, all_pass_dates, available_reaches):
     # --- CALCULATE ADVANCED METRICS FOR MAP VISUALIZATION ---
     # Only calculate when data is reloaded (not when just changing map display settings)
     if "metrics_calculated" not in st.session_state or st.session_state.metrics_calculated != detrend_method:
-        # 1. Calculate Detrended Residuals (using cached function for performance).
-        # Degenerate selections (< 3 points) can't support the 2nd-order fit.
-        if len(viz_df) >= 3:
-            baseline_pred, _, _ = calculate_detrending(
-                viz_df['dist_km'].tolist(),
-                viz_df['wse'].tolist(),
-                detrend_method
-            )
+        # 1. Calculate Detrended Residuals against the CANONICAL baseline: the
+        # same load_detrend_frame fit the Detrended Profile tab uses (fitted on
+        # the full selection frame), evaluated at this plot sample's distances.
+        # Previously the map refit its own 2nd-order polynomial on viz_df — a
+        # different sample of the same selection — so the two "identical" fits
+        # disagreed by up to ~9 cm and the map's colors didn't match the tab's
+        # residuals. Both calls below are st.cache_data hits (the Detrended tab
+        # makes the identical calls), so this adds no work.
+        # polyval expects the polynomial methods' ascending real-domain coeffs;
+        # detrend_method is hardcoded to "Polynomial (2nd order)" above (the
+        # Linear method returns [slope, intercept], which would need reversal).
+        bdf, _bmethod, _btotal = load_detrend_frame(con, where_clause, detrend_method)
+        if _bmethod is not None:
+            _, coeffs, _ = calculate_detrending(
+                bdf['dist_km'].tolist(), bdf['wse'].tolist(), detrend_method)
+            baseline_pred = np.polynomial.polynomial.polyval(
+                viz_df['dist_km'].to_numpy(dtype=float), coeffs)
             viz_df['detrended_residual'] = viz_df['wse'].values - baseline_pred
         else:
+            # Degenerate selection (< 3 points): no 2nd-order fit exists.
             viz_df['detrended_residual'] = np.nan
 
         # 2. Calculate smoothed slopes (same method as Slope Profile tab)

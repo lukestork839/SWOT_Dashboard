@@ -9,24 +9,29 @@ into `swot_core` can be proven output-identical:
     python tools/regression_gate.py compare    # recomputes, diffs against baseline
 
 `compare` exits non-zero on any mismatch outside the --allow list. Some keys are
-EXPECTED to change in PR A (unifying two drifted copies onto the validated dashboard
-implementation):
+EXPECTED to change in PR B2 (hygiene idx 33 — binning ties standardized on
+half-away-from-zero, DuckDB's convention; numpy's np.round is half-to-even):
 
-  * thesis.<reach>.detrend.coeffs — thesis core reported numpy's scaled-domain
-    `poly.coef`; the unified core reports `poly.convert().coef` (real dist_km
-    domain, the dashboard's post-hygiene behavior). Baselines are unaffected.
-  * thesis.<reach>.slope_profile.* — thesis core still had the pre-fix pooled
-    Gaussian (smooths across coverage holes); the unified core uses the dashboard's
-    NaN-aware gap-honest version (fix campaign 2026-08-14).
+  * dashboard.slope_profile.* / thesis.<reach>.slope_profile.* — the 0.1 km
+    binning inside calculate_slope_profile now sends exact-boundary points
+    (dist_km is float32; e.g. 24.75) to the same bin as the SQL ROUND paths.
+  * thesis.elevation_difference.* — same convention change in the 0.1 km
+    binning of swot_core.stats.elevation_difference (which now agrees with the
+    Elevation Difference tab's SQL binning of the same data).
 
-Everything else must match exactly (same machine, same data, deterministic code).
-Both surfaces read the SAME full local archive (batch_outputs partitions /
-master_all_data.parquet), so their shared checks are directly comparable.
+14 archive points sit exactly on a 0.1/0.5 km bin boundary; 7 of them change
+bins. Everything else must match exactly (same machine, same data,
+deterministic code). Both surfaces read the SAME full local archive
+(batch_outputs partitions / master_all_data.parquet), so their shared checks
+are directly comparable.
 
 Baseline lifecycle: the committed tools/regression_baseline.json is re-snapshotted
 after each split PR's gate passes, so the next PR diffs against the accepted
-current state. The committed baseline is POST-PR-A (verified self-consistent:
-compare returns 0 diffs), which also makes the PR-A allowances above inert.
+current state. The committed baseline is POST-PR-B2 (verified self-consistent:
+compare returns 0 diffs), which also makes the PR-B2 allowances above inert.
+(The PR-A allowances — detrend-coeff domain, gap-honest slope unification, and
+the finescale first/last ordering artifacts — went inert at the PR-A
+re-snapshot and were retired from DEFAULT_ALLOW here.)
 """
 
 from __future__ import annotations
@@ -44,29 +49,12 @@ os.chdir(ROOT)  # dashboard_swot uses relative DATA_DIR paths
 
 BASELINE_PATH = os.path.join(ROOT, "tools", "regression_baseline.json")
 
-# Keys allowed to differ in PR A (see module docstring). Prefix match.
+# Keys allowed to differ in PR B2 (see module docstring). Prefix match.
 DEFAULT_ALLOW = [
-    "thesis.Kanektok_River.detrend.coeffs",
-    "thesis.Uyak_Creek.detrend.coeffs",
+    "dashboard.slope_profile",
     "thesis.Kanektok_River.slope_profile",
     "thesis.Uyak_Creek.slope_profile",
-    # One-time ordering artifacts vs the pre-refactor baseline: that baseline was
-    # snapshotted before the gate ordered pass-indexed vectors deterministically
-    # (DuckDB GROUP BY output order is unguaranteed), so first/last of these are
-    # arbitrary in the OLD baseline only. Re-snapshot after the gate passes and
-    # these allowances go inert. Multiset stats (sum/mean/std/min/max) still gate.
-    "dashboard.finescale.Kanektok_River.mat.first",
-    "dashboard.finescale.Kanektok_River.mat.last",
-    "dashboard.finescale.Uyak_Creek.mat.first",
-    "dashboard.finescale.Uyak_Creek.mat.last",
-    "dashboard.finescale.Kanektok_River.window_slope.first",
-    "dashboard.finescale.Kanektok_River.window_slope.last",
-    "dashboard.finescale.Uyak_Creek.window_slope.first",
-    "dashboard.finescale.Uyak_Creek.window_slope.last",
-    "dashboard.finescale.Kanektok_River.window_coverage.first",
-    "dashboard.finescale.Kanektok_River.window_coverage.last",
-    "dashboard.finescale.Uyak_Creek.window_coverage.first",
-    "dashboard.finescale.Uyak_Creek.window_coverage.last",
+    "thesis.elevation_difference",
 ]
 
 # Floats compare with relative tolerance: DuckDB's parallel scan returns

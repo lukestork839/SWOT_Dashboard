@@ -26,6 +26,7 @@ from swot_core.config import (
 )
 from swot_core.stats import (
     flag_residual_outliers,
+    round_half_away,
     fine_aggregate as _fine_aggregate,
     fine_window_coverage as _fine_window_coverage,
     fine_window_slope as _fine_window_slope,
@@ -35,7 +36,7 @@ from swot_core.stats import (
 # dashboard_swot, tools/regression_gate.py) import these from here so the whole
 # Streamlit layer has a single import surface over swot_core.
 __all__ = [
-    "RESIDUAL_MAD_THRESHOLD", "flag_residual_outliers",
+    "RESIDUAL_MAD_THRESHOLD", "flag_residual_outliers", "round_half_away",
     "_fine_aggregate", "_fine_window_coverage", "_fine_window_slope",
 ]
 
