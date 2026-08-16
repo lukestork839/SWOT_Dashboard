@@ -55,6 +55,12 @@ ROWS_PER_CHUNK = 100000  # Safe chunk size for dashboard loading
 # see that module for the empirical calibration evidence.
 from qc_registry import ICE_SAFE_MONTHS, KNOWN_BAD_PASSES
 
+# Distance-bin tie rounding: the project standardizes on half-away-from-zero
+# (DuckDB's ROUND convention — see the helper's docstring for the archive tie
+# census). np.round is half-to-even, which puts exact .5 boundary pixels in a
+# different node than every SQL binning path.
+from swot_core.stats import round_half_away
+
 # --- REFERENCE GRADIENT (per-pass robust slope) ---
 # Authoritative reach gradient. See SCIENTIFIC_METHODOLOGY.md ->
 # "Reference Gradient (Per-Pass Robust Regression)". Computed at the end of every
@@ -163,7 +169,7 @@ def node_median_residuals(dist_km, wse, node_km=MAD_NODE_KM, min_node_pixels=MAD
     Returns an array of residuals, or None if no node is well populated
     (caller should skip filtering and keep all points).
     """
-    node = np.round(np.asarray(dist_km, dtype=float) / node_km) * node_km
+    node = round_half_away(np.asarray(dist_km, dtype=float) / node_km) * node_km
     wse = np.asarray(wse, dtype=float)
     grp = pd.Series(wse).groupby(node)
 
@@ -513,7 +519,9 @@ def compute_reference_gradient(df=None):
     rows = []
     for (reach, pdate), g in df.groupby(["Reach_Name", "Pass_Date"], observed=True):
         # pixels -> nodes: median WSE per REFGRAD_NODE_KM bin
-        node = np.round(g["dist_km"].to_numpy() / REFGRAD_NODE_KM) * REFGRAD_NODE_KM
+        # .to_numpy() keeps the stored float32, so the division already happens
+        # in SQL's precision domain; only the tie convention needed changing.
+        node = round_half_away(g["dist_km"].to_numpy() / REFGRAD_NODE_KM) * REFGRAD_NODE_KM
         nodes = pd.DataFrame({"node": node, "wse": g["wse"].to_numpy()}).groupby("node")["wse"].median()
         if len(nodes) < REFGRAD_MIN_NODES:
             continue
