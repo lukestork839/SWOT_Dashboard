@@ -137,13 +137,29 @@ banker's sites (follow-up PR — touches the canonical refgrad artifact);
 data-version cache keying for six loaders + slope-tab reach ordering +
 comment cleanups (pre-PR-C hygiene commit).
 
-**PR C — village app.**
-`dashboard_village.py` composing the provisional set: Welcome (plain-language),
-Map View, Gradient Profile, Elevation Difference, Temporal bottom-line.
-Researcher-only tabs excluded: Fine-Scale Slope, Cross-Sections, Detrended,
-decomposition, Raw Data. Plain-language captions; NSF Award 2527256 attribution
-on the welcome page (required in all project metadata). Deploy as second
-Streamlit Cloud app; both read the same v2.0-data release parquet.
+**PR C — village app. EXECUTED (branch feature/village-dashboard).**
+The provisional tab set was replaced after the use-case discussion (NSF CIVIC
+project description: the resident question is "is the river about to jump, and
+is anything changing?"). `dashboard_village.py` is structured around the THREE
+avulsion warning signs from the literature instead of around data products:
+
+- Start Here (plain-language intro, the three signs, NSF 2527256 attribution)
+- The Rivers (satellite-imagery map: measurement dots, the fork, Kuinerraq)
+- Sign 1: The Steeper Path (fork-zone fine-scale steepness, ft/mi bars)
+- Sign 2: A Flat Spot (fine-scale steepness profile, miles-from-fork axis)
+- Sign 3: Water Above the Land (Kanektok superelevation vs floodplain, arcB)
+- Is Anything Changing? (per-pass whole-river steepness + the fork-gap time
+  series, with the computed bottom-line verdict)
+
+Design rules (user-locked 2026-08-16): middle-school reading level, visual
+first with the plain-language verdict BELOW each chart (data before
+conclusion), feet/miles only, Yugtun place names (Qanirtuuq, Kuinerraq),
+continuous-tracking framing (charts grow with each pass), no pass selection
+(full open-water record, ice months excluded). All numbers come from the same
+swot_core/common.py cached loaders as the researcher app. Deploy as second
+Streamlit Cloud app; both read the same v2.0-data release assets. Smoke: 6
+tabs, 0 exceptions. Same PR adds the repo LICENSE (CC BY-NC 4.0 per the DMP;
+README had claimed MIT with no license file).
 
 ## Notes / open items
 
