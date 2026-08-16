@@ -130,11 +130,13 @@ The dashboard organizes analysis into top-level tabs and nested "More Tabs":
 
 | Tab | What It Shows |
 |-----|---------------|
-| **Gradient Profile** | WSE vs. distance scatter plot with linear regression trendlines. Shows overall river steepness in cm/km. Supports **box-select → Map View highlight** (see below). |
-| **Detrended Profile** | Removes the large-scale elevation trend (Relative Elevation Model). Reveals subtle systematic differences between rivers. Supports Linear, Polynomial (2nd/3rd order), and LOESS baselines. Statistics are reported as robust measures (median, MAD-based robust SD, P1/P99); a residual-domain outlier flag (Modified Z-Score > 3.5, per river) omits localized contamination from the plot and mean/SD without deleting it. Supports **box-select → Map View highlight** (see below). |
+| **Gradient Profile** | WSE vs. distance scatter with binned-median profile lines. (The headline steepness number is the per-pass Theil–Sen reference gradient on the **Hydraulic Gradient** tab, not an OLS trendline.) Supports **box-select → Map View highlight** (see below). |
+| **Hydraulic Gradient** | The authoritative reach gradient: per-pass Theil–Sen slopes on 1 km node medians, median across coverage-gated open-water passes, with the per-pass distribution. |
+| **Fine-Scale Slope** | 0.5–4 km resolution slope profiles computed within each pass (stage constant) then aggregated — resolves the near-bifurcation structure the reach average hides. |
+| **Detrended Profile** | Removes the large-scale elevation trend (Relative Elevation Model) with a 2nd-order polynomial baseline fit to both rivers. Reveals subtle systematic differences between rivers. Statistics are reported as robust measures (median, MAD-based robust SD, P1/P99); a residual-domain outlier flag (Modified Z-Score > 3.5, per river) omits localized contamination from the plot and mean/SD without deleting it. Supports **box-select → Map View highlight** (see below). |
 | **Map View** | Interactive Folium map with multiple basemaps (satellite, terrain, etc.), measuring tools for distance/area, and color-by options (river name, WSE, classification, detrended residual, interval slope). Shows points **box-selected on a profile** as yellow-outlined markers. |
 
-> **Profile → Map cross-highlight:** on the **Gradient Profile** or **Detrended Profile**, drag a box (or lasso) around points of interest. Those exact points are outlined in yellow (keeping their river color) on the **Map View**, which auto-zooms to them so you can see where along the river they sit. Selections from both profiles combine; a **Clear highlight** button on the map resets them. Requires `streamlit>=1.35` (Plotly selection events).
+> **Profile → Map cross-highlight:** on the **Gradient Profile** or **Detrended Profile**, drag a box (or lasso) around points of interest. Those exact points are outlined in yellow (keeping their river color) on the **Map View**, which auto-zooms to them so you can see where along the river they sit. Selections from both profiles combine; a **Clear highlight** button on the map resets them. Requires `streamlit>=1.49`.
 
 **DEM Data tab** (with subtabs):
 
@@ -145,6 +147,7 @@ The dashboard organizes analysis into top-level tabs and nested "More Tabs":
 | **Terrain Slope** | Local terrain gradient along each corridor (Gaussian-smoothed numerical derivative). |
 | **Detrended Profile** | Removes regional downstream gradient (2nd-order polynomial) to reveal where each corridor sits above or below the trend. |
 | **Map View** | Interactive Folium map of DEM elevation points. Color by river name or elevation (viridis). Basemap toggle, measurement tools. |
+| **Cross-Sections** | DEM arc cross-sections at 0.5 km radii from the anchor with SWOT stage overlays, superelevation metrics, and the ADCP-informed channel bed. |
 
 See [DEM Elevation Comparison](#dem-elevation-comparison) for methodology.
 
@@ -159,13 +162,12 @@ See [DEM Elevation Comparison](#dem-elevation-comparison) for methodology.
 
 The former interactive **Temporal Evolution**, **Seasonal Comparison**, and **Typhoon Impact** tabs (density-biased, per-selection) have been retired. Their questions are now answered by a single, methodology-locked one-time analysis (`temporal_analysis.py`), whose results the **Temporal Results** tab displays. See [`TEMPORAL_ANALYSIS.md`](TEMPORAL_ANALYSIS.md) for the full write-up. Because the results are pre-computed (git-tracked in `temporal_results/`), this tab is available on both the local and the deployed Streamlit Cloud dashboard.
 
-### Sidebar Controls
+### Controls
 
-- **Date range slider** -- filter by satellite pass dates
-- **River selection** -- analyze one or both rivers
-- **Detrending method** -- Linear, Polynomial (2nd/3rd order), LOESS
-- **Map display options** -- color-by metric, basemap style, point opacity
-- **Theme toggle** -- light mode for screenshots/posters
+There is no sidebar. Satellite passes are chosen on the **welcome page** (quick
+presets or an explicit checklist); both rivers are always analyzed together, and
+the detrending baseline is fixed (2nd-order polynomial). Map display options
+(color-by metric, basemap style) live on the Map View tab itself.
 
 ---
 

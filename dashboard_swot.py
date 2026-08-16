@@ -7,10 +7,8 @@ from scipy.ndimage import gaussian_filter1d
 import numpy as np
 import duckdb
 import os
-import gc  # Memory management
 import folium
 from folium import plugins
-from folium.plugins import MeasureControl
 from streamlit_folium import st_folium
 import matplotlib.colors as mcolors
 import matplotlib.cm as cm
@@ -38,13 +36,11 @@ PROFILE_NODE_KM = 0.5       # distance-bin width for the binned-median profile l
 PROFILE_BAND = (5, 95)      # percentile band shown around the median profile
 
 # Residual-domain outlier flag for the Detrended Profile.
-# The ingestion MAD filter (SWOT_Pull.py) runs on RAW WSE per-pass, where the
-# ~70 km downstream gradient inflates the reach spread so much that its keep-band
-# is ~150 m wide -- so localized spring-ice/contamination blobs (a handful of
-# passes producing WSE tens of metres below the local trend) pass through and
-# then dominate the detrended min/max/range. This threshold re-applies the SAME
-# Modified Z-Score method (Iglewicz & Hoaglin 1993) in the DETRENDED domain,
-# where residuals are ~0-centred so the flag actually isolates those points.
+# The ingestion MAD filter (SWOT_Pull.py) runs per-granule on 1 km node-median
+# residuals; this flag re-applies the SAME Modified Z-Score method (Iglewicz &
+# Hoaglin 1993) but on residuals from the DASHBOARD's cross-pass polynomial
+# baseline, so it can also isolate whole-pass contamination (e.g. spring-ice
+# blobs) that looks internally consistent within its own granule.
 RESIDUAL_MAD_THRESHOLD = 3.5  # Modified Z-score, matches ingestion MAD_THRESHOLD
 
 # --- BIFURCATION POINT ---
@@ -153,12 +149,16 @@ def calculate_detrending(dist_km, wse, method):
     elif method == "Polynomial (2nd order)":
         poly = np.polynomial.Polynomial.fit(x_all, y_all, 2)
         baseline_pred = poly(x_all)
-        coeffs = poly.coef
+        # convert() maps the coefficients back from numpy's internal scaled
+        # domain to the actual dist_km domain — poly.coef alone is a trap.
+        coeffs = poly.convert().coef
         method_name = "2nd Order Polynomial"
     elif method == "Polynomial (3rd order)":
         poly = np.polynomial.Polynomial.fit(x_all, y_all, 3)
         baseline_pred = poly(x_all)
-        coeffs = poly.coef
+        # convert() maps the coefficients back from numpy's internal scaled
+        # domain to the actual dist_km domain — poly.coef alone is a trap.
+        coeffs = poly.convert().coef
         method_name = "3rd Order Polynomial"
     else:  # LOESS
         sorted_idx = np.argsort(x_all)
@@ -222,7 +222,9 @@ def load_detrend_frame(_con, where_clause, detrend_method):
         query = (f"SELECT dist_km, wse, Reach_Name, latitude, longitude, Pass_Date "
                  f"FROM river_data {where_clause} ORDER BY {order_cols}")
     bdf = _con.execute(query).fetchdf()
-    if len(bdf) == 0:
+    if len(bdf) < 3:
+        # Degenerate input: a 2nd-order fit needs >= 3 points; below that
+        # calculate_detrending would crash or return garbage.
         return bdf, None, total_count
     baseline_pred, _coeffs, method_name = calculate_detrending(
         bdf['dist_km'].tolist(), bdf['wse'].tolist(), detrend_method)
@@ -443,9 +445,12 @@ def compute_finescale_pass_matrix(_con, url_version, where_clause, res_km, xmax)
             pos = ix - 1
             ok = (pos >= 0) & (pos < len(grid))
             mat[pos[ok], j] = sl[ok]
+        # n_passes = passes that actually landed data on the grid; passes whose
+        # profile was too sparse to fit (< 5 bins, skipped above) don't count
+        # toward the reliability gate or the legend.
         out[str(reach)] = dict(grid=grid, mat=mat,
                                passes=pd.to_datetime(pd.Series(list(passes))).to_numpy(),
-                               n_passes=len(passes))
+                               n_passes=int(np.isfinite(mat).any(axis=0).sum()))
     return out
 
 
@@ -543,21 +548,6 @@ def _fine_group_passes(passes, mode):
     groups = [(name, sub.index.to_numpy()) for name, sub in g.groupby("lab", sort=False)]
     groups.sort(key=lambda item: g.loc[item[1], "key"].iloc[0])
     return groups
-
-
-def compute_finescale_slope(_con, url_version, where_clause, res_km, xmax):
-    """All-pass aggregate fine-scale profile (the tab's default view).
-
-    Thin wrapper over the cached matrix so the aggregate view and the temporal
-    views share one compute. Returns {reach: dict(grid, med, lo, hi, n, n_passes)}.
-    """
-    data = compute_finescale_pass_matrix(_con, url_version, where_clause, res_km, xmax)
-    out = {}
-    for reach, r in data.items():
-        med, lo, hi, n = _fine_aggregate(r["mat"])
-        out[reach] = dict(grid=r["grid"], med=med, lo=lo, hi=hi,
-                          n=n, n_passes=r["n_passes"])
-    return out
 
 
 class VerticalColorbar(MacroElement):
@@ -950,7 +940,8 @@ def render_cross_sections(chB, profB, plotly_template):
     # The inter-river difference is quoted from SWOT PASS-PAIRED data, not from the DEM. Both rivers
     # are measured in the same overpass, so stage cancels exactly. The DEM version is contaminated:
     # the ArcticDEM mosaic is a multi-date blend that caught the Kanektok near the 29th percentile of
-    # observed stages and the Uyak near the 76th, worth ~0.34 m of spurious "Uyak higher".
+    # observed stages and the Uyak near the 76th, worth ~0.27 m of spurious "Uyak higher"
+    # (per-arc median of DEM-diff minus SWOT-paired-diff, n=64 arcs, arcB_channels.parquet).
     swot_diff = crow.get("swot_diff_uyak_minus_kan", np.nan)
     dem_diff = crow["diff_uyak_minus_kan"]
     r1c1, r1c2, r1c3 = st.columns(3)
@@ -1335,8 +1326,9 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         if st.button("Return to Homepage"):
             # Clear cached dataframes + the pinned pass selection and any map highlights,
             # so the welcome-page checkboxes become authoritative again on next launch.
-            # (pass_{date} widget states are preserved so the checkboxes still reflect the
-            # last choice.)
+            # (confirmed_pass_dates is cleared with them, and Streamlit may have
+            # garbage-collected the pass_{date} widget keys, so the checkboxes can
+            # re-seed to defaults rather than reflect the last choice.)
             for key in ["viz_df", "viz_sig", "stats_df", "count", "where_clause",
                         "selected_pass_dates", "confirmed_pass_dates", "selected_reaches",
                         "detrend_method", "metrics_calculated",
@@ -1378,6 +1370,20 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         date_label = f"Viewing {n_passes} passes: {first_date} — {last_date}"
     st.markdown(f"**{date_label}**")
 
+    # Warn if any selected passes are in ice season. Lives OUTSIDE the
+    # data-reload branch below so it persists on every rerun instead of
+    # flashing once and vanishing on the next interaction.
+    ice_selected = [d for d in selected_pass_dates if d.month in (12, 1, 2, 3)]
+    if ice_selected:
+        ice_labels = ", ".join(d.strftime("%b %d, %Y") for d in ice_selected)
+        st.warning(
+            f"**Ice season data included** ({ice_labels}). "
+            "Smooth river ice passes SWOT Class 3-4 filters, "
+            "producing WSE readings 0.5-2+ m above the true water surface. "
+            "Uyak Creek is most affected (narrow channel freezes completely). "
+            "Use caution when interpreting winter data."
+        )
+
     # Hardcoded detrending method
     detrend_method = "Polynomial (2nd order)"
 
@@ -1394,8 +1400,9 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         detrend_method,
     )
     if "viz_df" not in st.session_state or st.session_state.get("viz_sig") != selection_sig:
-        # FILTER DATA
-        rivers_sql = "'" + "','".join(selected_reaches) + "'"
+        # FILTER DATA (reach names SQL-escaped; they double as cache keys, and
+        # current names contain no quotes so the escaped string is byte-identical)
+        rivers_sql = "'" + "','".join(r.replace("'", "''") for r in selected_reaches) + "'"
         dates_sql = ",".join(f"CAST('{d}' AS DATE)" for d in selected_pass_dates)
 
         # Base conditions (explicit CAST needed for DuckDB httpfs DATE filtering)
@@ -1403,18 +1410,6 @@ def render_dashboard(con, all_pass_dates, available_reaches):
             WHERE Reach_Name IN ({rivers_sql})
             AND CAST(Pass_Date AS DATE) IN ({dates_sql})
         """
-
-        # Warn if any selected passes are in ice season
-        ice_selected = [d for d in selected_pass_dates if d.month in (12, 1, 2, 3)]
-        if ice_selected:
-            ice_labels = ", ".join(d.strftime("%b %d, %Y") for d in ice_selected)
-            st.warning(
-                f"**Ice season data included** ({ice_labels}). "
-                "Smooth river ice passes SWOT Class 3-4 filters, "
-                "producing WSE readings 0.5-2+ m above the true water surface. "
-                "Uyak Creek is most affected (narrow channel freezes completely). "
-                "Use caution when interpreting winter data."
-            )
 
         # Check total count first (with timeout protection)
         try:
@@ -1490,13 +1485,17 @@ def render_dashboard(con, all_pass_dates, available_reaches):
     # --- CALCULATE ADVANCED METRICS FOR MAP VISUALIZATION ---
     # Only calculate when data is reloaded (not when just changing map display settings)
     if "metrics_calculated" not in st.session_state or st.session_state.metrics_calculated != detrend_method:
-        # 1. Calculate Detrended Residuals (using cached function for performance)
-        baseline_pred, _, _ = calculate_detrending(
-            viz_df['dist_km'].tolist(),
-            viz_df['wse'].tolist(),
-            detrend_method
-        )
-        viz_df['detrended_residual'] = viz_df['wse'].values - baseline_pred
+        # 1. Calculate Detrended Residuals (using cached function for performance).
+        # Degenerate selections (< 3 points) can't support the 2nd-order fit.
+        if len(viz_df) >= 3:
+            baseline_pred, _, _ = calculate_detrending(
+                viz_df['dist_km'].tolist(),
+                viz_df['wse'].tolist(),
+                detrend_method
+            )
+            viz_df['detrended_residual'] = viz_df['wse'].values - baseline_pred
+        else:
+            viz_df['detrended_residual'] = np.nan
 
         # 2. Calculate smoothed slopes (same method as Slope Profile tab)
         # Bin to 100m medians, Gaussian smooth (2km window), interpolate back to each point
@@ -2277,9 +2276,11 @@ def render_dashboard(con, all_pass_dates, available_reaches):
     with tab2:
         st.subheader("Elevation Difference: Kanektok - Uyak")
 
-        # Check if both rivers are selected
+        # Data-integrity guard, not a UI check: selected_reaches always mirrors
+        # available_reaches (the dashboard no longer offers river selection), so
+        # this fires only if the dataset itself is missing a river.
         if len(selected_reaches) != 2:
-            st.warning("⚠️ This analysis requires both rivers to be selected. Please select both Kanektok River and Uyak Creek.")
+            st.warning("⚠️ This analysis requires both rivers in the dataset; only one was found.")
         else:
             # Per-pass within-pass difference, then median across passes.
             # Each SWOT pass images both channels near-simultaneously, so
@@ -2403,27 +2404,6 @@ def render_dashboard(con, all_pass_dates, available_reaches):
     with tab3:
         st.subheader("Detrended Elevation Profile")
 
-        # Helper function for LOESS smoothing
-        def loess_smooth(x, y, frac=0.1):
-            """Simple LOESS-like smoothing using weighted moving average"""
-            from scipy.ndimage import gaussian_filter1d
-
-            # Sort by x
-            sorted_idx = np.argsort(x)
-            x_sorted = x[sorted_idx]
-            y_sorted = y[sorted_idx]
-
-            # Use Gaussian smoothing as approximation of LOESS
-            # Sigma controls smoothness (larger = smoother)
-            sigma = len(x) * frac / 3
-            y_smooth = gaussian_filter1d(y_sorted, sigma=sigma, mode='nearest')
-
-            # Map back to original order
-            y_result = np.zeros_like(y)
-            y_result[sorted_idx] = y_smooth
-
-            return y_result
-
         try:
             # Fetch + detrend ONCE per (passes, method); cached so the figure is stable
             # across reruns and the chart's box-selection survives (see load_detrend_frame).
@@ -2433,8 +2413,8 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 st.info(f"📊 Baseline fit on ~{MAX_BASELINE_POINTS:,} systematically sampled "
                         f"points (of {total_count:,} total) for performance.")
 
-            if len(baseline_df) == 0:
-                st.warning("No data available for detrending analysis.")
+            if len(baseline_df) < 3 or method_name is None:
+                st.warning("Not enough data for detrending analysis (need at least 3 points).")
             else:
                 # Flag residual-domain outliers (per-reach), matching the ingestion
                 # Modified Z-Score method but applied to residuals rather than raw WSE.
@@ -2461,7 +2441,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 # Warning if only one river selected (detrending works best with both)
                 num_rivers = baseline_df['Reach_Name'].nunique()
                 if num_rivers == 1:
-                    st.warning("⚠️ **Single river selected**: Detrending works best when BOTH rivers are selected. The baseline is currently fit to only one river, which may leave systematic patterns in the residuals.")
+                    st.warning("⚠️ **Only one river in this selection's data**: the chosen passes imaged a single river, so the baseline is fit to it alone. Cross-river comparison is unavailable and residuals may retain systematic structure.")
 
                 # Sample for visualization if needed
                 if len(baseline_df) > MAX_PLOT_POINTS:
@@ -2578,11 +2558,9 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     🔴 **Poor Fit Detected**: Overall mean residual is {overall_mean_residual:.2f}m (should be ~0).
 
                     **Possible causes:**
-                    - Only one river selected (try selecting both)
-                    - Wrong detrending method for your data shape
-                    - Data has extreme outliers
-
-                    **Try:** Switch to "Linear" or "LOESS" detrending method.
+                    - Selected passes imaged only one river (the shared baseline needs both)
+                    - Data has extreme outliers (check the flagged-points count above)
+                    - The quadratic baseline doesn't suit this selection's profile shape
                     """)
 
                 # Add interpretation guide
@@ -2600,47 +2578,22 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     - A steady gap between the two rivers means one consistently sits higher than the other.
                     - A river that stays above the line is steeper than average; below the line, gentler.
 
-                    **Is it working?** The dots should scatter evenly around zero with no leftover
-                    tilt. If you still see a clear up- or down-slope, the chosen baseline shape
-                    doesn't fit this data well — try a different one below.
+                    **Is it working?** The dots should scatter evenly around zero with no
+                    leftover tilt. A remaining up- or down-slope means the smooth baseline
+                    doesn't fully describe this selection — read local features with care.
 
                     ― Technical details ―
                     Baseline = {method_name} fit through all points of the selected river(s);
                     the plot shows the residuals (data minus baseline). Mean residual ≈ 0 when the fit is appropriate.
                     """)
 
-                # Method-specific guidance
-                method_guidance = {
-                    "Linear": """
-                        **Using Linear Baseline:**
-                        - Shows how rivers deviate from a constant slope
-                        - Large residuals suggest curved river profile
-                        - If both rivers show similar curve patterns, try Polynomial
-                        """,
-                    "2nd Order Polynomial": """
-                        **Using 2nd Order Polynomial Baseline:**
-                        - Captures gentle curvature in river profiles
-                        - Most rivers show this type of gradual downstream slope change
-                        - Residuals show deviations from this smooth curve
-                        - Best for highlighting systematic differences between rivers
-                        """,
-                    "3rd Order Polynomial": """
-                        **Using 3rd Order Polynomial Baseline:**
-                        - Can capture more complex profile shapes (inflection points)
-                        - Useful if rivers have distinct reaches (steep→gentle→steep)
-                        - May reduce residuals by fitting more closely to data
-                        - Watch for overfitting if residuals become very small
-                        """,
-                    "LOESS (Local Regression)": """
-                        **Using LOESS Baseline:**
-                        - Adapts smoothly to local variations in the data
-                        - Most flexible - follows overall trend without rigid shape
-                        - Good for complex profiles or when other methods leave patterns
-                        - Residuals primarily show differences between rivers, not profile shape
-                        """
-                }
-
-                st.success(method_guidance.get(method_name, ""))
+                # Guidance for the (single, hardcoded) baseline method
+                st.success("""
+                    **Using 2nd Order Polynomial Baseline:**
+                    - Captures the gentle downstream curvature both rivers share
+                    - Residuals show deviations from this smooth curve
+                    - Best for highlighting systematic differences between rivers
+                    """)
 
                 # Show statistics per river
                 st.subheader("Detrended Elevation Statistics")
@@ -2791,7 +2744,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                                       '<extra></extra>'
                     ))
 
-                    # x_eval ascends from the ANCHOR (dist 0, inland confluence)
+                    # x_eval ascends from the ANCHOR (dist 0, inland anchor point)
                     # to the COAST (~35 km, the mouths) — index 0 is the anchor
                     # end, index -1 the coast end. nan-aware because the profile
                     # now leaves coverage holes as honest NaN gaps.
@@ -3301,9 +3254,10 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     ).add_to(m)
 
             elif map_color_by == "Classification":
+                # Only classes 3-4 survive ingestion (DEFAULT_CLASSES in
+                # SWOT_Pull.py), so the legend provisions exactly those two.
                 class_colors = {
-                    3: "#FFA500", 4: "#00CED1", 5: "#90EE90",
-                    6: "#FFB6C1", 7: "#DDA0DD"
+                    3: "#FFA500", 4: "#00CED1"
                 }
 
                 for class_val, color in class_colors.items():
@@ -3380,7 +3334,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 ).add_to(m)
 
                 VerticalColorbar(
-                    caption='Residual (m)',
+                    caption='Residual (m, colors capped at ±3)',
                     colors=['#b2182b', '#f4a582', '#f7f7f7', '#92c5de', '#2166ac'],
                     vmin=-res_bound,
                     vmax=res_bound,
@@ -3669,7 +3623,6 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                                    "WSE %{x:.2f} m<br>slope %{y:.0f} cm/km<extra></extra>"),
                 ))
                 med = float(d["slope_cm_km"].median())
-                r = float(np.corrcoef(d["wse_ref_m"], d["slope_cm_km"])[0, 1])
                 fig_si.add_hline(y=med, line_dash="dot", line_color=color, opacity=0.7)
                 corr_txt.append(f"{DISP[reach]}: usually about {med:.0f} cm/km")
             fig_si.update_layout(
@@ -3745,8 +3698,9 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                 "This line shows how much the water level changed at each point along the river "
                 "(June 2026 compared with June 2025). If the storm had scoured out the riverbed "
                 "or dumped a pile of gravel somewhere, you'd see a sharp spike or dip at that "
-                "spot. Instead the line stays flat and hugs zero — no spot along the river shows "
-                "a storm scar."
+                "spot. The line mostly stays near zero; a few points reach about ±0.7 m, but "
+                "that is within the year-to-year wiggle we see between storm-free summers too — "
+                "nothing here stands out as a storm scar."
             )
             if len(q3_curve):
                 fig_d = go.Figure()
@@ -3767,9 +3721,11 @@ def render_dashboard(con, all_pass_dates, available_reaches):
                     height=440, template=plotly_template,
                     xaxis_title="Distance from Anchor Point (km)",
                     yaxis_title="Change in Water Surface Elevation, Jun 2026 − Jun 2025 (m)",
-                    yaxis_range=[-0.5, 0.5],
                     legend=dict(orientation="h", yanchor="bottom", y=1.02),
                 )
+                # Same convention as every other distance-axis figure:
+                # coast (36 km) on the left, anchor (0 km) on the right.
+                fig_d.update_xaxes(autorange="reversed")
                 st.plotly_chart(fig_d, width="stretch", theme=None)
             else:
                 st.info("Not enough matching June passes to draw this chart yet.")
@@ -3874,7 +3830,9 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         st.subheader("Summary Statistics")
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("Passes Analyzed", viz_df['Pass_Date'].nunique())
+        # Count from the SELECTION, not the sampled viz_df — systematic sampling
+        # can drop every point of a small pass and silently undercount here.
+        col1.metric("Passes Analyzed", len(selected_pass_dates))
         col2.metric("Total Data Points", f"{count:,}")
         col3.metric("Visualization Sample", f"{len(viz_df):,}")
 

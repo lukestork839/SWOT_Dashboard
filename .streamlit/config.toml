@@ -44,5 +44,5 @@ enableProfilingStats = false
 [theme]
 # Light theme for poster/figure exports
 base = "light"
-primaryColor = "#1f77b4"  # Dodger blue (matches Uyak Creek)
+primaryColor = "#1f77b4"  # Matplotlib tab-blue accent (Uyak Creek uses dodgerblue #1E90FF)
 font = "sans serif"

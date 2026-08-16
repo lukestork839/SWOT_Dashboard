@@ -21,7 +21,7 @@ river's bearing drift with radius so we know which reach the arc frame is trustw
 
 SWOT does three jobs here that the DEM cannot do alone (all via data/swot_arc_reference.parquet,
 built by swot_arc_reference.py — see that script for the reasoning):
-  - sets the vertical datum per radius (EGM2008 runs 13.77 m at the anchor to 13.27 m at the coast;
+  - sets the vertical datum per radius (EGM2008 runs ~13.74 m at R=3 km to ~13.28 m at R=34.5 km across the artifact;
     a constant offset cancels within an arc but tilts any DEM-vs-SWOT comparison),
   - supplies the stage DISTRIBUTION, so superelevation is quoted at a declared stage with a band
     instead of at whatever stage the multi-date DEM mosaic happened to catch,
@@ -191,8 +191,8 @@ def ridge_crest(center, arc_m, z, win=CREST_WIN_M, pctl=CREST_PCTL):
 def sample_arc(src, R, bearings, geoid):
     """Sample the DEM along the arc at radius R over `bearings`, returned as orthometric (EGM2008) m.
 
-    `geoid` is the EGM2008 height AT THIS RADIUS, not a constant: it runs ~13.77 m at the anchor to
-    ~13.27 m at the coast. Within one arc the geoid is effectively constant, so this choice does not
+    `geoid` is the EGM2008 height AT THIS RADIUS, not a constant: it runs ~13.74 m at R=3 km to
+    ~13.28 m at R=34.5 km (the artifact's actual endpoints; anchor/coast values are extrapolations). Within one arc the geoid is effectively constant, so this choice does not
     touch any within-arc difference (β, H_AR, H_M, superelevation, Uyak−Kanektok all cancel it) — it
     matters because it puts the DEM on the same vertical datum as SWOT, which is what lets the two be
     compared without a spurious ~0.5 m along-reach tilt.
@@ -200,6 +200,9 @@ def sample_arc(src, R, bearings, geoid):
     lat, lon = dest(ANCHOR[0], ANCHOR[1], R, bearings)
     x, y = _to3413.transform(lon, lat)
     z = np.array([v[0] for v in src.sample(np.column_stack([x, y]))], float)
+    # The z==0 mask is LOAD-BEARING: rasterio's boundless reads fill
+    # out-of-extent samples with 0, and this is what rejects them. Real
+    # terrain here is well above 0 m, so no true pixel is lost. Never remove.
     z[(z == src.nodata) | (z == 0)] = np.nan
     return z - geoid
 
@@ -361,7 +364,7 @@ def main():
     ch = pd.DataFrame(rows)
     # DEM-derived difference. Kept for continuity, but it is NOT the number to quote: the mosaic is a
     # multi-date blend that caught the Kanektok near the 29th percentile of observed stages and the
-    # Uyak near the 76th, so ~0.34 m of this is a differential-stage artifact. Use
+    # Uyak near the 76th, so ~0.27 m of this is a differential-stage artifact (per-arc median, recomputed 2026-08). Use
     # `swot_diff_uyak_minus_kan` (both rivers in the SAME overpass, so stage cancels) instead.
     ch["diff_uyak_minus_kan"] = ch["uyak_wse_m"] - ch["kan_wse_m"]
 

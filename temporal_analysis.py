@@ -68,7 +68,10 @@ OPEN_WATER_MONTHS = ICE_SAFE_MONTHS
 HIGH_FLOW_MONTHS = {5}      # May freshet
 LOW_FLOW_MONTHS = {7, 8}    # Jul-Aug baseflow
 
-TYPHOON_DATE = "2025-10-12"  # Typhoon Halong landfall
+# Typhoon Halong landfall. Recorded in the results JSON for provenance only —
+# the Q3 comparison windows are hardcoded June-vs-June below, NOT derived from
+# this constant. Derive them from it at the definitive Q3 rerun (~Sep 2026).
+TYPHOON_DATE = "2025-10-12"
 
 
 def per_pass_metrics(con, reach):
@@ -420,7 +423,7 @@ def q3_profile(con):
         if len(d) == 0:
             print(f"  {reach}: no overlapping bins")
             continue
-        # dist_km is radial from the INLAND confluence anchor (WSE ~66 m there,
+        # dist_km is radial from the INLAND anchor point (WSE ~66 m there,
         # ~0 m at the 35 km mouths): small distance = upstream/upper river,
         # large distance = downstream/lower river toward the coast.
         up = d[d["dist_km"] <= 18]["dwse"]    # upstream half (near the anchor)
