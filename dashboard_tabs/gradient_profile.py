@@ -20,7 +20,7 @@ def render(ctx):
     # This is the SAME value as the Hydraulic Gradient tab -- the median of
     # per-pass Theil-Sen slopes over the full open-water record -- NOT the slope
     # of the profile line below (which follows the current pass selection).
-    _refg = load_reference_gradient(con)
+    _refg = load_reference_gradient(con, ctx.data_version)
     if _refg is not None and len(_refg) > 0:
         _ow = _refg[(_refg["open_water"]) & (_refg["gated"])]
         _parts = []

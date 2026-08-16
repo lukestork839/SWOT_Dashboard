@@ -101,7 +101,7 @@ def render_welcome(all_pass_dates):
         """)
 
 
-def render_dashboard(con, all_pass_dates, available_reaches):
+def render_dashboard(con, data_version, all_pass_dates, available_reaches):
     """Render the main dashboard with all charts and analysis."""
     # --- Top bar ---
     top_left, top_right = st.columns([4, 1])
@@ -281,7 +281,8 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         # Detrended tab also makes, and calculate_detrending returns ascending
         # real-domain coefficients for EVERY method, so polyval is the right
         # evaluator regardless of detrend_method.
-        _bdf, _bmethod, _btotal, coeffs = load_detrend_frame(con, where_clause, detrend_method)
+        _bdf, _bmethod, _btotal, coeffs = load_detrend_frame(
+            con, data_version, where_clause, detrend_method)
         if _bmethod is not None:
             baseline_pred = np.polynomial.polynomial.polyval(
                 viz_df['dist_km'].to_numpy(dtype=float), coeffs)
@@ -312,8 +313,8 @@ def render_dashboard(con, all_pass_dates, available_reaches):
 
     # --- TABS ---
     # Load DEM data via DuckDB (cached, exact statistics from full dataset)
-    dem_profile = load_dem_profile(con)
-    dem_points = load_dem_points(con)
+    dem_profile = load_dem_profile(con, data_version)
+    dem_points = load_dem_points(con, data_version)
 
     main_swot, main_dem = st.tabs(["📡 SWOT Data", "🏔️ DEM Data"])
 
@@ -336,6 +337,7 @@ def render_dashboard(con, all_pass_dates, available_reaches):
     # original monolith exactly (session-state side effects are order-sensitive).
     ctx = TabContext(
         con=con,
+        data_version=data_version,
         viz_df=viz_df,
         selected_reaches=selected_reaches,
         detrend_method=detrend_method,
@@ -441,7 +443,7 @@ def main():
     # Load metadata (cached)
     try:
         with st.spinner("Loading data metadata..."):
-            all_pass_dates, available_reaches = load_metadata(con)
+            all_pass_dates, available_reaches = load_metadata(con, data_version)
             if all_pass_dates is None:
                 st.error("No data found. Please run SWOT_Pull.py first to generate data.")
                 st.stop()
@@ -456,7 +458,7 @@ def main():
     if st.session_state.page == "welcome":
         render_welcome(all_pass_dates)
     else:
-        render_dashboard(con, all_pass_dates, available_reaches)
+        render_dashboard(con, data_version, all_pass_dates, available_reaches)
 
 
 if __name__ == "__main__":

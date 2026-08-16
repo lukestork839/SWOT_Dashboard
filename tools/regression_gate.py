@@ -103,7 +103,9 @@ def dashboard_checks() -> dict:
     out = {}
 
     # Metadata
-    dates, reaches = dash.load_metadata(con)
+    # "gate" stands in for the deployed-data fingerprint the app passes as
+    # url_version — it's only a cache key, meaningless in this headless run.
+    dates, reaches = dash.load_metadata(con, "gate")
     out["metadata"] = {"n_dates": len(dates), "reaches": sorted(reaches),
                        "date_min": str(min(dates)), "date_max": str(max(dates))}
 
@@ -120,7 +122,8 @@ def dashboard_checks() -> dict:
         """
 
     # Detrend frame (the cached fetch+fit path behind the Detrended Profile tab)
-    bdf, method_name, total, _fcoeffs = dash.load_detrend_frame(con, where_clause, "Polynomial (2nd order)")
+    bdf, method_name, total, _fcoeffs = dash.load_detrend_frame(
+        con, "gate", where_clause, "Polynomial (2nd order)")
     out["detrend_frame"] = {"total_count": int(total), "n": int(len(bdf)),
                             "method_name": method_name,
                             "residual": sig(bdf["residual"]), "baseline": sig(bdf["baseline"])}
@@ -167,19 +170,19 @@ def dashboard_checks() -> dict:
     out["finescale"] = fs
 
     # Reference gradient + decomposition (headline numbers)
-    ref = dash.load_reference_gradient(con)
+    ref = dash.load_reference_gradient(con, "gate")
     g = ref[(ref["open_water"]) & (ref["gated"])]
     out["refgrad"] = {
         r: {"median_theilsen": float(g[g["Reach_Name"] == r]["theilsen_cm_km"].abs().median()),
             "n": int((g["Reach_Name"] == r).sum())} for r in REACHES}
-    dec = dash.load_refgrad_decomposition(con)
+    dec = dash.load_refgrad_decomposition(con, "gate")
     out["decomposition"] = {
         row["Reach_Name"]: {"pooled_raw": float(row["pooled_raw"]),
                             "pooled_nodes": float(row["pooled_nodes"])}
         for _, row in dec.iterrows()}
 
     # DEM profile aggregate
-    dem = dash.load_dem_profile(con)
+    dem = dash.load_dem_profile(con, "gate")
     out["dem_profile"] = ({"n": int(len(dem)), "wse_median": sig(dem["wse_median"])}
                           if dem is not None else None)
     return out
