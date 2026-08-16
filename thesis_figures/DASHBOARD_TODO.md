@@ -11,7 +11,9 @@ Each entry: what, why, where.
 1. ~~Recolor the dashboard~~ — RESOLVED. Decided to match the dashboard instead:
    thesis figures now use the dashboard's own `firebrick`/`dodgerblue`. No change needed.
 
-2. **Reconsider the density-biased linear trendline on the Gradient Profile tab.**
+2. ~~Reconsider the density-biased linear trendline on the Gradient Profile tab~~ — RESOLVED
+   (August 2026): the tab now draws binned-median profile lines; the headline gradient is
+   the per-pass Theil–Sen value on the Hydraulic Gradient tab.
    - What: the Gradient Profile tab draws a linear OLS trendline with a cm/km slope in
      the legend. Fig 5 deliberately omits it (the honest gradient is the Theil–Sen
      value in Fig 4 / Hydraulic Gradient tab).
@@ -21,7 +23,8 @@ Each entry: what, why, where.
      binned-median profile line used in Fig 5.
    - Where: `tab1` (~line 861–884).
 
-3. **Fix stale distance convention in README.**
+3. ~~Fix stale distance convention in README~~ — RESOLVED (August 2026): README now says
+   ~36 km = coast.
    - What: README says "~70 km = coast". Actual river extent from the anchor is
      **~35–36 km** (data max ≈ 36.2 km). The `~70 km` figure is wrong.
    - Why: doc accuracy; the thesis uses the correct ~35 km extent.
@@ -31,7 +34,9 @@ Each entry: what, why, where.
 
 ## From Figure 7 (Detrended Relative Elevation Profile)
 
-4. **"Confluence" terminology is wrong throughout the codebase.** The 0 km point is
+4. ~~"Confluence" terminology is wrong throughout the codebase~~ — RESOLVED (August 2026
+   hygiene sweep): code comments, README, and SCIENTIFIC_METHODOLOGY now say "anchor point"
+   (~2.5 km upriver of the bifurcation). Original note kept below. The 0 km point is
    the **anchor point** (~2.5 km UPRIVER of the bifurcation), NOT the confluence.
    README says "0 km = anchor/confluence" and calls it the "confluence anchor point";
    dashboard docs/labels likely echo this. Correct to just "anchor point" so it does
@@ -45,7 +50,10 @@ Each entry: what, why, where.
 
 ## QC exclusion propagation (from Figure 4)
 
-6. **Propagate the 2025-04-17 bad-pass exclusion project-wide.** The thesis figures now
+6. ~~Propagate the 2025-04-17 bad-pass exclusion project-wide~~ — RESOLVED (August 2026):
+   `qc_registry.KNOWN_BAD_PASSES` single-sources the exclusion for SWOT_Pull,
+   thesis_figures, and (via the regenerated data) the dashboard and temporal analysis.
+   Original note kept below. The thesis figures now
    drop pass **2025-04-17** (spring-breakup ice: reach gradient anomalously steep on BOTH
    channels at once — Uyak 236 / Kanektok 224 cm/km) via a documented registry
    `config.EXCLUDED_PASSES` in the figure module. For consistency this same exclusion

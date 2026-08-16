@@ -19,7 +19,6 @@ import pandas as pd
 import duckdb
 from scipy import stats
 from scipy.ndimage import gaussian_filter1d
-from scipy.signal import savgol_filter
 
 from . import config
 
@@ -208,7 +207,9 @@ def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
 # ---------------------------------------------------------------------------
 # FINE-SCALE SLOPE (per-pass then aggregate)
 # ---------------------------------------------------------------------------
-# Ported VERBATIM from dashboard_swot.py's compute_finescale_slope + _fine_slope_*.
+# Ported from dashboard_swot.py's fine-scale pipeline (the dashboard has since
+# dropped its savgol/gaussian estimator variants and hardcodes Theil-Sen, as
+# does this module).
 # Unlike calculate_slope_profile (which POOLS all passes then Gaussian-smooths at
 # ~2 km, mixing stage into the slope), this computes the slope WITHIN each pass
 # (stage constant), then aggregates the median across passes -- resolving the
@@ -217,25 +218,6 @@ def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
 FINE_BASE_BIN_KM = 0.1          # base grid for per-pass profiles
 FINE_MIN_PIX_BIN = 30           # trust a bin's median only with >= this many pixels
 FINE_FILL_GAP_KM = 0.3          # per pass, interpolate internal gaps up to this wide
-
-
-def _fine_slope_savgol(x, y, res_km):
-    """Savitzky-Golay 1st-derivative slope (cm/km); window ~= res_km."""
-    win = max(3, int(round(res_km / FINE_BASE_BIN_KM)))
-    if win % 2 == 0:
-        win += 1
-    if win > len(y):
-        return np.full_like(y, np.nan)
-    dydx = savgol_filter(y, window_length=win, polyorder=2, deriv=1,
-                         delta=FINE_BASE_BIN_KM, mode="interp")
-    return dydx * 100.0
-
-
-def _fine_slope_gaussian(x, y, res_km):
-    """Fig-8 method (Gaussian smooth + np.gradient), matched so FWHM == res_km."""
-    sigma_bins = (res_km / 2.355) / FINE_BASE_BIN_KM
-    ys = gaussian_filter1d(y, sigma=sigma_bins, mode="nearest")
-    return np.gradient(ys, x) * 100.0
 
 
 def _fine_slope_theilsen(x, y, res_km):
@@ -250,13 +232,6 @@ def _fine_slope_theilsen(x, y, res_km):
             if good.sum() >= 3:
                 out[i] = stats.theilslopes(ys[good], xs[good])[0] * 100.0
     return out
-
-
-_FINE_ESTIMATORS = {
-    "theilsen": _fine_slope_theilsen,
-    "savgol": _fine_slope_savgol,
-    "gaussian": _fine_slope_gaussian,
-}
 
 
 def _fine_regular_grid(sub):
@@ -315,7 +290,10 @@ def finescale_slope_profile(con, reaches=("Kanektok_River", "Uyak_Creek"),
         return {}
     df = df[df["npix"] >= FINE_MIN_PIX_BIN].copy()
     df["ibin"] = (df["bin"] / FINE_BASE_BIN_KM).round().astype(int)
-    fn = _FINE_ESTIMATORS[method]
+    if method != "theilsen":
+        raise ValueError(f"unsupported fine-slope method {method!r}; only 'theilsen' "
+                         "remains (savgol/gaussian variants were retired with the dashboard's)")
+    fn = _fine_slope_theilsen
 
     out = {}
     for reach, d in df.groupby("reach"):
@@ -347,7 +325,7 @@ def finescale_slope_profile(con, reaches=("Kanektok_River", "Uyak_Creek"),
         gap = n < min_passes            # honest gaps: don't interpolate sparse bins
         med[gap] = lo[gap] = hi[gap] = np.nan
         out[str(reach)] = dict(grid=grid, med=med, lo=lo, hi=hi,
-                               n=n, n_passes=len(passes))
+                               n=n, n_passes=int(np.isfinite(mat).any(axis=0).sum()))
     return out
 
 
@@ -356,7 +334,8 @@ def elevation_difference(con, reaches=("Kanektok_River", "Uyak_Creek"),
                          band=(25, 75)):
     """Per-pass Kanektok-minus-Uyak WSE difference, aggregated across passes.
 
-    Method (improves on the dashboard's pooled AVG, which is artifact-sensitive):
+    Method (same per-pass paired approach the dashboard now uses; both replaced
+    the old pooled-AVG difference, which was artifact-sensitive):
     each SWOT pass images both adjacent channels near-simultaneously, so we
     difference WITHIN each pass -- removing stage/temporal variability -- then
     aggregate across passes.

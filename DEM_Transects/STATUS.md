@@ -20,7 +20,7 @@ This file tracks build status only. Last updated 2026-08-08 (SWOT validation + �
   - **β = 1 is no longer presented as the avulsion threshold** anywhere (Gearon's criterion is
     βγ ≥ Λ; γ deliberately not evaluated). β is framed as the reproduction of the ArcGIS metric.
   - **Uyak − Kanektok now from pass-paired SWOT: +0.96 m** (100 % of passes). The DEM-only +1.45 m
-    carried a ~0.34 m differential-stage artifact — the mosaic caught the Kanektok at the 29th
+    carried a ~0.27 m differential-stage artifact (per-arc median, recomputed 2026-08) — the mosaic caught the Kanektok at the 29th
     percentile of stages and the Uyak at the 76th. (The old docs compared against "+0.19 m (SWOT)",
     which was actually a DEM corridor-median — corrected.)
   - **Superelevation quoted at the median observed stage with a p10–p90 band**: Kanektok −1.50 m

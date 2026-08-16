@@ -290,7 +290,7 @@ Changes from `DEM_outline.pdf` are marked **[NEW]**, **[CHANGED]**, **[CUT]**.
   - Coverage caveat: the LiDAR strip is ~17 % of the Kanektok and **0 % of the Uyak**.
 - **2.8 Stage, epoch, and migration — three honest caveats [NEW]**
   - The mosaic is a **2010-10-03 → 2021-03-02 blend**, and it caught the Kanektok near the **29th**
-    percentile of observed stages and the Uyak near the **76th** — a ~0.34 m differential bias
+    percentile of observed stages and the Uyak near the **76th** — a ~0.27 m differential bias (per-arc median, recomputed 2026-08)
     pointing exactly the way that inflates "Uyak higher." Hence inter-river difference is taken from
     **pass-paired SWOT**, not from the DEM.
   - A river has no single water surface: p10–p90 spans ~0.7 m at fixed radius. Superelevation is

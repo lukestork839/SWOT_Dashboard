@@ -24,8 +24,7 @@ DEFAULT_CLASSES = [3,4]
 CROSS_TRACK_MIN = 10000   # 10 km from nadir (avoid nadir gap)
 CROSS_TRACK_MAX = 60000   # 60 km from nadir (avoid far-swath noise)
 
-# Crossover calibration quality filter (bit masks for geolocation_qual)
-XOVERCAL_SUSPECT_MASK = 64        # Bit 6: crossover calibration suspect
+# Crossover calibration quality filter (bit mask for geolocation_qual)
 XOVERCAL_MISSING_MASK = 8388608   # Bit 23: crossover calibration missing entirely
 
 # MAD-based outlier filtering configuration
@@ -64,10 +63,10 @@ from qc_registry import ICE_SAFE_MONTHS, KNOWN_BAD_PASSES
 # open-water passes, per river.
 REFGRAD_NODE_KM = 1.0        # node bin size (pixels -> nodes), removes density bias
 REFGRAD_MIN_NODES = 8        # need >= this many nodes to fit a per-pass slope
-# Full-coverage gate: the rivers are concave (steep near the confluence, gentle toward
+# Full-coverage gate: the rivers are concave (steep near the anchor, gentle toward
 # the mouth), so a pass's slope depends on WHICH reach it images. To compare rivers
 # fairly we keep only passes that image the full river: a long span AND a downstream
-# start (so the steep near-confluence reach is always included). A pass that clips the
+# start (so the steep near-anchor reach is always included). A pass that clips the
 # steep end reports an artificially gentle slope. See SCIENTIFIC_METHODOLOGY.md.
 REFGRAD_MIN_SPAN_KM = 30.0   # coverage gate: pass must span >= this (near the full ~35-36 km)
 REFGRAD_MAX_START_KM = 3.0   # coverage gate: pass must start <= this (includes steep downstream reach)
@@ -76,8 +75,9 @@ REFGRAD_HIGH_FLOW_MONTHS = {5}     # May freshet
 REFGRAD_LOW_FLOW_MONTHS = {7, 8}   # Jul-Aug baseflow
 REFGRAD_OUTPUT = os.path.join(OUTPUT_BASE, "reference_gradient_per_pass.parquet")
 
-# --- 📍 THE CONFLUENCE ANCHOR ---
-# 59.82463509° N, 161.33397834° W
+# --- 📍 THE ANCHOR POINT ---
+# 59.82463509° N, 161.33397834° W (~2.5 km upriver of the bifurcation —
+# NOT a confluence; the rivers split apart here, they don't meet).
 # All distances will be measured as a straight line from this point.
 ANCHOR_LAT = 59.82463509
 ANCHOR_LON = -161.33397834
@@ -88,8 +88,10 @@ NAME_MAPPING = {
     2: "Kanektok_River"
 }
 
-# Suppress warnings
-warnings.filterwarnings("ignore")
+# Silence library deprecation chatter only — runtime and user warnings stay
+# visible (a blanket ignore hid genuine numeric/CRS warnings during long runs).
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 def setup_dirs():
     subdirs = ["graphs", "data", "geopackages"]
@@ -185,7 +187,11 @@ def load_polygons():
     if os.path.exists(POLYGON_PATH):
         try:
             gdf = gpd.read_file(POLYGON_PATH)
-            if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
+            if gdf.crs is None:
+                print("   ❌ Polygon file has no CRS defined — refusing to assume EPSG:4326.")
+                print("      Add a CRS to the file (e.g. a .prj sidecar) and rerun.")
+                sys.exit(1)
+            if gdf.crs.to_string() != "EPSG:4326":
                 print("   ⚠️ Re-projecting to EPSG:4326...")
                 gdf = gdf.to_crs("EPSG:4326")
             print(f"   ✅ Loaded {len(gdf)} polygons.")
@@ -235,10 +241,20 @@ def granule_csv_stem(formatted_date, cycle, pass_num, tile):
         return formatted_date
     return f"{formatted_date}_g{cycle}_{pass_num}_{tile}"
 
+def empty_marker_path(stem):
+    """Sentinel recording that a granule downloaded fine but yielded zero
+    in-polygon data, so future runs skip re-downloading it. Distinct suffix
+    from *_data.csv so the master rebuild never globs it.
+
+    NOTE: if the river polygons ever change, delete these markers
+    (batch_outputs/data/*_data.empty) so the granules get re-evaluated.
+    """
+    return os.path.join(OUTPUT_BASE, "data", f"{stem}_data.empty")
+
 def is_granule_already_processed(stem):
-    """Check if a checkpoint CSV already exists for this granule."""
+    """Check if a checkpoint CSV (or known-empty sentinel) exists for this granule."""
     csv_path = os.path.join(OUTPUT_BASE, "data", f"{stem}_data.csv")
-    return os.path.exists(csv_path)
+    return os.path.exists(csv_path) or os.path.exists(empty_marker_path(stem))
 
 def resolve_poly_name(row, idx):
     if 'name' in row: raw_id = row['name']
@@ -252,22 +268,38 @@ def resolve_poly_name(row, idx):
     return str(raw_id)
 
 def process_granule(granule_result, gdf_polygons):
+    """Download and process one granule.
+
+    Returns a DataFrame on success, "EMPTY" if the granule processed cleanly
+    but held no in-polygon data (a sentinel is written so it is never
+    re-downloaded), or None on download/processing failure (retried next run).
+    """
     formatted_date, cycle, pass_num, tile = extract_granule_ids(granule_result)
     if formatted_date is None:
-        formatted_date = "Unknown_Date"
+        # Unparseable names used to collide on a shared Unknown_Date checkpoint
+        # and later abort the master rebuild with a DateParseError.
+        tqdm.write(f"   ⚠️ Skipping granule with unparseable name: {get_granule_name(granule_result)}")
+        return None
     csv_stem = granule_csv_stem(formatted_date, cycle, pass_num, tile)
 
     try:
         files = earthaccess.download(granule_result, TEMP_DIR)
-        if not files: return None
+        if not files:
+            tqdm.write(f"   ❌ {csv_stem}: download returned no files")
+            return None
         local_path = files[0]
-        
-        all_data = [] 
-        
+
+        all_data = []
+
         with xr.open_dataset(local_path, group='pixel_cloud', engine='netcdf4') as ds:
             lat = ds['latitude'].values
             lon = normalize_longitude(ds['longitude'].values)
-            
+
+            load_tide_missing = 'load_tide_fes' not in ds and 'load_tide_height' not in ds
+            if load_tide_missing:
+                tqdm.write(f"   ⚠️ {csv_stem}: load_tide variable absent — substituting 0 "
+                           f"(rows flagged via load_tide_missing column)")
+
             for idx, row in gdf_polygons.iterrows():
                 poly_name = resolve_poly_name(row, idx)
                 bounds = row.geometry.bounds
@@ -287,12 +319,12 @@ def process_granule(granule_result, gdf_polygons):
                     'pole_tide': ds['pole_tide'].values[mask_rough],
                     'load_tide': ds['load_tide_fes'].values[mask_rough] if 'load_tide_fes' in ds else
                                  (ds['load_tide_height'].values[mask_rough] if 'load_tide_height' in ds else 0),
+                    'load_tide_missing': load_tide_missing,
                     'height_uncertainty': ds['height_uncert'].values[mask_rough] if 'height_uncert' in ds else np.nan,
                     # PIXC quality flags (for filtering, not exported)
                     'geolocation_qual': ds['geolocation_qual'].values[mask_rough] if 'geolocation_qual' in ds else np.nan,
                     'classification_qual': ds['classification_qual'].values[mask_rough] if 'classification_qual' in ds else np.nan,
                     'cross_track': ds['cross_track'].values[mask_rough] if 'cross_track' in ds else np.nan,
-                    'height_cor_xover_qual': ds['height_cor_xover_qual'].values[mask_rough] if 'height_cor_xover_qual' in ds else np.nan,
                 })
 
                 gdf_temp = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
@@ -331,6 +363,8 @@ def process_granule(granule_result, gdf_polygons):
                     n_pass = ct_mask.sum()
                     tqdm.write(f"   Quality Filter: {n_pass:,}/{len(df_exact):,} points passed cross_track ({CROSS_TRACK_MIN/1000:.0f}-{CROSS_TRACK_MAX/1000:.0f}km)")
                     df_exact = df_exact[ct_mask]
+                else:
+                    tqdm.write(f"   ⚠️ Quality Filter: cross_track absent/all-NaN — filter SKIPPED for {poly_name}")
 
                 # Crossover calibration quality filter
                 # Exclude pixels where crossover calibration is MISSING (bit 23 of geolocation_qual)
@@ -394,7 +428,7 @@ def process_granule(granule_result, gdf_polygons):
                             else:
                                 tqdm.write(f"   MAD Filter ({reach_name}): Skipped (would remove too many points)")
 
-                if len(df_final) > 5:
+                if len(df_final) >= MIN_POINTS_AFTER_FILTER:
                     all_data.append(df_final)
 
         if all_data:
@@ -408,17 +442,22 @@ def process_granule(granule_result, gdf_polygons):
 
             # Save per-granule checkpoint CSV (granule-keyed: sibling tiles of
             # the same pass must not overwrite each other)
-            cols_export = ['Reach_Name', 'Pass_Date', 'cycle', 'pass_num', 'tile', 'latitude', 'longitude', 'wse', 'dist_km', 'height_uncertainty', 'classification', 'height_raw', 'geoid', 'solid_tide', 'pole_tide', 'load_tide']
+            cols_export = ['Reach_Name', 'Pass_Date', 'cycle', 'pass_num', 'tile', 'latitude', 'longitude', 'wse', 'dist_km', 'height_uncertainty', 'classification', 'height_raw', 'geoid', 'solid_tide', 'pole_tide', 'load_tide', 'load_tide_missing']
             final_cols = [c for c in cols_export if c in full_df.columns]
             full_df[final_cols].to_csv(os.path.join(OUTPUT_BASE, "data", f"{csv_stem}_data.csv"), index=False)
 
             tqdm.write(f"   ✅ {csv_stem}: Saved {len(full_df):,} points")
             return full_df
         else:
-            return None
+            # Clean download, zero in-polygon data: record it so the granule
+            # is never re-downloaded (delete the marker if polygons change).
+            with open(empty_marker_path(csv_stem), "w") as fh:
+                fh.write("no in-polygon data for this granule under the current river polygons\n")
+            tqdm.write(f"   ⬜ {csv_stem}: no in-polygon data (sentinel written)")
+            return "EMPTY"
 
     except Exception as e:
-        tqdm.write(f"   ❌ {formatted_date}: Failed - {e}")
+        tqdm.write(f"   ❌ {csv_stem}: Failed - {e}")
         return None
     finally:
         if 'local_path' in locals() and os.path.exists(local_path):
@@ -655,7 +694,7 @@ def rebuild_master_from_daily_csvs():
     compute_reference_gradient(final_df)
 
 def main():
-    print("\n🌊 --- SWOT BATCH: CONFLUENCE ANCHOR (RESUMABLE) --- 🌊")
+    print("\n🌊 --- SWOT BATCH: ANCHOR POINT (RESUMABLE) --- 🌊")
     setup_dirs()
     gdf_poly = load_polygons()
 
@@ -676,6 +715,9 @@ def main():
     skipped_count = 0
     ice_skipped_count = 0
     processed_count = 0
+    empty_count = 0
+    failed_count = 0
+    unparseable_count = 0
 
     # Use tqdm progress bar for granule processing
     for granule in tqdm(all_results, desc="Processing granules", unit="granule"):
@@ -684,6 +726,11 @@ def main():
         # multiple sibling tiles on the same date, and a date-keyed skip would
         # silently drop every tile after the first.
         formatted_date, cycle, pass_num, tile = extract_granule_ids(granule)
+
+        if formatted_date is None:
+            tqdm.write(f"   ⚠️ Skipping granule with unparseable name: {get_granule_name(granule)}")
+            unparseable_count += 1
+            continue
 
         if formatted_date:
             # Download scope = ICE_SAFE_MONTHS (decision 2026-08-14): only
@@ -704,12 +751,18 @@ def main():
 
         # Process granule (download + process)
         df_result = process_granule(granule, gdf_poly)
-        if df_result is not None:
+        if isinstance(df_result, pd.DataFrame):
             processed_count += 1
+        elif df_result == "EMPTY":
+            empty_count += 1
+        else:
+            failed_count += 1
 
     # Always rebuild master file from ALL daily CSVs (both old and new)
     print(f"\n📊 Summary: {processed_count} new, {skipped_count} already processed, "
-          f"{ice_skipped_count} outside May-Oct (not downloaded)")
+          f"{ice_skipped_count} outside May-Oct (not downloaded), "
+          f"{empty_count} empty (sentinel written), {failed_count} FAILED (will retry next run), "
+          f"{unparseable_count} unparseable names skipped")
     rebuild_master_from_daily_csvs()
 
     print(f"\n✨ Batch Complete!")
