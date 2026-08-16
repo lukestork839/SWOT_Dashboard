@@ -13,7 +13,7 @@ def render(ctx):
     selected_reaches = ctx.selected_reaches
 
     st.subheader("Reference Hydraulic Gradient")
-    ref_df = load_reference_gradient(con)
+    ref_df = load_reference_gradient(con, ctx.data_version)
 
     if ref_df is None or len(ref_df) == 0:
         st.info(
@@ -111,7 +111,7 @@ def render(ctx):
 
         # --- Optional decomposition: why this differs from the visual trendline ---
         with st.expander("Why this differs from the Gradient Profile trendline"):
-            decomp = load_refgrad_decomposition(con)
+            decomp = load_refgrad_decomposition(con, ctx.data_version)
             if decomp is None:
                 st.caption("Decomposition unavailable for the current data source.")
             else:

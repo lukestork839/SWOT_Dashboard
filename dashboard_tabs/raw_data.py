@@ -17,5 +17,3 @@ def render(ctx):
         "text/csv",
         key='download-csv'
     )
-
-# === TEMPORAL RESULTS TAB (static, one-time analysis; local + Streamlit Cloud) ===

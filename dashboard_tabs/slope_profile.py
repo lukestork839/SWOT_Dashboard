@@ -32,7 +32,10 @@ def render(ctx):
             fig_slopes = go.Figure()
             slope_stats = []
 
-            for reach in selected_reaches:
+            # Kanektok first, like every other tab — selected_reaches comes from
+            # an unordered DISTINCT, so bare iteration flips legend/table order
+            # between sessions.
+            for reach in sorted(selected_reaches, key=lambda r: r == "Uyak_Creek"):
                 reach_data = slope_raw_df[slope_raw_df['Reach_Name'] == reach]
                 if len(reach_data) < 10:
                     st.warning(f"Insufficient data for {reach} ({len(reach_data)} points). Need at least 10.")

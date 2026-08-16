@@ -52,9 +52,13 @@ class TabContext:
     `con` is the shared DuckDB connection; `viz_df` is the (possibly sampled)
     visualization frame with derived metric columns; `where_clause` is the
     selection's SQL filter and doubles as a cache key, so it must be passed
-    through unmodified.
+    through unmodified. `data_version` is the deployed-data fingerprint from
+    get_data_version() — every cached loader takes it as `url_version` so a
+    data-asset swap busts ALL caches together (not the previous mix of fresh
+    uncached queries and day-stale cached frames).
     """
     con: Any
+    data_version: str
     viz_df: Any
     selected_reaches: Any
     detrend_method: str
@@ -167,7 +171,7 @@ def calculate_detrending(dist_km, wse, method):
 
 
 @st.cache_data(ttl=86400)
-def load_detrend_frame(_con, where_clause, detrend_method):
+def load_detrend_frame(_con, url_version, where_clause, detrend_method):
     """Fetch + detrend the profile data ONCE per (passes, method) and cache it.
 
     Caching is essential for the profile→map selection: st.cache_data returns identical
@@ -449,9 +453,12 @@ def get_database_connection(url_version=REMOTE_PARQUET_URL):
         return None
 
 @st.cache_data(ttl=86400)
-def load_dem_profile(_con):
+def load_dem_profile(_con, url_version):
     """Compute exact DEM bin profile from full dataset via DuckDB.
     Returns DataFrame with columns: Reach_Name, dist_bin, wse_median, wse_p10, wse_p25, wse_p75, wse_p90
+    `url_version` keys the cache to the deployed data fingerprint (underscore
+    excludes `_con`, so without it the key is CONSTANT and a data swap serves
+    day-stale frames).
     """
     try:
         return _con.execute("""
@@ -470,8 +477,9 @@ def load_dem_profile(_con):
         return None
 
 @st.cache_data(ttl=86400)
-def load_dem_points(_con):
-    """Load sampled DEM points for map visualization via DuckDB."""
+def load_dem_points(_con, url_version):
+    """Load sampled DEM points for map visualization via DuckDB.
+    `url_version` keys the cache to the deployed data fingerprint."""
     try:
         return _con.execute("""
             SELECT Reach_Name, dist_km, wse, latitude, longitude
@@ -598,8 +606,9 @@ def add_transect_overlay(m, overlay):
 
 
 @st.cache_data(ttl=86400)
-def load_reference_gradient(_con):
+def load_reference_gradient(_con, url_version):
     """Load the per-pass reference-gradient artifact (one row per reach x pass).
+    `url_version` keys the cache to the deployed data fingerprint.
 
     Columns: Reach_Name, Pass_Date, month, season, open_water, n_nodes, n_pix,
     lo_km, hi_km, span_km, theilsen_cm_km, ols_cm_km, ols_r2, gated.
@@ -612,8 +621,9 @@ def load_reference_gradient(_con):
 
 
 @st.cache_data(ttl=86400)
-def load_refgrad_decomposition(_con):
+def load_refgrad_decomposition(_con, url_version):
     """Pooled-OLS gradient (open-water) on raw pixels [A] vs on 1km nodes [B].
+    `url_version` keys the cache to the deployed data fingerprint.
 
     Computed server-side via DuckDB regr_slope (no data pulled to python). Used by
     the decomposition expander to show that removing point-density bias is the
@@ -642,8 +652,9 @@ def load_refgrad_decomposition(_con):
 
 
 @st.cache_data(ttl=86400)
-def load_metadata(_con):
-    """Return (all_pass_dates, available_reaches) from the database."""
+def load_metadata(_con, url_version):
+    """Return (all_pass_dates, available_reaches) from the database.
+    `url_version` keys the cache to the deployed data fingerprint."""
     date_range = _con.execute("SELECT MIN(Pass_Date), MAX(Pass_Date) FROM river_data").fetchone()
     if date_range is None or date_range[0] is None:
         return None, None
@@ -654,7 +665,12 @@ def load_metadata(_con):
         ORDER BY pass_date DESC
     """).fetchdf()
     all_pass_dates = pass_dates_df['pass_date'].tolist()
-    available_reaches = _con.execute("SELECT DISTINCT Reach_Name FROM river_data").fetchdf()['Reach_Name'].tolist()
+    # ORDER BY: DuckDB's DISTINCT has no deterministic order (observed flipping
+    # between runs), and this list feeds where_clause construction — an unstable
+    # order silently splits selection-keyed caches across sessions.
+    available_reaches = _con.execute(
+        "SELECT DISTINCT Reach_Name FROM river_data ORDER BY Reach_Name"
+    ).fetchdf()['Reach_Name'].tolist()
     return all_pass_dates, available_reaches
 
 
