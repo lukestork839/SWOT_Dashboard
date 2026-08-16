@@ -25,18 +25,21 @@ import os
 import matplotlib as mpl
 
 # --- PATHS -----------------------------------------------------------------
-# Repo root = parent of this file's directory (thesis_figures/).
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Shared locations come from swot_core.config (single source of truth for every
+# consumer). The thesis default data source = the FULL local archive, NOT the
+# deployment subset — figures must match the thesis text.
+# Bootstrap: make the repo root importable FIRST (swot_core lives there), so this
+# module also works when imported from outside the repo root.
+import sys as _sys
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in _sys.path:
+    _sys.path.insert(0, _repo_root)
 
-# Default data source = the FULL local archive (2023-2026), NOT the deployment
-# subset. The thesis uses 123 open-water passes (155 gated for the reference gradient)
-# from the full archive; dashboard_data.parquet holds only ~60. Figures must match the text.
-FULL_DATA_PATH = os.path.join(REPO_ROOT, "batch_outputs", "master_all_data.parquet")
-DEPLOY_DATA_PATH = os.path.join(REPO_ROOT, "dashboard_data.parquet")  # deployment subset
+from swot_core.config import (  # noqa: E402
+    REPO_ROOT, FULL_DATA_PATH, DEPLOY_DATA_PATH,
+    REF_GRADIENT_PATH, DEM_PATH, TEMPORAL_DIR,
+)
 DATA_PATH = FULL_DATA_PATH
-REF_GRADIENT_PATH = os.path.join(REPO_ROOT, "batch_outputs", "reference_gradient_per_pass.parquet")
-DEM_PATH = os.path.join(REPO_ROOT, "batch_outputs", "dem_river_elevations.parquet")
-TEMPORAL_DIR = os.path.join(REPO_ROOT, "temporal_results")
 
 # Where rendered figures are written.
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
@@ -47,38 +50,18 @@ ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 # already includes the "N" + arrowhead. White variant reads over dark imagery.
 NORTH_ICON_PATH = os.path.join(ASSETS_DIR, "nalaquq_north_white.png")
 
-# --- STUDY-AREA CONSTANTS (kept in sync with dashboard_swot.py) ------------
-ANCHOR_LAT = 59.82463509
-ANCHOR_LON = -161.33397834
-BIFURCATION_LAT = 59.828886
-BIFURCATION_LON = -161.377778
-BIFURCATION_DIST_KM = 2.493
-
-# Residual-domain outlier flag for the Detrended Profile (matches dashboard).
-RESIDUAL_MAD_THRESHOLD = 3.5  # Modified Z-score (Iglewicz & Hoaglin 1993)
-
-# --- QC: FLAGGED / EXCLUDED PASSES -----------------------------------------
-# Single source of truth: qc_registry.py at the repo root, shared with the
-# ingestion pipeline (which applies the same registry, plus the May-Oct
-# ice-season hard line, when building the master products). This consumer-side
-# application is defense-in-depth so figures stay clean even against a stale
-# master parquet. QC flag list, NOT a raw-data edit -- the parquet is left
-# intact and inspectable; passes are only filtered at load/analysis time.
-import sys as _sys
-if REPO_ROOT not in _sys.path:
-    _sys.path.insert(0, REPO_ROOT)
-from qc_registry import KNOWN_BAD_PASSES as EXCLUDED_PASSES
-
-# --- COLOURS ---------------------------------------------------------------
-# Match the live dashboard EXACTLY: the dashboard's COLOR_MAP uses the CSS named
-# colours "firebrick" / "dodgerblue", so we reuse the same names (pixel-identical,
-# no hex drift) => Fig 1's dashboard screenshot agrees with Figs 5-8. Red/blue is
-# colourblind-safe enough (blue is unaffected by red-green deficiency).
-#   Kanektok = firebrick (#B22222), Uyak = dodgerblue (#1E90FF)
-COLOR_MAP = {
-    "Kanektok_River": "firebrick",
-    "Uyak_Creek": "dodgerblue",
-}
+# --- STUDY-AREA CONSTANTS, QC LIST, COLOURS (shared via swot_core.config) ---
+# Study geometry, the residual-MAD threshold, the QC exclusion registry
+# (defense-in-depth re-application of qc_registry at load time), and the series
+# colours are all single-sourced from swot_core.config so the figures, both
+# dashboards, and (for QC) the ingestion pipeline can never disagree. The
+# colours are CSS named colours, which matplotlib also resolves —
+# pixel-identical to the live dashboard, no hex drift.
+from swot_core.config import (  # noqa: E402
+    ANCHOR_LAT, ANCHOR_LON,
+    BIFURCATION_LAT, BIFURCATION_LON, BIFURCATION_DIST_KM,
+    RESIDUAL_MAD_THRESHOLD, EXCLUDED_PASSES, COLOR_MAP,
+)
 DIFF_COLOR = "darkgreen"    # Kanektok-minus-Uyak difference series (matches dashboard)
 BASELINE_COLOR = "#333333"  # trend / zero / baseline reference lines (near-black)
 OUTLIER_COLOR = "#999999"   # flagged residual-domain outliers

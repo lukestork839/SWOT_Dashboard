@@ -16,15 +16,32 @@ import matplotlib.cm as cm
 from branca.element import MacroElement
 from jinja2 import Template as JinjaTemplate
 
-# --- CONFIGURATION ---
+# All SCIENCE (constants + computations) comes from the shared swot_core package —
+# one implementation for this app, the village app, and the thesis figures. This
+# module only adds Streamlit concerns: caching wrappers, widgets, presentation.
+from swot_core import stats as core_stats
+from swot_core.config import (
+    REMOTE_PARQUET_URL, REMOTE_DEM_URL, REMOTE_REFGRAD_URL,
+    BIFURCATION_LAT, BIFURCATION_LON, BIFURCATION_DIST_KM,
+    COLOR_MAP, RESIDUAL_MAD_THRESHOLD,
+)
+from swot_core.stats import (
+    flag_residual_outliers,
+    fine_slope_theilsen as _fine_slope_theilsen,
+    fine_regular_grid as _fine_regular_grid,
+    fine_aggregate as _fine_aggregate,
+    fine_window_mask as _fine_window_mask,
+    fine_window_coverage as _fine_window_coverage,
+    fine_window_slope as _fine_window_slope,
+    FINE_BASE_BIN_KM, FINE_MIN_PIX_BIN, FINE_FILL_GAP_KM,
+)
+
+# --- CONFIGURATION (presentation layer only) ---
 PAGE_TITLE = "SWOT River Dynamics: Kanektok & Uyak"
 DATA_DIR = "batch_outputs"
 # Pre-computed one-time temporal-analysis results (git-tracked, tiny). Written by
 # temporal_analysis.py; the Temporal Results tab renders these directly (no on-the-fly calc).
 TEMPORAL_DIR = "temporal_results"
-REMOTE_PARQUET_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/dashboard_data.parquet"
-REMOTE_DEM_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/dem_river_elevations.parquet"
-REMOTE_REFGRAD_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/reference_gradient_per_pass.parquet"
 MAX_PLOT_POINTS = 15000  # Reduced for large datasets (was 25000)
 MAX_BASELINE_POINTS = 30000  # Reduced for Streamlit Cloud (was 50000)
 MAX_MAP_POINTS = 5000  # Strict limit for map rendering
@@ -35,25 +52,8 @@ MAX_MAP_POINTS = 5000  # Strict limit for map rendering
 PROFILE_NODE_KM = 0.5       # distance-bin width for the binned-median profile line
 PROFILE_BAND = (5, 95)      # percentile band shown around the median profile
 
-# Residual-domain outlier flag for the Detrended Profile.
-# The ingestion MAD filter (SWOT_Pull.py) runs per-granule on 1 km node-median
-# residuals; this flag re-applies the SAME Modified Z-Score method (Iglewicz &
-# Hoaglin 1993) but on residuals from the DASHBOARD's cross-pass polynomial
-# baseline, so it can also isolate whole-pass contamination (e.g. spring-ice
-# blobs) that looks internally consistent within its own granule.
-RESIDUAL_MAD_THRESHOLD = 3.5  # Modified Z-score, matches ingestion MAD_THRESHOLD
-
-# --- BIFURCATION POINT ---
-# Where Kanektok River and Uyak Creek diverge (59°49'43.99"N, 161°22'40.00"W)
-BIFURCATION_LAT = 59.828886
-BIFURCATION_LON = -161.377778
-BIFURCATION_DIST_KM = 2.493  # Haversine distance from anchor point
-
-# FIXED COLORS
-COLOR_MAP = {
-    "Kanektok_River": "firebrick",
-    "Uyak_Creek": "dodgerblue"
-}
+# RESIDUAL_MAD_THRESHOLD, the bifurcation coordinates, and COLOR_MAP are imported
+# from swot_core.config above — shared with the village app and thesis figures.
 
 # Note: the seasonal/typhoon period definitions and ice-season constants that the
 # retired live temporal tabs used now live in temporal_analysis.py, which owns the
@@ -126,75 +126,17 @@ st.set_page_config(page_title=PAGE_TITLE, layout="wide", page_icon="🌊")
 
 @st.cache_data(ttl=86400)  # Cache for 24h (data is release-static; redeploys clear caches)
 def calculate_detrending(dist_km, wse, method):
+    """Cached wrapper around swot_core.stats.calculate_detrending.
+
+    Returns (baseline_pred, coeffs, method_name); see the core docstring. The
+    UI exposes only the 2nd-order polynomial; unknown methods raise in the core
+    (the old silent LOESS fallthrough was retired).
     """
-    Calculate baseline and residuals for detrended profile.
-    Cached to avoid recomputing on every interaction.
-
-    Args:
-        dist_km: Distance values (list/array)
-        wse: Water surface elevation values (list/array)
-        method: Detrending method name
-
-    Returns:
-        tuple: (baseline_pred, coeffs/None, method_name)
-    """
-    x_all = np.array(dist_km)
-    y_all = np.array(wse)
-
-    if method == "Linear":
-        slope_manual, intercept_manual, r_value, p_value, std_err = stats.linregress(x_all, y_all)
-        baseline_pred = slope_manual * x_all + intercept_manual
-        coeffs = [slope_manual, intercept_manual]
-        method_name = "Linear Fit"
-    elif method == "Polynomial (2nd order)":
-        poly = np.polynomial.Polynomial.fit(x_all, y_all, 2)
-        baseline_pred = poly(x_all)
-        # convert() maps the coefficients back from numpy's internal scaled
-        # domain to the actual dist_km domain — poly.coef alone is a trap.
-        coeffs = poly.convert().coef
-        method_name = "2nd Order Polynomial"
-    elif method == "Polynomial (3rd order)":
-        poly = np.polynomial.Polynomial.fit(x_all, y_all, 3)
-        baseline_pred = poly(x_all)
-        # convert() maps the coefficients back from numpy's internal scaled
-        # domain to the actual dist_km domain — poly.coef alone is a trap.
-        coeffs = poly.convert().coef
-        method_name = "3rd Order Polynomial"
-    else:  # LOESS
-        sorted_idx = np.argsort(x_all)
-        x_sorted = x_all[sorted_idx]
-        y_sorted = y_all[sorted_idx]
-        sigma = len(x_all) * 0.15 / 3
-        y_smooth = gaussian_filter1d(y_sorted, sigma=sigma, mode='nearest')
-        baseline_pred = np.zeros_like(y_all)
-        baseline_pred[sorted_idx] = y_smooth
-        coeffs = None
-        method_name = "LOESS (Local Regression)"
-
-    return baseline_pred, coeffs, method_name
+    return core_stats.calculate_detrending(dist_km, wse, method)
 
 
-def flag_residual_outliers(residuals, threshold=RESIDUAL_MAD_THRESHOLD):
-    """Flag detrended residuals as outliers via the Modified Z-Score (MAD-based).
-
-    Same estimator as the ingestion filter (calculate_mad_outliers in SWOT_Pull.py):
-    Modified Z = 0.6745 * (x - median) / MAD, flagged when |Z| > threshold. The
-    difference is the DOMAIN: applied here to residuals (data minus baseline), not
-    raw WSE, so the trend no longer inflates the spread and the flag isolates the
-    genuinely anomalous points instead of being masked by the downstream gradient.
-
-    Returns a boolean array (True = outlier) aligned to `residuals`. Nothing is
-    deleted -- callers decide how to present flagged points.
-    """
-    r = np.asarray(residuals, dtype=float)
-    if len(r) == 0:
-        return np.zeros(0, dtype=bool)
-    median = np.median(r)
-    mad = np.median(np.abs(r - median))
-    if mad == 0:  # degenerate spread -> flag nothing
-        return np.zeros(len(r), dtype=bool)
-    modified_z = 0.6745 * (r - median) / mad
-    return np.abs(modified_z) > threshold
+# flag_residual_outliers is imported from swot_core.stats (uncached — it's a
+# cheap numpy pass; the expensive fetch above it is what gets cached).
 
 
 @st.cache_data(ttl=86400)
@@ -235,68 +177,13 @@ def load_detrend_frame(_con, where_clause, detrend_method):
 
 @st.cache_data(ttl=86400)
 def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
+    """Cached wrapper around swot_core.stats.calculate_slope_profile.
+
+    Pooled-pass slope profile: 100 m binned medians, NaN-aware Gaussian
+    smoothing (honest gaps), numerical derivative. Returns
+    (x_eval, slope_cm_km, y_fitted); see the core docstring for the method.
     """
-    Compute a smooth slope profile for a single river by:
-    1. Binning raw data into regular 100m intervals (median WSE per bin)
-    2. Smoothing the binned WSE with a Gaussian filter (window ~ smooth_km)
-    3. Computing numerical derivative of the smoothed curve
-
-    Args:
-        dist_km: distance values for one river
-        wse: WSE values for one river
-        smooth_km: smoothing window in km (controls noise vs detail)
-        n_eval: number of evenly-spaced output points
-
-    Returns:
-        tuple: (x_eval, slope_cm_km, y_fitted)
-    """
-    import pandas as pd
-    x = np.array(dist_km)
-    y = np.array(wse)
-
-    # Bin into 100m intervals and take median (robust to outliers)
-    bin_size = 0.1  # km
-    bins = np.round(x / bin_size) * bin_size
-    df = pd.DataFrame({'bin': bins, 'wse': y})
-    bin_medians = df.groupby('bin')['wse'].median().sort_index()
-
-    # Place the bins on an EXPLICIT regular grid with NaN holes. The raw bin
-    # list skips empty bins, and both the Gaussian filter (which smooths over
-    # array positions, not distance) and np.interp would otherwise treat bins
-    # on opposite sides of a coverage hole as adjacent — measured up to
-    # ~280 cm/km of spurious slope on sparse selections.
-    ibin = np.round(bin_medians.index.values / bin_size).astype(int)
-    grid_i = np.arange(ibin.min(), ibin.max() + 1)
-    x_grid = grid_i * bin_size
-    y_grid = np.full(grid_i.shape, np.nan)
-    y_grid[ibin - ibin[0]] = bin_medians.values
-
-    # NaN-aware Gaussian smoothing (normalized convolution): smooth the data
-    # with missing bins as zero, smooth the coverage mask the same way, and
-    # divide — each output is a weighted mean of the data the kernel actually
-    # saw. Where real data carries <25% of the kernel weight (deep inside a
-    # hole or far past the data ends) the estimate is untrustworthy: leave NaN
-    # so the profile shows a gap instead of an invented curve.
-    sigma_bins = smooth_km / bin_size
-    have = ~np.isnan(y_grid)
-    num = gaussian_filter1d(np.where(have, y_grid, 0.0), sigma=sigma_bins, mode='constant')
-    den = gaussian_filter1d(have.astype(float), sigma=sigma_bins, mode='constant')
-    with np.errstate(invalid='ignore', divide='ignore'):
-        y_smooth = num / den
-    y_smooth[den < 0.25] = np.nan
-
-    # Interpolate onto regular eval grid, keeping gaps as gaps
-    x_eval = np.linspace(x_grid.min(), x_grid.max(), n_eval)
-    valid = ~np.isnan(y_smooth)
-    y_fitted = np.interp(x_eval, x_grid[valid], y_smooth[valid])
-    coverage = np.interp(x_eval, x_grid, valid.astype(float))
-    y_fitted[coverage < 0.5] = np.nan
-
-    # Numerical derivative: slope in m/km -> * 100 for cm/km
-    # (NaN gaps propagate to the slope at and beside gap bins — honest gaps.)
-    slope_cm_km = np.gradient(y_fitted, x_eval) * 100
-
-    return x_eval, slope_cm_km, y_fitted
+    return core_stats.calculate_slope_profile(dist_km, wse, smooth_km, n_eval)
 
 
 # ---------------------------------------------------------------------------
@@ -307,10 +194,10 @@ def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
 # 2 km Gaussian (sigma -> ~4.7 km FWHM). The fine-scale method computes the slope
 # WITHIN each pass (stage is constant within a pass), then aggregates the median
 # across passes with a robust band -- so we can resolve backwater-scale (~0.5 km)
-# structure near the bifurcation. Ported from slope_finescale_prototype.py.
-FINE_BASE_BIN_KM = 0.1          # base grid for per-pass profiles
-FINE_MIN_PIX_BIN = 30           # trust a bin's median only with >= this many pixels
-FINE_FILL_GAP_KM = 0.3          # per pass, interpolate internal gaps up to this wide
+# structure near the bifurcation. The math (FINE_* base constants, the sliding
+# Theil-Sen sweep, per-pass gridding, aggregation, window stats) lives in
+# swot_core.stats, imported at the top of this file. Below are the UI-facing
+# control constants: fixed tab settings and temporal grouping definitions.
 
 # Resolution and reach extent are FIXED rather than exposed as sliders -- both have a
 # single defensible value, and leaving them adjustable invited readings that disagree
@@ -340,47 +227,8 @@ FINE_WINDOW_KM = (1.0, 5.0)
 FINE_MIN_COVERAGE = 0.80
 
 
-def _fine_slope_theilsen(x, y, res_km):
-    """Robust sliding Theil-Sen slope (cm/km); window width = res_km.
-
-    At each grid point xc, take every pair of binned elevations within +/- res_km/2
-    of xc, compute each pair's slope, and use the MEDIAN of those pairwise slopes
-    (Theil-Sen). Median-of-pairs is robust: a contaminated bin only taints the pairs
-    that include it, so it is outvoted. This is the same estimator as the reference
-    gradient, applied at fine resolution. It is the sole fine-scale estimator (the
-    Gaussian/Sav-Gol alternatives were dropped -- they agree at 0.5 km and Theil-Sen
-    is the defensible choice).
-    """
-    half = res_km / 2.0
-    out = np.full_like(y, np.nan)
-    for i, xc in enumerate(x):
-        m = np.abs(x - xc) <= half
-        if m.sum() >= 3:
-            xs, ys = x[m], y[m]
-            good = np.isfinite(ys)
-            if good.sum() >= 3:
-                out[i] = stats.theilslopes(ys[good], xs[good])[0] * 100.0
-    return out
-
-
-def _fine_regular_grid(sub):
-    """One pass -> (integer 0.1 km index, wse) on a regular grid, short gaps filled.
-
-    Gaps STRICTLY WIDER than FINE_FILL_GAP_KM are left as NaN. (pandas
-    `interpolate(limit=N)` alone would fabricate WSE in the first N cells of
-    EVERY gap, however wide — so long gaps are re-masked after interpolating.)
-    """
-    sub = sub.sort_values("ibin")
-    i0, i1 = int(sub["ibin"].min()), int(sub["ibin"].max())
-    idx = np.arange(i0, i1 + 1)
-    s = pd.Series(np.nan, index=idx, dtype=float)
-    s.loc[sub["ibin"].values] = sub["wse"].values
-    max_gap = int(round(FINE_FILL_GAP_KM / FINE_BASE_BIN_KM))
-    filled = s.interpolate(limit_area="inside")
-    isna = s.isna()
-    run_len = isna.groupby((~isna).cumsum()).transform("sum")
-    filled[isna & (run_len > max_gap)] = np.nan
-    return idx.astype(int), filled.to_numpy(dtype=float)
+# _fine_slope_theilsen and _fine_regular_grid are imported from swot_core.stats
+# (as fine_slope_theilsen / fine_regular_grid) at the top of this file.
 
 
 # Period bins for the temporal fine-scale views. These MIRROR the flow-regime
@@ -412,115 +260,7 @@ def compute_finescale_pass_matrix(_con, url_version, where_clause, res_km, xmax)
     image that bin. Cached on the selection + controls; `url_version` keys the cache
     to the deployed data version (same idiom as other loaders).
     """
-    df = _con.execute(f"""
-        SELECT CAST(Pass_Date AS DATE) AS pass,
-               Reach_Name AS reach,
-               ROUND(dist_km / {FINE_BASE_BIN_KM}) * {FINE_BASE_BIN_KM} AS bin,
-               MEDIAN(wse) AS wse,
-               COUNT(*) AS npix
-        FROM river_data
-        {where_clause}
-        GROUP BY pass, reach, bin
-    """).fetchdf()
-    if len(df) == 0:
-        return {}
-    df = df[df["npix"] >= FINE_MIN_PIX_BIN].copy()
-    df["ibin"] = (df["bin"] / FINE_BASE_BIN_KM).round().astype(int)
-    fn = _fine_slope_theilsen
-
-    out = {}
-    for reach, d in df.groupby("reach"):
-        d = d[d["bin"] <= xmax]
-        if len(d) == 0:
-            continue
-        imax = int(d["ibin"].max())
-        grid = np.arange(1, imax + 1) * FINE_BASE_BIN_KM
-        passes = d["pass"].unique()
-        mat = np.full((len(grid), len(passes)), np.nan)
-        for j, p in enumerate(passes):
-            ix, y = _fine_regular_grid(d[d["pass"] == p])
-            if len(ix) < 5:
-                continue
-            sl = fn(ix * FINE_BASE_BIN_KM, y, res_km)
-            pos = ix - 1
-            ok = (pos >= 0) & (pos < len(grid))
-            mat[pos[ok], j] = sl[ok]
-        # n_passes = passes that actually landed data on the grid; passes whose
-        # profile was too sparse to fit (< 5 bins, skipped above) don't count
-        # toward the reliability gate or the legend.
-        out[str(reach)] = dict(grid=grid, mat=mat,
-                               passes=pd.to_datetime(pd.Series(list(passes))).to_numpy(),
-                               n_passes=int(np.isfinite(mat).any(axis=0).sum()))
-    return out
-
-
-def _fine_aggregate(mat, cols=None, min_passes=0):
-    """Aggregate a per-pass slope matrix across a subset of passes (columns).
-
-    Pure numpy on the cached matrix -- no re-query, no re-fit -- so regrouping by
-    period is instant. Returns (med, lo, hi, n) as ABSOLUTE slope (steepness,
-    cm/km); bins imaged by fewer than `min_passes` passes are set to NaN.
-    """
-    sub = mat if cols is None else mat[:, cols]
-    med = np.full(mat.shape[0], np.nan)
-    q25, q75 = med.copy(), med.copy()
-    n = np.sum(np.isfinite(sub), axis=1) if sub.shape[1] else np.zeros(mat.shape[0], dtype=int)
-    if sub.shape[1] == 0:
-        return med, q25, q75, n
-    # Reduce only over bins that some pass actually imaged: an all-NaN bin is normal
-    # here (coverage gaps), and feeding one to nanmedian just raises a noisy warning.
-    # Steepness = |slope| PER ELEMENT first, THEN quantiles: quantiles of the
-    # signed slopes folded with abs() afterwards mis-order the band wherever a
-    # bin's slopes straddle zero (the median could plot outside its own band).
-    # For same-sign bins the two constructions are identical.
-    seen = n > 0
-    if seen.any():
-        a = np.abs(sub[seen])
-        med[seen] = np.nanmedian(a, axis=1)
-        q25[seen] = np.nanquantile(a, 0.25, axis=1)
-        q75[seen] = np.nanquantile(a, 0.75, axis=1)
-    lo, hi = q25, q75
-    if min_passes > 0:
-        gap = n < min_passes
-        med[gap] = lo[gap] = hi[gap] = np.nan
-    return med, lo, hi, n
-
-
-def _fine_window_mask(grid, window):
-    """Boolean mask for the analysis window (lo, hi) on the 0.1 km grid."""
-    lo, hi = window
-    return (grid >= lo) & (grid <= hi)
-
-
-def _fine_window_coverage(mat, grid, window):
-    """Per-pass fraction of the analysis window that yielded a valid slope.
-
-    This is the pass-quality gate: the fine-scale slope of a pass is only
-    meaningful where that pass actually imaged the river, so a pass that caught
-    only a sliver of the window should not contribute a 'window slope'.
-    """
-    m = _fine_window_mask(grid, window)
-    if not m.any():
-        return np.zeros(mat.shape[1])
-    return np.isfinite(mat[m, :]).mean(axis=0)
-
-
-def _fine_window_slope(mat, grid, window):
-    """Per-pass steepness (|cm/km|) summarised over the analysis window.
-
-    Median of that pass's local sliding-Theil-Sen slopes inside the window -- i.e.
-    exactly the quantity the profile plot draws, condensed to one number per pass,
-    so the time series and the profile can never disagree.
-    """
-    out = np.full(mat.shape[1], np.nan)
-    m = _fine_window_mask(grid, window)
-    if not m.any():
-        return out
-    sub = mat[m, :]
-    valid = np.isfinite(sub).any(axis=0)     # passes that imaged part of the window
-    if valid.any():
-        out[valid] = np.abs(np.nanmedian(sub[:, valid], axis=0))
-    return out
+    return core_stats.fine_pass_matrix(_con, where_clause, res_km, xmax)
 
 
 def _fine_group_passes(passes, mode):
