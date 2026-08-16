@@ -101,6 +101,41 @@ the 4 `np.round` banker's sites adopt the helper; moves 24 exact-boundary
 points). idx 42: Map View reuses the canonical detrend fit instead of its own
 2nd-order fit (≤9 cm apart today). Gate re-run with these as the pre-declared
 allowances; baseline re-snapshot.
+EXECUTED 2026-08-16. `swot_core.stats.round_half_away` added (only exact .5
+ties are overridden — no floor(x+0.5) drift) and adopted at the 5 numpy binning
+sites found on main (the triage's "4" predates the split: the two thesis-figure
+node binnings counted as one). Boundary count re-measured and matches the
+triage: 14 ties at the 0.1/0.5 km widths (7 change bins) + 10 at 1.0 km
+(SQL-only) = 24. Map View residuals now evaluate the `load_detrend_frame` fit
+at the plot sample's points (removes a measured ≤2.7 cm map-vs-tab
+disagreement on the 2026 selection; both calls are cache hits, no added work).
+Gate: PR-A allowances retired, PR-B2 families pre-declared in DEFAULT_ALLOW;
+compare passed with 21 expected diffs / 0 unexpected (all thesis-surface,
+≤1e-5 cm/km — nothing at reported precision; `dashboard.slope_profile` was
+declared but showed zero diffs since its sampled 2026 frame keeps no tie
+points); baseline re-snapshotted, --strict now 0 diffs; AppTest smoke 17 tabs
+clean; THESIS_IMPACT_LOG entry 14 (no touchpoints).
+AMENDED 2026-08-16 after a five-agent adversarial review of PRs A/B/B2 (the
+review found no split-introduced bugs; byte-exact move and A/B behavioral
+equivalence verified independently). Amend contents: (1) the 0.1 km binning
+in `calculate_slope_profile` now divides in float32 like DuckDB's
+REAL/DECIMAL — its callers pass `.tolist()` (float64), where 17 archive
+points lose their exact-tie status and binned differently from SQL despite
+the tie-convention fix; now 0 mismatches archive-wide. (2)
+`calculate_detrending` returns ascending polyval-ready coeffs for every
+method (Linear was `[slope, intercept]` — latent garbage-residual hazard) and
+`load_detrend_frame` returns the fit coeffs, so the Map View block no longer
+re-passes ~31k-element lists through a cache key (~0.3 s hashing that cost
+~50× the fit it avoided). (3) Gate hygiene: DEFAULT_ALLOW is now EMPTIED in
+the same commit as each re-snapshot (a lingering allowance would let real
+regressions in those families pass plain `compare`; proven by simulation) and
+`snapshot` prints a reminder while it is non-empty. Amend gate run: 29
+expected / 0 unexpected (slope families ≤2e-5 cm/km + the Linear coeff
+swap), re-snapshot, --strict 0 diffs, 17-tab smoke clean, headlines
+195.3/192.4 unchanged. Review findings deferred out of B2: SWOT_Pull.py
+banker's sites (follow-up PR — touches the canonical refgrad artifact);
+data-version cache keying for six loaders + slope-tab reach ordering +
+comment cleanups (pre-PR-C hygiene commit).
 
 **PR C — village app.**
 `dashboard_village.py` composing the provisional set: Welcome (plain-language),

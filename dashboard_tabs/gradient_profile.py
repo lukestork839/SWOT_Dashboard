@@ -4,7 +4,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from .common import (COLOR_MAP, PROFILE_BAND, PROFILE_NODE_KM,
-                     add_bifurcation_line, extract_selection, load_reference_gradient)
+                     add_bifurcation_line, extract_selection,
+                     load_reference_gradient, round_half_away)
 
 
 def render(ctx):
@@ -87,7 +88,9 @@ def render(ctx):
         # of passes around the median. The single characteristic slope is NOT
         # drawn here -- it is the robust Theil-Sen value shown above the chart.
         if len(reach_data) >= 5:
-            node = (reach_data['dist_km'] / PROFILE_NODE_KM).round() * PROFILE_NODE_KM
+            # round_half_away keeps exact-boundary points in the same node as the
+            # SQL ROUND paths (pandas .round is banker's and disagreed on ties).
+            node = round_half_away(reach_data['dist_km'].to_numpy() / PROFILE_NODE_KM) * PROFILE_NODE_KM
             g = reach_data.assign(_node=node).groupby('_node')['wse']
             med = g.median().sort_index()
             lo = g.quantile(PROFILE_BAND[0] / 100).sort_index()
