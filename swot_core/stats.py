@@ -31,10 +31,21 @@ def round_half_away(x):
     which rounds ties away from zero) and numpy (``np.round``, which rounds ties
     to the nearest EVEN integer, "banker's rounding"). dist_km is float32, so
     values like 9.25 or 24.75 sit EXACTLY on a bin boundary and the two
-    conventions put them in different bins (14 such points in the archive at
-    the 0.1/0.5 km widths, 7 of which actually change bins). Every numpy
-    binning site rounds through this helper so both domains agree; the project
-    standardizes on half-away-from-zero because the heavy binning lives in SQL.
+    conventions put them in different bins (in the archive: 76 exact ties at
+    the 0.1 km width, 14 at 0.5 km, 10 at 1.0 km). Every numpy binning site
+    rounds through this helper so both domains agree; the project standardizes
+    on half-away-from-zero because the heavy binning lives in SQL.
+
+    PRECISION INVARIANT: the tie convention is only half of the agreement —
+    the quotient ``dist_km / w`` must also be formed in float32, because that
+    is what DuckDB does (REAL / DECIMAL evaluates in FLOAT). 17 archive points
+    at the 0.1 km width are exact ties in float32 but not in float64 (e.g.
+    35.049999f/0.1 == 350.5 in float32, 350.4999… in float64), so a caller
+    that divides in float64 lands them in a different bin than SQL no matter
+    how the tie is broken. Callers holding float64 values (e.g. from
+    ``.tolist()``) must cast to float32 before dividing; ``.to_numpy()`` on
+    the stored float32 column divided by a Python-float width already stays
+    float32.
 
     Only exact .5 ties are overridden — everything else is np.round — so this
     has none of the float-drift of the naive ``floor(x + 0.5)``.
@@ -54,7 +65,9 @@ def calculate_detrending(dist_km, wse, method):
 
     Returns (baseline_pred, coeffs, method_name). `coeffs` are in the REAL
     dist_km domain (`poly.convert().coef` — numpy's `poly.coef` alone is in an
-    internal scaled domain, a reporting trap).
+    internal scaled domain, a reporting trap) and in ASCENDING power order for
+    every method (c0 + c1*x + …), so any method's baseline can be re-evaluated
+    at new points with `np.polynomial.polynomial.polyval(x, coeffs)`.
 
     Note: the retired LOESS baseline was removed with the dashboard's method
     selector (only the 2nd-order polynomial is exposed in the UI; Linear/3rd
@@ -67,7 +80,7 @@ def calculate_detrending(dist_km, wse, method):
     if method == "Linear":
         slope, intercept, *_ = stats.linregress(x_all, y_all)
         baseline_pred = slope * x_all + intercept
-        coeffs = [slope, intercept]
+        coeffs = [intercept, slope]  # ascending, like the polynomial branches
         method_name = "Linear Fit"
     elif method == "Polynomial (2nd order)":
         poly = np.polynomial.Polynomial.fit(x_all, y_all, 2)
@@ -128,8 +141,11 @@ def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
     # Bin into 100m intervals and take median (robust to outliers).
     # round_half_away keeps exact-boundary points in the same bin as the SQL
     # ROUND-based paths (np.round would send ties to the even bin instead).
+    # The division must happen in float32 like DuckDB's REAL/DECIMAL: callers
+    # pass .tolist() (float64), where 17 archive points lose their exact-tie
+    # status and would bin differently (see the round_half_away docstring).
     bin_size = 0.1  # km
-    bins = round_half_away(x / bin_size) * bin_size
+    bins = round_half_away(x.astype(np.float32) / np.float32(bin_size)) * bin_size
     df = pd.DataFrame({'bin': bins, 'wse': y})
     bin_medians = df.groupby('bin')['wse'].median().sort_index()
 

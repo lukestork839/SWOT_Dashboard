@@ -30,6 +30,7 @@ from dashboard_tabs.common import (
 # Names this module only re-exports (see the import comment above): without
 # this, linters flag them as unused imports.
 __all__ = [
+    "calculate_detrending",
     "load_detrend_frame", "compute_finescale_pass_matrix",
     "load_reference_gradient", "load_refgrad_decomposition",
     "flag_residual_outliers",
@@ -274,16 +275,14 @@ def render_dashboard(con, all_pass_dates, available_reaches):
         # the full selection frame), evaluated at this plot sample's distances.
         # Previously the map refit its own 2nd-order polynomial on viz_df — a
         # different sample of the same selection — so the two "identical" fits
-        # disagreed by up to ~9 cm and the map's colors didn't match the tab's
-        # residuals. Both calls below are st.cache_data hits (the Detrended tab
-        # makes the identical calls), so this adds no work.
-        # polyval expects the polynomial methods' ascending real-domain coeffs;
-        # detrend_method is hardcoded to "Polynomial (2nd order)" above (the
-        # Linear method returns [slope, intercept], which would need reversal).
-        bdf, _bmethod, _btotal = load_detrend_frame(con, where_clause, detrend_method)
+        # disagreed by up to ~3 cm (measured 2.97 cm on the 2026 open-water
+        # selection) and the map's colors didn't match the tab's residuals.
+        # The coeffs come back from the cached load_detrend_frame call the
+        # Detrended tab also makes, and calculate_detrending returns ascending
+        # real-domain coefficients for EVERY method, so polyval is the right
+        # evaluator regardless of detrend_method.
+        _bdf, _bmethod, _btotal, coeffs = load_detrend_frame(con, where_clause, detrend_method)
         if _bmethod is not None:
-            _, coeffs, _ = calculate_detrending(
-                bdf['dist_km'].tolist(), bdf['wse'].tolist(), detrend_method)
             baseline_pred = np.polynomial.polynomial.polyval(
                 viz_df['dist_km'].to_numpy(dtype=float), coeffs)
             viz_df['detrended_residual'] = viz_df['wse'].values - baseline_pred
