@@ -26,6 +26,7 @@ from swot_core.config import (
 )
 from swot_core.stats import (
     flag_residual_outliers,
+    round_half_away,
     fine_aggregate as _fine_aggregate,
     fine_window_coverage as _fine_window_coverage,
     fine_window_slope as _fine_window_slope,
@@ -35,7 +36,7 @@ from swot_core.stats import (
 # dashboard_swot, tools/regression_gate.py) import these from here so the whole
 # Streamlit layer has a single import surface over swot_core.
 __all__ = [
-    "RESIDUAL_MAD_THRESHOLD", "flag_residual_outliers",
+    "RESIDUAL_MAD_THRESHOLD", "flag_residual_outliers", "round_half_away",
     "_fine_aggregate", "_fine_window_coverage", "_fine_window_slope",
 ]
 
@@ -173,7 +174,13 @@ def load_detrend_frame(_con, where_clause, detrend_method):
     content across reruns, so the detrended figure is byte-stable and Streamlit keeps the
     chart's box-selection through the on_select rerun. Previously the frame was re-queried
     (with a non-deterministic sample) every rerun, which changed the figure and made the
-    selection — and the map highlight — vanish. Returns (baseline_df, method_name, total_count).
+    selection — and the map highlight — vanish.
+
+    Returns (baseline_df, method_name, total_count, coeffs). `coeffs` are the fit's
+    ascending real-domain coefficients (see calculate_detrending) so other surfaces —
+    the Map View residuals — can evaluate the SAME canonical baseline at their own
+    points via np.polynomial.polynomial.polyval without re-passing the frame's
+    columns through a cache key. `coeffs` is None on a degenerate (<3 point) frame.
     """
     total_count = _con.execute(f"SELECT COUNT(*) FROM river_data {where_clause}").fetchone()[0]
     order_cols = "Reach_Name, dist_km, Pass_Date, latitude, longitude"
@@ -193,12 +200,12 @@ def load_detrend_frame(_con, where_clause, detrend_method):
     if len(bdf) < 3:
         # Degenerate input: a 2nd-order fit needs >= 3 points; below that
         # calculate_detrending would crash or return garbage.
-        return bdf, None, total_count
-    baseline_pred, _coeffs, method_name = calculate_detrending(
+        return bdf, None, total_count, None
+    baseline_pred, coeffs, method_name = calculate_detrending(
         bdf['dist_km'].tolist(), bdf['wse'].tolist(), detrend_method)
     bdf['residual'] = bdf['wse'].values - baseline_pred
     bdf['baseline'] = baseline_pred
-    return bdf, method_name, total_count
+    return bdf, method_name, total_count, coeffs
 
 
 @st.cache_data(ttl=86400)

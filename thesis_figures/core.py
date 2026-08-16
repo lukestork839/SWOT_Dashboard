@@ -29,6 +29,7 @@ from swot_core.data import (  # noqa: F401
     load_temporal_results,
 )
 from swot_core.stats import (  # noqa: F401
+    round_half_away,
     calculate_detrending,
     flag_residual_outliers,
     calculate_slope_profile,

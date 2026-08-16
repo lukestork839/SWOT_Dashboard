@@ -9,24 +9,28 @@ into `swot_core` can be proven output-identical:
     python tools/regression_gate.py compare    # recomputes, diffs against baseline
 
 `compare` exits non-zero on any mismatch outside the --allow list. Some keys are
-EXPECTED to change in PR A (unifying two drifted copies onto the validated dashboard
-implementation):
+EXPECTED to change in the PR B2 amend (review follow-ups to hygiene idx 33/42):
 
-  * thesis.<reach>.detrend.coeffs — thesis core reported numpy's scaled-domain
-    `poly.coef`; the unified core reports `poly.convert().coef` (real dist_km
-    domain, the dashboard's post-hygiene behavior). Baselines are unaffected.
-  * thesis.<reach>.slope_profile.* — thesis core still had the pre-fix pooled
-    Gaussian (smooths across coverage holes); the unified core uses the dashboard's
-    NaN-aware gap-honest version (fix campaign 2026-08-14).
+  * dashboard.slope_profile.* / thesis.<reach>.slope_profile.* — the 0.1 km
+    binning inside calculate_slope_profile now divides in float32 like
+    DuckDB's REAL/DECIMAL, so 17 archive points whose quotients are exact .5
+    ties ONLY in float32 (e.g. 35.049999f/0.1) bin identically to the SQL
+    paths. (The original PR B2 change — round_half_away replacing np.round —
+    fixed the tie CONVENTION; this fixes the precision DOMAIN.)
+  * dashboard.detrend_methods.Linear.coeffs — flipped from [slope, intercept]
+    to ascending [intercept, slope] so calculate_detrending's coeffs are
+    polyval-ready for every method (same two values, swapped order).
 
-Everything else must match exactly (same machine, same data, deterministic code).
-Both surfaces read the SAME full local archive (batch_outputs partitions /
-master_all_data.parquet), so their shared checks are directly comparable.
+Everything else must match exactly (same machine, same data, deterministic
+code). Both surfaces read the SAME full local archive (batch_outputs
+partitions / master_all_data.parquet), so their shared checks are directly
+comparable.
 
-Baseline lifecycle: the committed tools/regression_baseline.json is re-snapshotted
-after each split PR's gate passes, so the next PR diffs against the accepted
-current state. The committed baseline is POST-PR-A (verified self-consistent:
-compare returns 0 diffs), which also makes the PR-A allowances above inert.
+Baseline lifecycle: the committed tools/regression_baseline.json is
+re-snapshotted after each numbers-touching PR's gate passes, so the next PR
+diffs against the accepted current state — and DEFAULT_ALLOW is EMPTIED in the
+same commit (allowances are inert against the fresh baseline; leaving them in
+place would mask a future regression in those families from plain `compare`).
 """
 
 from __future__ import annotations
@@ -44,30 +48,12 @@ os.chdir(ROOT)  # dashboard_swot uses relative DATA_DIR paths
 
 BASELINE_PATH = os.path.join(ROOT, "tools", "regression_baseline.json")
 
-# Keys allowed to differ in PR A (see module docstring). Prefix match.
-DEFAULT_ALLOW = [
-    "thesis.Kanektok_River.detrend.coeffs",
-    "thesis.Uyak_Creek.detrend.coeffs",
-    "thesis.Kanektok_River.slope_profile",
-    "thesis.Uyak_Creek.slope_profile",
-    # One-time ordering artifacts vs the pre-refactor baseline: that baseline was
-    # snapshotted before the gate ordered pass-indexed vectors deterministically
-    # (DuckDB GROUP BY output order is unguaranteed), so first/last of these are
-    # arbitrary in the OLD baseline only. Re-snapshot after the gate passes and
-    # these allowances go inert. Multiset stats (sum/mean/std/min/max) still gate.
-    "dashboard.finescale.Kanektok_River.mat.first",
-    "dashboard.finescale.Kanektok_River.mat.last",
-    "dashboard.finescale.Uyak_Creek.mat.first",
-    "dashboard.finescale.Uyak_Creek.mat.last",
-    "dashboard.finescale.Kanektok_River.window_slope.first",
-    "dashboard.finescale.Kanektok_River.window_slope.last",
-    "dashboard.finescale.Uyak_Creek.window_slope.first",
-    "dashboard.finescale.Uyak_Creek.window_slope.last",
-    "dashboard.finescale.Kanektok_River.window_coverage.first",
-    "dashboard.finescale.Kanektok_River.window_coverage.last",
-    "dashboard.finescale.Uyak_Creek.window_coverage.first",
-    "dashboard.finescale.Uyak_Creek.window_coverage.last",
-]
+# Keys allowed to differ in the CURRENT numbers-touching PR (see module
+# docstring). Prefix match. LIFECYCLE RULE: this list must be emptied in the
+# same commit as the post-PR re-snapshot — a lingering allowance would let a
+# genuinely new regression in these families pass `compare` unnoticed (only
+# --strict ignores it). `snapshot` prints a reminder while it is non-empty.
+DEFAULT_ALLOW = []  # emptied at the PR B2 amend re-snapshot; declare per-PR
 
 # Floats compare with relative tolerance: DuckDB's parallel scan returns
 # tie-ordered rows in nondeterministic order, so downstream float summations
@@ -134,7 +120,7 @@ def dashboard_checks() -> dict:
         """
 
     # Detrend frame (the cached fetch+fit path behind the Detrended Profile tab)
-    bdf, method_name, total = dash.load_detrend_frame(con, where_clause, "Polynomial (2nd order)")
+    bdf, method_name, total, _fcoeffs = dash.load_detrend_frame(con, where_clause, "Polynomial (2nd order)")
     out["detrend_frame"] = {"total_count": int(total), "n": int(len(bdf)),
                             "method_name": method_name,
                             "residual": sig(bdf["residual"]), "baseline": sig(bdf["baseline"])}
@@ -280,6 +266,10 @@ def main():
         with open(BASELINE_PATH, "w") as f:
             json.dump(current, f, indent=1, sort_keys=True)
         print(f"Baseline written: {BASELINE_PATH}")
+        if DEFAULT_ALLOW:
+            print("NOTE: DEFAULT_ALLOW is non-empty. It is now inert against this "
+                  "baseline — empty it in the SAME commit, or future `compare` runs "
+                  "will silently accept new regressions in those families.")
         return 0
 
     with open(BASELINE_PATH) as f:
