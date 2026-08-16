@@ -22,7 +22,7 @@ def render(ctx):
         # Fetch + detrend ONCE per (passes, method); cached so the figure is stable
         # across reruns and the chart's box-selection survives (see load_detrend_frame).
         baseline_df, method_name, total_count, _coeffs = load_detrend_frame(
-            con, where_clause, detrend_method)
+            con, ctx.data_version, where_clause, detrend_method)
         if total_count > MAX_BASELINE_POINTS:
             st.info(f"📊 Baseline fit on ~{MAX_BASELINE_POINTS:,} systematically sampled "
                     f"points (of {total_count:,} total) for performance.")
