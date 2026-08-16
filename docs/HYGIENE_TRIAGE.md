@@ -111,7 +111,7 @@ ice table still labels Oct–Nov "Caution" though Oct is inside `ICE_SAFE_MONTHS
 
 | idx | Verdict | Rationale |
 |---|---|---|
-| 32 | DEFER-SPLIT | LOESS detrend branch is dead (method hardcoded) but its removal entangles UI text; detrend UI gets restructured in the split anyway |
+| 32 | DEFER-SPLIT → RESOLVED (split PR A, 2026-08-16) | LOESS detrend branch was dead (method hardcoded); the swot_core extraction removed it — `swot_core.stats.calculate_detrending` raises on unknown methods instead of silently falling through to LOESS |
 | 33 | DEFER-SPLIT | np.round (banker's) vs DuckDB ROUND (half-away) binning convention — needs one shared helper across 6 SQL + 4 Python sites; natural swot_core consolidation. Affects only exact-.5-boundary points (24 today) |
 | 42 | DEFER-SPLIT | Two coexisting 2nd-order detrend fits (map vs tab, ≤9 cm apart) — coefficient plumbing through the cache layer is a swot_core job |
 | 54 | DEFER-Q3 | `TYPHOON_DATE` doesn't drive the June comparison windows; derive windows from it when the definitive Q3 rerun happens (~Sep 2026). Trivial comment demotion applied now |
