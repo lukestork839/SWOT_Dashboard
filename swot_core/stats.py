@@ -22,6 +22,31 @@ from .data import exclusion_condition
 
 
 # ---------------------------------------------------------------------------
+# BINNING
+# ---------------------------------------------------------------------------
+def round_half_away(x):
+    """Round to the nearest integer with ties going AWAY from zero.
+
+    Distance binning happens in two domains — DuckDB SQL (``ROUND(dist_km/w)*w``,
+    which rounds ties away from zero) and numpy (``np.round``, which rounds ties
+    to the nearest EVEN integer, "banker's rounding"). dist_km is float32, so
+    values like 9.25 or 24.75 sit EXACTLY on a bin boundary and the two
+    conventions put them in different bins (14 such points in the archive at
+    the 0.1/0.5 km widths, 7 of which actually change bins). Every numpy
+    binning site rounds through this helper so both domains agree; the project
+    standardizes on half-away-from-zero because the heavy binning lives in SQL.
+
+    Only exact .5 ties are overridden — everything else is np.round — so this
+    has none of the float-drift of the naive ``floor(x + 0.5)``.
+    """
+    x = np.asarray(x, dtype=float)
+    a = np.abs(x)
+    fl = np.floor(a)
+    nearest = np.where(a - fl == 0.5, fl + 1.0, np.round(a))
+    return np.copysign(nearest, x)
+
+
+# ---------------------------------------------------------------------------
 # DETRENDING + RESIDUAL FLAGGING
 # ---------------------------------------------------------------------------
 def calculate_detrending(dist_km, wse, method):
@@ -100,9 +125,11 @@ def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
     x = np.array(dist_km)
     y = np.array(wse)
 
-    # Bin into 100m intervals and take median (robust to outliers)
+    # Bin into 100m intervals and take median (robust to outliers).
+    # round_half_away keeps exact-boundary points in the same bin as the SQL
+    # ROUND-based paths (np.round would send ties to the even bin instead).
     bin_size = 0.1  # km
-    bins = np.round(x / bin_size) * bin_size
+    bins = round_half_away(x / bin_size) * bin_size
     df = pd.DataFrame({'bin': bins, 'wse': y})
     bin_medians = df.groupby('bin')['wse'].median().sort_index()
 
@@ -402,7 +429,9 @@ def elevation_difference(con, reaches=("Kanektok_River", "Uyak_Creek"),
         f"FROM river_data {clause}"
     ).fetchdf()
 
-    pts["dist_bin"] = (pts["dist_km"] / bin_km).round() * bin_km
+    # round_half_away: match the dashboard tab's SQL ROUND binning of the same
+    # data (pandas .round is banker's and disagreed on exact-boundary points).
+    pts["dist_bin"] = round_half_away(pts["dist_km"].to_numpy() / bin_km) * bin_km
     # per (pass, bin, river) median WSE
     per = (pts.groupby(["pass", "dist_bin", "Reach_Name"])["wse"].median()
               .unstack("Reach_Name"))

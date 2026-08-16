@@ -626,7 +626,10 @@ def build_fig5(node_km: float = 0.5, band=(5, 95), band_alpha: float = 0.30,
         if len(d) == 0:
             continue
         color = config.river_color(reach)
-        grp = d.assign(node=(d["dist_km"] / node_km).round() * node_km).groupby("node")["wse"]
+        # core.round_half_away: same tie convention as the SQL binning paths
+        # (pandas .round is banker's and disagreed on exact-boundary points).
+        node = core.round_half_away(d["dist_km"].to_numpy() / node_km) * node_km
+        grp = d.assign(node=node).groupby("node")["wse"]
         med = grp.median().sort_index()
         if band is not None:
             q_lo = grp.quantile(band[0] / 100.0).sort_index()
@@ -771,7 +774,8 @@ def build_fig7(node_km: float = 0.5, band=(25, 75)):
         resid = d["resid"].to_numpy()
         keep = ~core.flag_residual_outliers(resid)   # per-river Modified Z>3.5
         dd = d.loc[keep]
-        grp = dd.assign(node=(dd["dist_km"] / node_km).round() * node_km).groupby("node")["resid"]
+        node = core.round_half_away(dd["dist_km"].to_numpy() / node_km) * node_km
+        grp = dd.assign(node=node).groupby("node")["resid"]
         med = grp.median().sort_index()
         q_lo = grp.quantile(band[0] / 100.0).sort_index()
         q_hi = grp.quantile(band[1] / 100.0).sort_index()

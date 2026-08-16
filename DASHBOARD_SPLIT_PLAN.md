@@ -101,6 +101,20 @@ the 4 `np.round` banker's sites adopt the helper; moves 24 exact-boundary
 points). idx 42: Map View reuses the canonical detrend fit instead of its own
 2nd-order fit (≤9 cm apart today). Gate re-run with these as the pre-declared
 allowances; baseline re-snapshot.
+EXECUTED 2026-08-16. `swot_core.stats.round_half_away` added (only exact .5
+ties are overridden — no floor(x+0.5) drift) and adopted at the 5 numpy binning
+sites found on main (the triage's "4" predates the split: the two thesis-figure
+node binnings counted as one). Boundary count re-measured and matches the
+triage: 14 ties at the 0.1/0.5 km widths (7 change bins) + 10 at 1.0 km
+(SQL-only) = 24. Map View residuals now evaluate the `load_detrend_frame` fit
+at the plot sample's points (removes a measured ≤2.7 cm map-vs-tab
+disagreement on the 2026 selection; both calls are cache hits, no added work).
+Gate: PR-A allowances retired, PR-B2 families pre-declared in DEFAULT_ALLOW;
+compare passed with 21 expected diffs / 0 unexpected (all thesis-surface,
+≤1e-5 cm/km — nothing at reported precision; `dashboard.slope_profile` was
+declared but showed zero diffs since its sampled 2026 frame keeps no tie
+points); baseline re-snapshotted, --strict now 0 diffs; AppTest smoke 17 tabs
+clean; THESIS_IMPACT_LOG entry 14 (no touchpoints).
 
 **PR C — village app.**
 `dashboard_village.py` composing the provisional set: Welcome (plain-language),
