@@ -43,8 +43,9 @@ KAN, UYAK = "Kanektok_River", "Uyak_Creek"
 NAME = {KAN: "Qanirtuuq (Kanektok River)", UYAK: "Uyak Creek"}
 SHORT = {KAN: "Qanirtuuq", UYAK: "Uyak Creek"}
 
-# Kuinerraq (Quinhagak) village site, at the mouth of the Qanirtuuq.
-VILLAGE_LAT, VILLAGE_LON = 59.7528, -161.9111
+# Kuinerraq (Quinhagak) village site, at the mouth of the Qanirtuuq
+# (OpenStreetMap place node; visually verified against Esri imagery).
+VILLAGE_LAT, VILLAGE_LON = 59.7506, -161.8972
 
 # The village app always uses the FULL open-water record — no pass picking.
 # (Winter passes are excluded: river ice fools the satellite into measuring
@@ -76,6 +77,16 @@ def base_layout(fig, ytitle, height=460):
     fig.add_vline(x=0, line_dash="dash", line_color="gray", line_width=1.5,
                   annotation_text="The Fork", annotation_position="top",
                   annotation_font_color="gray")
+    lock_axes(fig)
+
+
+def lock_axes(fig):
+    """Disable zoom/pan (hover still works). The modebar is hidden on every
+    chart, so a reader who drag-zoomed had no way back to the default view —
+    simplest fix for this audience is to make the charts un-zoomable."""
+    fig.update_xaxes(fixedrange=True)
+    fig.update_yaxes(fixedrange=True)
+    fig.update_layout(dragmode=False)
 
 
 @st.cache_data(ttl=86400)
@@ -255,7 +266,11 @@ def render_sign_steeper(con, data_version):
         yaxis_title="Feet of drop per mile, near the fork",
         title="Steepness at the fork — which path drops faster?",
         margin=dict(l=10, r=10, t=60, b=10), showlegend=False,
+        # Headroom above the taller bar so the outside text labels
+        # ("13.5 ft/mi") don't get clipped by the plot's top edge.
+        yaxis_range=[0, max(fork_kan, fork_uyak) * 1.18],
     )
+    lock_axes(fig)
     st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG, theme=None)
     st.caption("Measured over the stretch about a mile each side of the "
                "fork, from every satellite pass that imaged it "
@@ -487,6 +502,7 @@ def render_changes(con, data_version):
             xaxis_title="Date of satellite pass", hovermode="closest",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
             margin=dict(l=10, r=10, t=60, b=10))
+        lock_axes(fig)
         st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG,
                         theme=None)
         st.caption("The dotted lines mark each river's typical value. Dots "
@@ -518,6 +534,7 @@ def render_changes(con, data_version):
                 yaxis_title="Qanirtuuq minus Uyak Creek (ft per mile)",
                 xaxis_title="Date of satellite pass",
                 margin=dict(l=10, r=10, t=60, b=10), showlegend=False)
+            lock_axes(fig2)
             st.plotly_chart(fig2, width="stretch",
                             config=PLOTLY_CONFIG, theme=None)
             st.caption("Each dot compares the two paths **on the same day**, "
