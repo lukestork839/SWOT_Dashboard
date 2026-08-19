@@ -274,8 +274,8 @@ Changes from `DEM_outline.pdf` are marked **[NEW]**, **[CHANGED]**, **[CUT]**.
     notches excluded (median width 2 696 m).
   - **Bed = survey-stage water surface − boat-ADCP thalweg depth.** SWOT overflew 2026-05-28/05-30
     inside the 05-28→06-03 survey window, so depth and stage are contemporaneous.
-  - β = H_AR/H_M = (crest − floodplain)/(crest − bed); identical to the prior ArcGIS
-    (P98 − median)/(P98 − P2), which is why it is reported.
+  - β = H_AR/H_M = (crest − floodplain)/(crest − bed), the Gearon (2024) superelevation ratio —
+    reported because it answers **CIVIC warning sign 1** (β > ~0.5, Ganti et al. 2016).
   - **Crest window set by the bankfull check**, ±150 m (§3.4).
 - **2.6 Channel-specific longitudinal sampling [NEW]** — 20 m stations along each field centerline,
   ±80 m perpendicular swath, low-percentile bed proxy; radial **and** along-channel frames;
@@ -306,8 +306,11 @@ Changes from `DEM_outline.pdf` are marked **[NEW]**, **[CHANGED]**, **[CUT]**.
   per-river distinction and the "Kanektok plots lower" claim.
 - **3.2 Superelevation: is the Kanektok perched? [NEW — the headline result]** — −1.50 m on 100 % of
   arcs; Uyak −0.49 m; still −1.01 m at high stage.
-- **3.3 The superelevation ratio β [NEW]** — 0.06, H_AR +0.14 m, β ≤ 0 on 38 %. Reported as the
-  reproduction of the ArcGIS metric. **No alluvial ridge exists to superelevate.**
+- **3.3 The superelevation ratio β [NEW]** — 0.06, H_AR +0.14 m, β ≤ 0 on 38 %; CIVIC warning
+  sign 1, threshold β > ~0.5 (Ganti et al. 2016). State the test as **one-directional** — low β is
+  not evidence of stability (Gearon: βγ ≥ Λ; ~60 % of avulsed deltas have β < 0.5) — and note that
+  the corridor-median bias (~0.10 in β units) exceeds the value, so the claim is the narrower
+  **no alluvial ridge exists to superelevate**, not "β is below threshold.".
 - **3.4 Crest-window sensitivity and the bankfull check [NEW]** — β never plateaus (−0.16 → 0.28
   across ±75 → ±500 m) and the crest pixel tracks the window boundary (57 → 292 m): the signature
   of no local maximum. Freeboard ÷ depth reaches **1.87** at ±350 m — a bank the river could never
@@ -346,9 +349,10 @@ Changes from `DEM_outline.pdf` are marked **[NEW]**, **[CHANGED]**, **[CUT]**.
 ### 5. Conclusions
 Terrain-enforced stability. The Kanektok is **incised, not perched**, on every arc; it has **no
 alluvial ridge**; and it holds an **18 % gradient advantage** over the escape route — so there is no
-gradient-driven push to avulse. The prior β ≈ 0.96 / "30 % perched" reading was diagonal-transect
-geometry. State the null result plainly and as a strength: it is consistent across three independent
-datasets (2 m DEM, boat ADCP, SWOT).
+gradient-driven push to avulse. State the null result plainly and as a strength: it is consistent
+across three independent datasets (2 m DEM, boat ADCP, SWOT). Scope it honestly — this settles
+warning sign 1 and speaks to 2/3 via the gradients; it is not a claim that β < 0.5 certifies
+stability.
 
 ---
 

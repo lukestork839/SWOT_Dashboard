@@ -1273,7 +1273,9 @@ The window is therefore **±150 m**, ~3 channel widths on a ~50 m river, which i
 
 **β median 0.06, H_AR median +0.14 m**, with the near-channel high ground sitting *below* the floodplain reference outright (β ≤ 0) on **38 %** of arcs. The defensible statement is not "β is safely under a threshold" but **there is no alluvial ridge to superelevate** — the same fact the −1.50 m incision reports, in dimensionless form.
 
-**β = 1 is not the operative avulsion threshold, and is not presented as one.** Gearon et al. (2024) show the criterion is **βγ ≥ Λ** (their eq. 4) with Λ median **2.1**; the paper states plainly that "β only accounts for half of Λ" and that "roughly 60 % of deltas in our dataset have β < 0.5" — near the sink, rivers that *did* avulse carry low β because the gradient-advantage term γ is high. This analysis deliberately does not evaluate γ (a corridor-median floodplain has no location, so the ridge-flank slope S_AR has no defensible run length), so β is reported as a **reproduction of the prior ArcGIS metric** `(P98 − median)/(P98 − P2)` and the avulsion argument rests on the incision result rather than on β alone.
+**β = 1 is not the operative avulsion threshold, and is not presented as one.** Gearon et al. (2024) show the criterion is **βγ ≥ Λ** (their eq. 4) with Λ median **2.1**; the paper states plainly that "β only accounts for half of Λ" and that "roughly 60 % of deltas in our dataset have β < 0.5" — near the sink, rivers that *did* avulse carry low β because the gradient-advantage term γ is high. This analysis deliberately does not evaluate γ (a corridor-median floodplain has no location, so the ridge-flank slope S_AR has no defensible run length), so the avulsion argument rests on the incision result rather than on β alone.
+
+The threshold β is actually stated against is **~0.5** (Ganti et al. 2016) — CIVIC warning sign 1 — which is lower than the classical one-channel-depth criterion (β ≈ 1; Mohrig et al. 2000) because on backwater-controlled deltas avulsion occurs at roughly half a channel depth of superelevation. Critically, **that test is one-directional**: β > 0.5 is evidence *for* frequent avulsion, whereas β < 0.5 is *not* a clearance, for exactly the βγ ≥ Λ reason above. "β = 0.06 < 0.5, therefore stable" is an invalid inference and is not made anywhere. Two further limits: at this magnitude the corridor-median bias (~0.29 m ≈ **0.10 in β units**) exceeds the reported β, so it should not be read to two decimals; and Ganti's ~0.5 is calibrated on a backwater-controlled delta while Gearon's central finding is that the rules change downstream, so β is reported as a function of radius rather than collapsed to one number tested against one threshold.
 
 #### Channel migration
 
@@ -1300,7 +1302,7 @@ The DEM analyses are grounded in the following theoretical and empirical framewo
 - The linear trendline approximates a profile that is naturally concave-up; R² is reported so users can assess fit quality
 - DEM terrain within the river polygons includes banks and bars, not just the active channel bed — this is appropriate for corridor-scale avulsion analysis but differs from SWOT's water-surface-only measurement
 - The ArcticDEM mosaic is a **2010–2021 multi-date blend**, so (a) the channel may have migrated relative to the 2026 field centerlines, and (b) the two rivers were imaged at different water stages. Both are quantified and handled in [Arc Cross-Section Avulsion Analysis](#arc-cross-section-avulsion-analysis); the inter-river comparison is taken from pass-paired SWOT rather than from the DEM for this reason
-- β is reported as a reproduction of the prior ArcGIS superelevation metric, **not** as a threshold test against β = 1; Gearon's operative criterion is βγ ≥ Λ and the gradient term γ is not evaluated here
+- β is reported as the Gearon (2024) superelevation ratio answering CIVIC warning sign 1, **not** as a threshold test against β = 1; the applicable threshold is β > ~0.5 (Ganti et al. 2016) and it is one-directional — low β is not evidence of stability, since Gearon's operative criterion is βγ ≥ Λ and the gradient term γ is not evaluated here
 - The floodplain reference is the median of a ~2.7 km-wide inter-channel corridor, which is a regional datum rather than Gearon's local ridge-toe pick; it sits ~0.29 m below the floodplain immediately beside the Kanektok, and because it has no location it cannot support a ridge-flank slope S_AR
 
 ### References
@@ -1443,7 +1445,7 @@ Use this checklist to verify our processing against the SWOT handbook:
 - [x] Inter-river difference taken from **pass-paired** overpasses so stage cancels
 - [x] Channel bed stage-matched to the boat-ADCP survey via coincident SWOT passes (2026-05-28/30)
 - [x] Crest window justified by channel geometry + a bankfull consistency check, not tuned to a result
-- [x] β framed as a reproduction of the prior ArcGIS metric; **β = 1 explicitly not claimed as a threshold**
+- [x] β framed as the Gearon superelevation ratio / CIVIC warning sign 1; **β = 1 explicitly not claimed as a threshold**, and the β > ~0.5 test explicitly stated as one-directional
 - [x] DEM acquisition window (2010–2021) stated, and channel-migration offsets quantified with QC columns
 - [x] Sensitivity of β to each input reported (floodplain > crest ≫ bed)
 
