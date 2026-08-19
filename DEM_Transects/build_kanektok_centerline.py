@@ -7,7 +7,8 @@ which is why the Kanektok snap window has to stay wide (±1200 m). Here we repla
 centerline derived from a **boat ADCP survey** our coworkers ran down the Kanektok in
 late May–early Jun 2026 (RiverSurveyor / velocity_depth exports).
 
-Source: `ADCP Data/Kanektok_Day_03/Shapefiles/*_velocity_depth_01_ASC.shp`. Day 03 is the one
+Source: the `Kanektok_Day_03` rows of `data/adcp_velocity_depth.parquet` (the tracked ingest of the
+raw RiverSurveyor velocity_depth export — see `ingest_adcp.py`). Day 03 is the one
 day that is a single continuous **longitudinal thalweg run** — the boat ran the deep thread
 from ~1.9 km to ~34.4 km radius, one transect tiling into the next (each advancing 0.5–1.3 km
 downstream). The other days (02, 05, 06) are discrete bank-to-bank *discharge* crossings — great
@@ -31,7 +32,6 @@ Run:  python3 DEM_Transects/build_kanektok_centerline.py
 
 from __future__ import annotations
 
-import glob
 import os
 
 import folium
@@ -43,9 +43,9 @@ from shapely.geometry import LineString
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "outputs")
 DATA = os.path.join(HERE, "data")
-ADCP_DIR = "/home/luke/Downloads/ADCP Data"
-DAY03_SHP = os.path.join(ADCP_DIR, "Kanektok_Day_03", "Shapefiles",
-                         "*_velocity_depth_01_ASC.shp")
+# Tracked ADCP ingest (ingest_adcp.py) — no external archive needed to re-run this script.
+ADCP_PARQUET = os.path.join(DATA, "adcp_velocity_depth.parquet")
+DAY03 = "Kanektok_Day_03"
 
 ANCHOR = (59.82463509, -161.33397834)   # lat, lon — shared radial origin (SWOT/DEM dist_km)
 R_EARTH = 6371.0088
@@ -74,20 +74,21 @@ def dist_bear(lat, lon):
 def load_backbone() -> pd.DataFrame:
     """Concatenate Day-03's longitudinal transects into one along-channel (lat, lon, depth) frame.
 
-    Each velocity_depth shapefile is one transect, its pings already in time order. We keep only
-    the transects that sweep a real distance downstream (the longitudinal run), order them by their
-    low-radius end, and lay them head-to-tail — the boat ran monotonically downstream, so this
+    One TRANSECT = one velocity_depth shapefile, its pings in acquisition order (`ping_seq`). We keep
+    only the transects that sweep a real distance downstream (the longitudinal run), order them by
+    their low-radius end, and lay them head-to-tail — the boat ran monotonically downstream, so this
     reproduces the thalweg from ~1.9 km to ~34.4 km radius.
     """
+    a = pd.read_parquet(ADCP_PARQUET)
+    a = a[a["survey_day"] == DAY03].sort_values(by=["TRANSECT", "ping_seq"])
     segs = []
-    for f in sorted(glob.glob(DAY03_SHP)):
-        g = gpd.read_file(f).sort_values(["HOUR", "MINUTE", "SECOND"]).reset_index(drop=True)
+    for _, g in a.groupby("TRANSECT", observed=True, sort=True):
         d, _ = dist_bear(g["LAT"].values, g["LON"].values)
         if d.max() - d.min() > LONGITUDINAL_MIN_SPAN_KM:
             segs.append((float(d.min()), g))
     segs.sort(key=lambda t: t[0])
-    frames = [pd.DataFrame({"lat": g["LAT"].values, "lon": g["LON"].values,
-                            "depth_m": g["DEPTH"].values}) for _, g in segs]
+    frames = [pd.DataFrame({"lat": g["LAT"].to_numpy(float), "lon": g["LON"].to_numpy(float),
+                            "depth_m": g["DEPTH"].to_numpy(float)}) for _, g in segs]
     out = pd.concat(frames, ignore_index=True)
     return out
 
