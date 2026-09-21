@@ -1,0 +1,68 @@
+P6 — The bifurcation virtual gauge (presentation figure)
+
+Local hydraulic gradient and water surface at a virtual gauge on each river,
+1 km along-channel downstream of the bifurcation (analysis:
+bifurcation_gauge.py; results in
+temporal_results/bifurcation_gauge_per_pass.parquet).
+
+Two rulers are used deliberately. GRADIENT is fitted on the project-wide
+radial dist_km axis over the fixed 3.5–7.5 km window: pixel water-surface
+elevations are binned to 0.5 km nodes (9 nodes) and a Theil–Sen line through
+the node medians gives the local gradient. The window sits entirely below the
+split (2.49 km) and entirely clear of the zone where the two reach polygons
+overlap, so no shared water enters either fit. Radial distance compresses a
+curving channel, so these gradients run ~1.47× steeper than true along-channel
+water-surface slopes; the inflation is near-identical for the two rivers on
+this window (1.473× vs 1.459×, a 0.9% mismatch), which is why the radial axis
+is kept — it is the fairest ruler for a BETWEEN-river comparison.
+
+STAGE is measured at a gauge sited by along-channel distance: the point 1 km
+downstream of the bifurcation on each river's official centerline, with stage
+the observed median WSE of that river's pixels within 300 m of it. The two
+gauges are 740 m apart and each disc draws on one reach mask only — zero
+pixels from the other river. Along-channel siting is required: a radial ring
+1 km from the split would cross the Kanektok at 0.97 channel-km but the Uyak
+at 1.18, and at ~1.7 m of drop per channel-km that 0.21 km mismatch is worth
+~0.35 m of water surface, enough to reverse the sign of the stage comparison.
+A pass qualifies only when all 9 nodes are present with at least 20 pixels
+each and the gauge disc holds at least 20 pixels (95 Kanektok, 89 Uyak passes).
+
+(a) Each river's local gradient against its own gauge stage, with dotted
+per-river median lines: Kanektok median 261.0 cm/km [IQR 259.2–262.7], Uyak
+Creek 229.0 [225.4–233.4]. The two clouds never mix: pairing the passes, the
+Kanektok is steeper on 100% of the 89 paired passes, median advantage
++32.4 cm/km [IQR +28.9 to +35.3]. The advantage does not merely survive
+rising water — it GROWS with it, by +13.8 cm/km per metre of stage
+(Kendall tau = +0.346, p < 0.0001; low-stage half +29.5 cm/km, high-stage
+half +33.7). The Uyak's own gradient falls faster with stage than the
+Kanektok's (−12.9 vs −4.4 cm/km per m), which is what widens the gap: the
+secondary channel is the more backwater-sensitive of the two. The trend is
+not an artifact of the record — stage is uncorrelated with year (tau = −0.02)
+and the trend reproduces within 2024 (p = 0.012) and 2025 (p = 0.002).
+Avulsions initiate at high flow; at these gauges the occupied channel's local
+gradient advantage is largest exactly there.
+
+(b) The two water surfaces below the split, median across passes with the
+interquartile band. They leave the bifurcation together — 0.06 m apart at
+0.75 km, the first station where the two 300 m discs stop sharing pixels —
+and separate downstream as the steeper Kanektok outruns the Uyak, reaching
+0.53 m by 3 km. The bumps are real local slope structure (braid nodes and
+riffles), not sampling noise; the overall separation rate, ~21 cm/km in
+along-channel terms, independently reproduces the ~32 cm/km radial advantage
+in (a) once the 1.47× radial inflation is removed.
+
+Gauge-siting sensitivity: moving both gauges to 1.25 km past the split
+(channels 982 m apart) leaves the paired result unchanged (+32.4 cm/km, 100%
+of 88 passes) and the stage gap at −0.007 m, but the per-pass correlation
+between the two gauge stages falls from 0.806 to 0.652 — 1 km is the better
+sited pair, and the headline numbers do not depend on the choice.
+
+Because the fitting window is fixed, these metrics are immune to the
+coverage-truncation artifact that displaces two 2023 Uyak passes in the
+whole-reach time series (Figures 16–18): every gated pass is fitted over the
+same 4 km.
+
+Data: SWOT L2 HR PIXC water-surface elevations, frozen master archive
+(May–October 2023–2026). Stage sampling caveat: SWOT's 21-day repeat rarely
+catches flood peaks, so "every observed stage" spans the sampled ~1 m range,
+not the full flood envelope.

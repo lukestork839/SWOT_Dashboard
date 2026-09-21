@@ -6,10 +6,11 @@ We do NOT build a Uyak depth model (the Uyak was surveyed only near its mouth). 
 one reach where BOTH rivers have depth — the mouth (radius ~31-33 km) — to gauge how the two rivers'
 depths differ at matched downstream distance.
 
-Sources (raw boat ADCP, ~/Downloads/ADCP Data, May-Jun 2026):
-  - Kanektok: all `Kanektok_Day_*/Shapefiles/*_velocity_depth_01_ASC.shp` (thalweg run Day 03 +
-    bank-to-bank discharge crossings Days 02/05/06).
-  - Uyak:     `Uiyak_Day_04/Shapefiles/*_velocity_depth_01_ASC.shp` (8 crossings near the mouth).
+Source: `data/adcp_velocity_depth.parquet` — the tracked ingest of the boat-ADCP velocity_depth
+export (May-Jun 2026; see `ingest_adcp.py`). No external archive needed.
+  - Kanektok: all `Kanektok_Day_*` surveys (thalweg run Day 03 + bank-to-bank discharge
+    crossings Days 02/02b/05/06).
+  - Uyak:     `Uiyak_Day_04` (8 crossings near the mouth).
 
 Radius is straight-line distance from the shared anchor (the arc-frame downstream coordinate), so
 "same radius" = matched downstream position, consistent with the rest of Approach B.
@@ -22,10 +23,8 @@ Run:  python3 DEM_Transects/adcp_depth_stats.py
 
 from __future__ import annotations
 
-import glob
 import os
 
-import geopandas as gpd
 import matplotlib
 
 matplotlib.use("Agg")
@@ -36,7 +35,8 @@ import pandas as pd
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "outputs")
 DATA = os.path.join(HERE, "data")
-ADCP_DIR = "/home/luke/Downloads/ADCP Data"
+# Tracked ADCP ingest (ingest_adcp.py) — no external archive needed to re-run this script.
+ADCP_PARQUET = os.path.join(DATA, "adcp_velocity_depth.parquet")
 KAN_THALWEG = os.path.join(DATA, "kanektok_thalweg_depth.parquet")
 
 ANCHOR = (59.82463509, -161.33397834)
@@ -51,13 +51,16 @@ def dist_km(lat, lon):
     return 2 * R_EARTH * np.arcsin(np.sqrt(a))
 
 
-def load_depth(pattern):
-    """All valid (depth>0) pings under a glob → DataFrame(lat, lon, depth_m, radius_km)."""
-    lat, lon, dep = [], [], []
-    for f in sorted(glob.glob(pattern)):
-        g = gpd.read_file(f)
-        lat += list(g["LAT"]); lon += list(g["LON"]); dep += list(g["DEPTH"])
-    df = pd.DataFrame({"lat": lat, "lon": lon, "depth_m": dep})
+def load_depth(river):
+    """All valid (depth>0) pings for one river → DataFrame(lat, lon, depth_m, radius_km).
+
+    Reads the tracked ingest and keeps every survey day for that river; radius is recomputed here
+    from the ping position so this script stays independent of the ingest's own radius column.
+    """
+    a = pd.read_parquet(ADCP_PARQUET, columns=["LAT", "LON", "DEPTH", "river"])
+    a = a[a["river"] == river]
+    df = pd.DataFrame({"lat": a["LAT"].to_numpy(float), "lon": a["LON"].to_numpy(float),
+                       "depth_m": a["DEPTH"].to_numpy(float)})
     df = df[np.isfinite(df["depth_m"]) & (df["depth_m"] > 0)
             & (df["depth_m"] < DEPTH_MAX_M)].reset_index(drop=True)
     df["radius_km"] = dist_km(df["lat"], df["lon"])
@@ -70,10 +73,8 @@ def _stats(s):
 
 
 def main():
-    kan = load_depth(os.path.join(ADCP_DIR, "Kanektok_Day_*", "Shapefiles",
-                                  "*_velocity_depth_01_ASC.shp"))
-    uy = load_depth(os.path.join(ADCP_DIR, "Uiyak_Day_04", "Shapefiles",
-                                 "*_velocity_depth_01_ASC.shp"))
+    kan = load_depth("Kanektok_River")
+    uy = load_depth("Uyak_Creek")
     uy[["lat", "lon", "depth_m", "radius_km"]].to_parquet(
         os.path.join(DATA, "uyak_mouth_depth.parquet"), index=False)
 

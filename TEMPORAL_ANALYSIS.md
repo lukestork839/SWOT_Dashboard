@@ -15,6 +15,17 @@
 > conclusions below (rivers stable, no typhoon signal) stand; the specific
 > numbers and per-test verdicts in this document await the writeup-regeneration
 > pass (see `docs/THESIS_IMPACT_LOG.md`).
+>
+> **UPDATE (2026-08-31): Q3 is now DEFINITIVE.** The storm comparison was
+> upgraded from the June-vs-June interim windows to the matched **Jul–Aug
+> low-flow seasons either side of landfall** (2025 pre, 2026 post) — the same
+> season as the Q2 baseline it is judged against. The Q3 section below carries
+> the definitive numbers; the verdict is unchanged (the storm response does
+> not exceed natural variability). Q1/Q2 are pinned to the frozen archive
+> (passes ≤ 2026-08-10) by construction, so no other number moved. The
+> isolated top-up of the late-August 2026 granules (`q3_topup_pull.py`,
+> run 2026-08-31) extends the post window to Aug 21 (n = 10); the numbers
+> below include it.
 
 **A one-time analysis of how the two rivers' long-profiles change over time.**
 Companion to the reference-gradient work. The analysis is computed once (offline); its
@@ -24,7 +35,7 @@ pre-computed results are displayed read-only in the dashboard's **⏳ Temporal R
 - **Code:** `temporal_analysis.py` (standalone, reads the full local record)
 - **Data:** `batch_outputs/master_all_data_part_*.parquet` — full SWOT record, 2023-07-31 → 2026-07-09 (188 passes)
 - **Outputs** (git-tracked in `temporal_results/`, read by the dashboard): `temporal_metrics_per_pass.parquet` (per-pass metrics), `temporal_q3_profile.parquet` (along-river ΔWSE curve for the typhoon figure), `temporal_analysis_results.json` (summary numbers)
-- **Status:** Q1 & Q2 complete; Q3 (typhoon) is an **interim June-only** result — the definitive answer needs the summer-2026 pull (Jul–Aug).
+- **Status:** Q1, Q2, and Q3 complete. Q3 (typhoon) is **definitive** as of 2026-08-31: matched Jul–Aug low-flow seasons either side of landfall (the earlier June-only interim run is superseded).
 
 ---
 
@@ -41,8 +52,10 @@ gradient") barely moves — season to season, year to year, or before/after the 
 Water level wobbles only a few tens of centimetres, and the storm's effect on the
 river upstream is **no larger than the normal year-to-year wobble.** Typhoon Halong's
 damage was coastal shoreline erosion at Quinhagak — we do **not** see it reshaping the
-river's upstream profile. *(The storm result is interim: it uses June data only; the
-full check waits for summer-2026 measurements.)*
+river's upstream profile. The definitive summer-vs-summer check even points the
+"wrong" way for a damage story: the post-storm summer's water surface sits a few
+centimetres *higher* (a slightly wetter 2026), with no scour signature anywhere
+along either river.
 
 ---
 
@@ -164,28 +177,44 @@ tiny — **statistical significance ≠ geomorphic significance**. Normal water-
 
 ---
 
-## Q3 — Extreme-event impact: Typhoon Halong (interim, June 2025 vs June 2026)
+## Q3 — Extreme-event impact: Typhoon Halong (DEFINITIVE, Jul–Aug 2025 vs Jul–Aug 2026)
 
-Typhoon Halong made landfall **2025-10-12**, eroding ~60 ft of shoreline at Quinhagak.
-Matched open-water month (June) before and after; full Jul–Aug comparison pending the summer-2026 pull.
+The extratropical remnant of Typhoon Halong made landfall **2025-10-12**, eroding ~60 ft
+of shoreline at Quinhagak. Definitive comparison (2026-08-31 run): the matched **Jul–Aug
+low-flow seasons** either side of landfall — the same season as the Q2 natural-variability
+baseline, so the storm window and its yardstick are like-for-like. Pre = Jul 10 – Aug 30,
+2025 (n = 11 gated passes per river); post = Jul 1 – Aug 21, 2026 (n = 10 — every
+published 2026 granule, including the isolated late-August top-up).
 
-| River | Slope Δ (storm) | WSE Δ (storm) | Normal baseline (Q2) | Verdict |
+| River | Slope Δ (storm) | WSE Δ (storm) | Normal baseline (Q2) | Verdict (bootstrap excess CI) |
 |---|---|---|---|---|
-| Kanektok | +0.04 cm/km | **−0.09 m** | −0.22 m | within normal |
-| Uyak | −0.55 cm/km | **−0.29 m** | −0.38 m | within normal |
+| Kanektok | −0.18 cm/km | **+0.09 m** | −0.23 m | within — excess 95% CI [−0.262, −0.002] m falls at or below 0 |
+| Uyak | +1.16 cm/km | **+0.35 m** | −0.36 m | indistinguishable — excess 95% CI [−0.374, +0.340] m spans 0 |
 
-**WSE change by distance (June 2025 → June 2026, binned medians):** essentially flat
-everywhere — Kanektok +0.01 m overall (downstream +0.01 / upstream −0.00), Uyak −0.01 m
-(downstream −0.01 / upstream −0.02). No localized upstream or downstream shift.
+(The Kanektok interval's upper bound grazes zero by 2 mm — read it as "does not exceed
+the natural swing", not "significantly smaller".) Family-wise significance: none of the
+four Q3 tests survives Holm (Uyak's raw p = 0.0067 WSE / 0.053 slope adjust to
+0.080 / 0.569). Uyak's ΔWSE interval alone is [+0.028, +0.549] m — the rise is likely
+real hydrology (a wetter 2026 summer), but the *excess* over the natural baseline spans
+zero, which is the question that matters. A **date-matched sensitivity check** (both
+years clipped to the common Jul 10 – Aug 21 month-day range, so within-window baseflow
+recession cannot bias the medians; n = 9 vs 8) gives the same picture: Kanektok +0.09 m,
+Uyak +0.37 m.
 
-**Finding (interim).** **No detectable typhoon signal in the upstream river long-profile.**
-Both rivers' post-storm gradient *and* water level fall **within — indeed below — normal
-interannual variability**, and the along-river change is flat (no local scour/deposition
-signature). The storm's dramatic effect was coastal; the river gradient and level upstream
-are unchanged beyond ordinary year-to-year noise. This null result is trustworthy
-*precisely because* it used the de-biased robust method with a natural-variability control —
-the retired density-biased tab (summer 2025 vs ice-contaminated Mar–Jun 2026) would likely
-have shown a spurious change.
+**WSE change by distance (Jul–Aug 2025 → Jul–Aug 2026, binned medians):** a small uniform
+*rise* — Kanektok +0.12 m overall (upstream +0.11 / downstream +0.12), Uyak +0.13 m
+(upstream +0.18 / downstream +0.10); no bin moves outside [−0.12, +0.45] m. No localized
+scour or deposition signature anywhere along either profile.
+
+**Finding (definitive).** **No detectable typhoon signal in the upstream river
+long-profile.** The post-storm summer's water surface sits slightly *higher* than the
+pre-storm summer's — the opposite direction from a scour/incision signature, and the size
+of an ordinary wet-vs-dry-summer difference (the normal 2024→2025 swing was −0.23 to
+−0.36 m). Gradients moved ≤ 1.2 cm/km against a ~3 cm/km between-river contrast. The
+storm's dramatic effect was coastal; the river gradient and level upstream are unchanged
+beyond ordinary year-to-year variability. (For continuity: the superseded June-only
+interim run pointed the other way, −0.09 / −0.29 m — that sign flip between two window
+choices, both inside the natural band, is itself evidence these deltas are noise-level.)
 
 ---
 
@@ -253,9 +282,11 @@ structure, not a desired answer. Reproduce: `python3 verify_temporal_method.py`.
 
 ## Limitations
 
-- **Q3 is interim.** June-only, with just **2–3 passes per river** (low statistical power;
-  Uyak WSE change couldn't even be tested). The definitive pre/post comparison needs
-  **Jul–Aug 2026 open-water data** — re-run `temporal_analysis.py` after that pull.
+- **The Q3 post window is slightly asymmetric.** The pre year holds 11 Jul–Aug
+  passes (Jul 10 – Aug 30) against 10 post passes (Jul 1 – Aug 21; the Aug 22–31
+  granules were not yet published at analysis time). The date-matched
+  sensitivity check bounds the effect of that asymmetry, and it does not change
+  the verdict.
 - **WSE reflects discharge, which SWOT does not measure.** Matching the same month across
   years, plus using the Q2 baseline as the control, is our defense against flow-driven
   differences masquerading as change — but it is not a discharge correction.

@@ -826,9 +826,10 @@ high flow = May, low flow = Jul–Aug.
 
 ## Temporal Stability Analysis
 
-**Status:** ✅ Q1 (seasonal) & Q2 (interannual) complete; Q3 (typhoon) **interim** (June-only,
-pending summer-2026 data). Standalone diagnostic: `temporal_analysis.py`. Full report:
-[`TEMPORAL_ANALYSIS.md`](TEMPORAL_ANALYSIS.md).
+**Status:** ✅ Q1 (seasonal), Q2 (interannual), and Q3 (typhoon) complete; Q3 is
+**definitive** as of 2026-08-31 (matched Jul–Aug low-flow seasons either side of landfall —
+the June-only interim run is superseded). Standalone diagnostic: `temporal_analysis.py`.
+Full report: [`TEMPORAL_ANALYSIS.md`](TEMPORAL_ANALYSIS.md).
 
 **Purpose.** A one-time assessment of how the two rivers' long-profiles change over time,
 answering three questions: (Q1) seasonal variability, May high flow vs Jul–Aug low flow;
@@ -855,8 +856,11 @@ findings). Medians and Mann–Whitney U tests throughout; **significance is deci
 `p_wse_holm` / `p_slope_holm`; significant = adjusted p < 0.05). The Q3 vs-baseline verdict uses
 a **bootstrap 95 % CI** (n = 10,000, seeded) on |storm ΔWSE| − |baseline ΔWSE|, with a three-way
 outcome: *exceeds* / *within* / *indistinguishable* (CI spans zero).
-Reads the **full local record** (190 fitted passes, 2023-07-31 → 2026-08-10; 188 pass the
-full-coverage gate). **Key design:** Q2 (change under no disturbance) is the
+Reads the **full local record** plus the isolated late-August 2026 top-up (196 fitted
+passes, 2023-07-31 → 2026-08-21; 194 pass the full-coverage gate). Q1/Q2 use only the
+frozen archive (188 gated passes ≤ 2026-08-10, a freeze-date guard in the script); the
+6 post-freeze top-up passes feed the Q3 storm window alone, so no headline value can
+move. **Key design:** Q2 (change under no disturbance) is the
 **natural-variability baseline / control for Q3** — the storm counts as an impact only if its
 signal exceeds normal year-to-year variation.
 
@@ -866,7 +870,7 @@ signal exceeds normal year-to-year variation.
 |---|---|
 | **Q1 Seasonal** (May vs Jul–Aug) | Small and **inconsistent**: slope ≈ season-invariant (pooled swing +0.1 Kanektok / +1.4 Uyak cm/km, raw p = 0.34 / 0.15 — the pre-revision archive's marginal Uyak p = 0.033 **dissolved** once the amputated passes were recovered); WSE swings only ±0.06–0.44 m and *flips sign* between years — only Uyak-2024 (−0.44 m, Holm-adjusted p = 0.042) survives the family-wise correction. No repeatable seasonal profile shift. |
 | **Q2 Interannual** (2024 vs 2025) | Both rivers stable. Slope change trivial (Kanektok +0.5, Uyak +0.1 cm/km) — Kanektok's is *statistically* significant even after Holm (adjusted p < 0.001) purely because its variance is tiny (std 0.4); the magnitude is geomorphically trivial. WSE moved **−0.23 m (Kanektok) / −0.36 m (Uyak)** (Jul–Aug 2024 → 2025, the drier 2025 summer), both surviving Holm — this is the natural-variability baseline for Q3. |
-| **Q3 Typhoon** (interim, Jun 2025 vs Jun 2026) | **No detectable signal.** WSE change −0.15 m (Kanektok) / −0.31 m (Uyak); slope change ≤ 0.11 cm/km; along-river change flat. Bootstrap excess-vs-baseline 95 % CIs span zero on both rivers (Kanektok [−0.27, +0.09] m; Uyak [−0.39, +0.27] m) → verdict **indistinguishable from natural variability** — the honest small-n (5 vs 5 passes) phrasing of "no upstream storm scar". Storm damage was coastal. |
+| **Q3 Typhoon** (DEFINITIVE, Jul–Aug 2025 vs Jul–Aug 2026; n = 11 vs 10 gated passes/river) | **No detectable signal.** WSE change **+0.09 m** (Kanektok) / **+0.35 m** (Uyak) — a slight *rise*, the opposite of a scour signature and the size of an ordinary wet-vs-dry-summer swing; slope change ≤ 1.2 cm/km; none of the four tests survives Holm (Uyak raw p = 0.0067/0.053 adjust to 0.080/0.569). Along-river change nearly uniform (+0.12/+0.13 m medians, no localized scar). Bootstrap excess-vs-baseline 95 % CIs: Kanektok **[−0.262, −0.002] m** falls at or below zero (read as "does not exceed" — the upper bound grazes zero); Uyak **[−0.374, +0.340] m** spans zero → verdict: **the storm response does not exceed natural year-to-year variability**. A date-matched sensitivity check (common Jul 10 – Aug 21 month-day range, descriptive only) agrees (+0.09/+0.37 m). Storm damage was coastal. |
 
 **Why the dedicated analysis matters.** The retired Seasonal/Typhoon tabs used
 density-biased pooled OLS on raw pixels with no coverage gate, and compared genuine
@@ -890,15 +894,17 @@ invariance holds on full-coverage-only passes (May−JulAug +0.5/+0.7 cm/km, n.s
 control: the real ~3 cm/km between-river difference is detected at p≈2×10⁻¹⁶, so the method is
 not merely insensitive. Pooling is thus justified on independent grounds, not to erase a result.
 
-**Limitations.** Q3 is interim (June only, 2–3 passes/river — low power; definitive answer
-needs Jul–Aug 2026). WSE reflects unmeasured discharge (matched-month + Q2 baseline are the
-defense, not a correction). Samples are small throughout, so "not significant" often means
-"underpowered." Both metrics are whole-reach quantities.
+**Limitations.** The Q3 windows are slightly asymmetric (11 pre-storm passes, Jul 10 –
+Aug 30, vs 10 post-storm passes, Jul 1 – Aug 21 — the Aug 22–31, 2026 granules were not
+yet published at analysis time) — the date-matched sensitivity check bounds this and does
+not change the verdict. WSE reflects unmeasured discharge (matched-season + Q2 baseline are
+the defense, not a correction). Samples are small throughout, so "not significant" often
+means "underpowered." Both metrics are whole-reach quantities.
 
 **Outputs.** Written to the git-tracked `temporal_results/` directory (read directly by the
 dashboard's ⏳ Temporal Results tab, so results are identical local and on Streamlit Cloud):
 `temporal_metrics_per_pass.parquet` (per-pass metrics), `temporal_q3_profile.parquet`
-(along-river ΔWSE curve for the interim typhoon figure), `temporal_analysis_results.json`
+(along-river ΔWSE curve for the typhoon figure), `temporal_analysis_results.json`
 (summary). Method parameters mirror the reference gradient plus `REF_DIST_KM = 15.0`.
 Method-verification suite: `verify_temporal_method.py` (T1–T5 above).
 
@@ -1273,7 +1279,9 @@ The window is therefore **±150 m**, ~3 channel widths on a ~50 m river, which i
 
 **β median 0.06, H_AR median +0.14 m**, with the near-channel high ground sitting *below* the floodplain reference outright (β ≤ 0) on **38 %** of arcs. The defensible statement is not "β is safely under a threshold" but **there is no alluvial ridge to superelevate** — the same fact the −1.50 m incision reports, in dimensionless form.
 
-**β = 1 is not the operative avulsion threshold, and is not presented as one.** Gearon et al. (2024) show the criterion is **βγ ≥ Λ** (their eq. 4) with Λ median **2.1**; the paper states plainly that "β only accounts for half of Λ" and that "roughly 60 % of deltas in our dataset have β < 0.5" — near the sink, rivers that *did* avulse carry low β because the gradient-advantage term γ is high. This analysis deliberately does not evaluate γ (a corridor-median floodplain has no location, so the ridge-flank slope S_AR has no defensible run length), so β is reported as a **reproduction of the prior ArcGIS metric** `(P98 − median)/(P98 − P2)` and the avulsion argument rests on the incision result rather than on β alone.
+**β = 1 is not the operative avulsion threshold, and is not presented as one.** Gearon et al. (2024) show the criterion is **βγ ≥ Λ** (their eq. 4) with Λ median **2.1**; the paper states plainly that "β only accounts for half of Λ" and that "roughly 60 % of deltas in our dataset have β < 0.5" — near the sink, rivers that *did* avulse carry low β because the gradient-advantage term γ is high. This analysis deliberately does not evaluate γ (a corridor-median floodplain has no location, so the ridge-flank slope S_AR has no defensible run length), so the avulsion argument rests on the incision result rather than on β alone.
+
+The threshold β is actually stated against is **~0.5** (Ganti et al. 2016) — CIVIC warning sign 1 — which is lower than the classical one-channel-depth criterion (β ≈ 1; Mohrig et al. 2000) because on backwater-controlled deltas avulsion occurs at roughly half a channel depth of superelevation. Critically, **that test is one-directional**: β > 0.5 is evidence *for* frequent avulsion, whereas β < 0.5 is *not* a clearance, for exactly the βγ ≥ Λ reason above. "β = 0.06 < 0.5, therefore stable" is an invalid inference and is not made anywhere. Two further limits: at this magnitude the corridor-median bias (~0.29 m ≈ **0.10 in β units**) exceeds the reported β, so it should not be read to two decimals; and Ganti's ~0.5 is calibrated on a backwater-controlled delta while Gearon's central finding is that the rules change downstream, so β is reported as a function of radius rather than collapsed to one number tested against one threshold.
 
 #### Channel migration
 
@@ -1300,7 +1308,7 @@ The DEM analyses are grounded in the following theoretical and empirical framewo
 - The linear trendline approximates a profile that is naturally concave-up; R² is reported so users can assess fit quality
 - DEM terrain within the river polygons includes banks and bars, not just the active channel bed — this is appropriate for corridor-scale avulsion analysis but differs from SWOT's water-surface-only measurement
 - The ArcticDEM mosaic is a **2010–2021 multi-date blend**, so (a) the channel may have migrated relative to the 2026 field centerlines, and (b) the two rivers were imaged at different water stages. Both are quantified and handled in [Arc Cross-Section Avulsion Analysis](#arc-cross-section-avulsion-analysis); the inter-river comparison is taken from pass-paired SWOT rather than from the DEM for this reason
-- β is reported as a reproduction of the prior ArcGIS superelevation metric, **not** as a threshold test against β = 1; Gearon's operative criterion is βγ ≥ Λ and the gradient term γ is not evaluated here
+- β is reported as the Gearon (2024) superelevation ratio answering CIVIC warning sign 1, **not** as a threshold test against β = 1; the applicable threshold is β > ~0.5 (Ganti et al. 2016) and it is one-directional — low β is not evidence of stability, since Gearon's operative criterion is βγ ≥ Λ and the gradient term γ is not evaluated here
 - The floodplain reference is the median of a ~2.7 km-wide inter-channel corridor, which is a regional datum rather than Gearon's local ridge-toe pick; it sits ~0.29 m below the floodplain immediately beside the Kanektok, and because it has no location it cannot support a ridge-flank slope S_AR
 
 ### References
@@ -1443,7 +1451,7 @@ Use this checklist to verify our processing against the SWOT handbook:
 - [x] Inter-river difference taken from **pass-paired** overpasses so stage cancels
 - [x] Channel bed stage-matched to the boat-ADCP survey via coincident SWOT passes (2026-05-28/30)
 - [x] Crest window justified by channel geometry + a bankfull consistency check, not tuned to a result
-- [x] β framed as a reproduction of the prior ArcGIS metric; **β = 1 explicitly not claimed as a threshold**
+- [x] β framed as the Gearon superelevation ratio / CIVIC warning sign 1; **β = 1 explicitly not claimed as a threshold**, and the β > ~0.5 test explicitly stated as one-directional
 - [x] DEM acquisition window (2010–2021) stated, and channel-migration offsets quantified with QC columns
 - [x] Sensitivity of β to each input reported (floodplain > crest ≫ bed)
 

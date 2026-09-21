@@ -228,8 +228,9 @@ def render_cross_sections(chB, profB, plotly_template):
             f"**{(bv['kan_beta']<=0).mean()*100:.0f}%** of arcs the near-channel high ground sits "
             "*below* the floodplain reference outright. That is the same story the incision figure "
             "tells, in dimensionless form: there is no levee here to perch a channel on top of. "
-            "β is reported as a reproduction of the original ArcGIS metric — **β = 1 is not the "
-            "operative avulsion threshold** (see the note below)."
+            "The threshold to watch is **β above ~0.5** (Ganti et al. 2016) — but it is a "
+            "**one-directional** test: a high β is evidence for frequent avulsion, while a low β is "
+            "*not* a clearance (see the note below)."
         )
     with st.expander("How to read this arc cross-section (and its caveat)"):
         st.markdown("""
@@ -269,10 +270,17 @@ def render_cross_sections(chB, profB, plotly_template):
               The crest is read within **±150 m** of the channel (~3 channel widths, the scale Gearon
               works at); a wider window climbs onto regional high ground rather than a bank, and
               yields a "bank" standing far higher above the water than the river is deep — one the
-              river could never fill. **β = 1 is not the operative avulsion threshold.** Gearon's
-              criterion is **β × γ ≥ Λ** (Λ median ≈ 2.1), where γ is a gradient-advantage term this
-              analysis does not evaluate; in their data most avulsed *deltas* sit at β < 0.5. Here β
-              lands near 0 because **H_AR ≈ 0 — there is no alluvial ridge to superelevate.**
+              river could never fill. **The threshold is β > ~0.5, not β = 1** — avulsion on
+              backwater-controlled deltas happens at roughly *half* a channel depth of
+              superelevation (Ganti et al. 2016), not the full depth of the classical criterion.
+              **The test runs one way only.** A high β is evidence *for* frequent avulsion; a low β
+              is not evidence of stability. Gearon's own criterion is **β × γ ≥ Λ** (Λ median ≈ 2.1),
+              where γ is a gradient-advantage term this analysis does not evaluate, and in their data
+              roughly 60 % of deltas that *did* avulse sit at β < 0.5. So the claim here is not
+              "β is safely under 0.5" — it is the narrower **H_AR ≈ 0: there is no alluvial ridge to
+              superelevate.** At this magnitude β is also coarse: the ~2.7 km-wide corridor median
+              sits ~0.29 m below the floodplain right beside the channel, worth ~0.10 in β units —
+              more than β itself — so don't read it to two decimals.
               (Kanektok only — the Uyak has ADCP depth near its mouth only.)
             - Each channel is located by **snapping to the actual DEM channel** from a centerline
               prior. Both priors are **official field-surveyed centerlines** accurate to ~20–50 m —

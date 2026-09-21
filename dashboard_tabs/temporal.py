@@ -54,8 +54,7 @@ def render(ctx):
             "has barely changed from spring to late summer, from year to year, or across "
             "Typhoon Halong. The water level moves around a little, but only as much as it "
             "normally does from one year to the next — and **we see no sign of the typhoon "
-            "changing the river upstream** (the storm check is still preliminary — see the "
-            "note on the last chart)."
+            "changing the river upstream**."
         )
         st.markdown(
             f"- **Spring vs. late summer:** the river's steepness barely moves "
@@ -67,10 +66,12 @@ def render(ctx):
             f"- **Year to year (summer 2024 vs. 2025):** both rivers steady — the steepness "
             f"change is tiny, and the water level shifts only about 0.2 m (Kanektok) to "
             f"0.5 m (Uyak).\n"
-            f"- **Typhoon Halong (preliminary):** upriver, the water level changed only "
+            f"- **Typhoon Halong (full summer before vs. full summer after):** upriver, "
+            f"the water level changed only "
             f"{q3p['Kanektok_River']['median_dwse_m']:+.2f} m (Kanektok) and "
-            f"{q3p['Uyak_Creek']['median_dwse_m']:+.2f} m (Uyak) — within the normal "
-            f"year-to-year range. The storm's damage was along the coast, not up the river."
+            f"{q3p['Uyak_Creek']['median_dwse_m']:+.2f} m (Uyak) — a slight *rise*, the "
+            f"opposite of storm scour, and within the normal year-to-year range. The "
+            f"storm's damage was along the coast, not up the river."
         )
         st.caption(
             "Two terms to know: the river's **steepness** (how far the water surface drops "
@@ -215,20 +216,17 @@ def render(ctx):
             st.plotly_chart(fig_sb, width="stretch", theme=None)
         st.divider()
 
-        # ---------- FIGURE 2: spatial delta (typhoon, interim) ----------
-        st.markdown("#### Chart 4 — Did the typhoon change any spot along the river? (preliminary)")
-        st.warning(
-            "**Still preliminary.** This compares June 2025 with June 2026, and we only "
-            "have 2–3 clean passes per river for those months. Treat it as a strong hint, "
-            "not a final answer — we'll know for sure once the summer 2026 data comes in."
-        )
+        # ---------- FIGURE 2: spatial delta (typhoon, definitive Jul-Aug windows) ----------
+        st.markdown("#### Chart 4 — Did the typhoon change any spot along the river?")
         st.caption(
             "This line shows how much the water level changed at each point along the river "
-            "(June 2026 compared with June 2025). If the storm had scoured out the riverbed "
+            "(the full late summer after the storm, Jul–Aug 2026, compared with the full "
+            "late summer before it, Jul–Aug 2025). If the storm had scoured out the riverbed "
             "or dumped a pile of gravel somewhere, you'd see a sharp spike or dip at that "
-            "spot. The line mostly stays near zero; a few points reach about ±0.7 m, but "
-            "that is within the year-to-year wiggle we see between storm-free summers too — "
-            "nothing here stands out as a storm scar."
+            "spot. Instead the line sits slightly *above* zero nearly everywhere — the "
+            "post-storm summer simply carried a bit more water (about +0.12 m, and no point "
+            "moves more than about half a meter) — and there is no localized jump anywhere. "
+            "Nothing here stands out as a storm scar."
         )
         if len(q3_curve):
             fig_d = go.Figure()
@@ -248,7 +246,7 @@ def render(ctx):
             fig_d.update_layout(
                 height=440, template=plotly_template,
                 xaxis_title="Distance from Anchor Point (km)",
-                yaxis_title="Change in Water Surface Elevation, Jun 2026 − Jun 2025 (m)",
+                yaxis_title="Change in Water Surface Elevation, Jul–Aug 2026 − Jul–Aug 2025 (m)",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02),
             )
             # Same convention as every other distance-axis figure:
@@ -256,7 +254,7 @@ def render(ctx):
             fig_d.update_xaxes(autorange="reversed")
             st.plotly_chart(fig_d, width="stretch", theme=None)
         else:
-            st.info("Not enough matching June passes to draw this chart yet.")
+            st.info("Not enough matching late-summer passes to draw this chart yet.")
         st.divider()
 
         # ---------- TABLES (secondary, in expanders) ----------
@@ -311,7 +309,7 @@ def render(ctx):
                        "too small to notice on the ground. A result can be statistically "
                        "\"significant\" and still be too tiny to matter.")
 
-        with st.expander("Typhoon Halong (June 2025 vs. June 2026 — preliminary)"):
+        with st.expander("Typhoon Halong (late summer 2025 vs. late summer 2026)"):
             rows = [{
                 "River": DISP[r["reach"]], "Passes 2025": r["n_2025"],
                 "Passes 2026": r["n_2026"],
@@ -334,11 +332,12 @@ def render(ctx):
             st.markdown("**Change at each point along the river:**")
             st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
             st.caption("The change around the storm is no larger than an ordinary "
-                       "year-to-year swing — with only a handful of matching passes the "
-                       "comparison is honestly \"too close to call\" rather than a proven "
-                       "\"no change,\" but nothing stands out, and the change is flat all "
-                       "along the river — no upstream storm scar. Preliminary until the "
-                       "summer 2026 (Jul–Aug) data comes in.")
+                       "year-to-year swing — with roughly a dozen matching passes per "
+                       "river the comparison is honestly \"too close to call\" rather "
+                       "than a proven \"no change,\" but nothing stands out: the water "
+                       "sat slightly *higher* after the storm (the opposite of scour), "
+                       "and the change is nearly uniform all along the river — no "
+                       "upstream storm scar.")
 
         st.caption(
             f"**Where the numbers come from.** Satellite record {record['date_min']} – "
@@ -348,6 +347,6 @@ def render(ctx):
             f"{method['slope_estimator']}; water level: {method['level_metric']}; "
             f"a pass qualifies with ≥{method['min_nodes']} points, spanning "
             f"≥{method['min_span_km']:.0f} km and starting within "
-            f"{method['max_start_km']:.0f} km of the mouth, in months "
+            f"{method['max_start_km']:.0f} km of the anchor point, in months "
             f"{method['open_water_months']}. Generated by temporal_analysis.py."
         )

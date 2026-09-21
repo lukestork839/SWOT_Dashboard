@@ -1,0 +1,29 @@
+P2 — Superelevation comparison, highest-beta arc (presentation figure)
+
+Companion to P1: instead of the median geometry, panel (b) shows the single
+arc where the Kanektok comes closest to the superelevated configuration.
+(a) The avulsion-ready superelevated channel, schematic after Gearon et al.
+(2024): bed aggraded to floodplain grade, beta = H_AR/H_M ~ 1, water above
+the plain. (b) The 25.0 km arc — the beta maximum of the 63 depth-valid arcs
+(values from the tracked arcB_channels.parquet; canonical ridge-claim audit).
+A real alluvial ridge exists here: the crest stands H_AR = +2.34 m above the
+floodplain reference, against a crest-to-bed depth H_M = 4.72 m, giving
+beta = 0.495 — the highest on the reach; no arc reaches 0.5. Even at this
+maximum, the median water surface (SWOT KaRIn) sits 1.06 m BELOW the
+floodplain reference: the ridge is tall because the channel is deep, not
+because the water rides high. The cross-section is drawn as the arc
+transects actually present: high ground flanks both sides of the channel —
+a tall bank directly at the channel (the crest pick, the highest DSM point
+within +/-150 m, plausibly including riparian canopy) and a second ridge
+set back behind a low bench on the opposite side — the configuration a
+visitor to the river would recognize. Both panels share the same true
+vertical scale; the horizontal
+axis is compressed, so bank slopes appear far steeper than the gentle grades
+seen on the ground. The bed is drawn one H_M below the crest, so the drawn
+water depth (1.32 m) differs slightly from the arc's ADCP depth (1.28 m).
+
+Data: SWOT L2 HR PIXC water surface elevations / ArcticDEM digital surface
+model / boat ADCP survey. Panel (a) is a conceptual schematic, not data.
+The DSM canopy caveat applies to the crest pick: vegetation bias inflates
+crests, so the positive H_AR is an upper bound and beta = 0.495 is
+conservative for the no-superelevation conclusion.

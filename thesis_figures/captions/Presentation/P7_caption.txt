@@ -1,0 +1,32 @@
+P7a — The two channels in raw satellite imagery (presentation figure)
+
+Esri World Imagery of the bifurcation and the first few kilometres of each
+channel, with no analysis overlays: scale bar and north arrow only. The frame
+is ~3 km across and centred on the split (59.8289 N, 161.3778 W), which sits
+just left of centre where the narrow channel departs northwest from the broad
+one.
+
+The Kanektok River leaves the split as the wide, bright, multi-thread braid
+that fills the lower half of the frame, with exposed gravel bars between
+threads. Uyak Creek leaves it as the single dark thread running northwest
+across the upper left — narrow enough that it is only a few image pixels wide
+and, at the extent used for Figure 10, not resolvable at all.
+
+This figure exists because the analysis maps cannot make that point. In
+Figure 10 each river is drawn as its analysis polygon — a corridor fitted
+around the whole braid plain, not around the channel — so the Uyak's mask
+reads as wide as the Kanektok's. That is correct for its purpose (it is the
+region SWOT pixels are drawn from) and misleading as a picture of channel
+size. Stripping the overlays away removes the question-begging.
+
+Two caveats belong with any width read off this image. First, the Esri mosaic
+carries an acquisition seam running diagonally across the scene: the northern
+half — the Uyak's floodplain — is from a paler, drier-looking pass than the
+southern half, so part of the apparent tonal contrast is the imagery rather
+than the rivers. Second, a single scene is a single unknown stage, so the
+width contrast shown is one snapshot and not a stage-averaged measurement.
+The quantitative comparison between the two channels is carried by the gauge
+and gradient figures, not by this one; this figure is qualitative context.
+
+Basemap: Esri World Imagery, fetched at zoom 15; the scale bar is corrected
+for the latitude distortion of the Web Mercator projection.

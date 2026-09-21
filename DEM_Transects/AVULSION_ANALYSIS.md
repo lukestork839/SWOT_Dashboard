@@ -1,58 +1,52 @@
 # DEM Transect Avulsion Analysis — Methods, Results & Caveats
 
 **Rivers:** Kanektok River & Uyak Creek (near Quinhagak, Alaska)
-**DEM:** ArcticDEM **v4.1, native 2 m mosaic** (`batch_outputs/arcticdem_rivers_2m.tif`, EPSG:3413), geoid-corrected to EGM2008 **per radius** (13.74 m at the anchor → 13.28 m at the coast; the earlier constant 13.46 m is fine for within-arc differences, which are datum-invariant, but tilts DEM-vs-SWOT comparisons by ~0.5 m over the reach). The mosaic is a **multi-date blend of 2010-10-03 → 2021-03-02 imagery** (PGC STAC), which matters for both channel migration and stage — see §4.
+**DEM:** ArcticDEM **v4.1, native 2 m mosaic** (`batch_outputs/arcticdem_rivers_2m.tif`, EPSG:3413), geoid-corrected to EGM2008 **per radius** (13.74 m at the anchor → 13.28 m at the coast; the earlier constant 13.46 m is fine for within-arc differences, which are datum-invariant, but tilts DEM-vs-SWOT comparisons by ~0.5 m over the reach). The mosaic is a **multi-date blend of 2010-10-03 → 2021-03-02 imagery** (PGC STAC), which matters for both channel migration and stage — see §3.
 **Shared anchor (dist origin):** `59.82463509, -161.33397834` — the upstream divergence point; distance-from-anchor increases downstream toward the coast. This is the **same anchor the SWOT dashboard uses** (verified identical: Δdist_km = 0), so DEM and SWOT share one longitudinal axis.
-**Last updated:** 2026-08-08.
+**Last updated:** 2026-08-19 (preliminary-ArcGIS β comparison removed; β reframed on CIVIC warning sign 1).
 
 ---
 
 ## 1. Purpose
 
-Reproduce — and, where necessary, correct — the prior ArcGIS DEM-transect **superelevation (β)** analysis of the Kanektok, on the higher-resolution 2 m ArcticDEM, and put both rivers on a common frame so the DEM story can be checked against the SWOT water-surface story.
+Measure whether the Kanektok is **perched above the floodplain it would spill into** — the topographic precondition for a Kanektok → Uyak avulsion — from the native 2 m ArcticDEM, and put both rivers on a common longitudinal frame so the DEM story can be checked against the SWOT water-surface story.
 
-**Superelevation β**, per cross-section:
+This answers **warning sign 1** of the three the parent CIVIC project watches for (project description R1):
+
+1. **Superelevation ratio above ~0.5** → avulsions occur frequently (Ganti et al. 2016) ← *this analysis*
+2. Abrupt down-channel slope drop by a factor of 2–3 (Brooke et al. 2022) ← SWOT gradients
+3. Cross-levee slope steeper than the down-channel slope (Slingerland & Smith 2004) ← SWOT gradients
+
+**Superelevation ratio β**, per cross-section, following Gearon et al. (2024):
 
 ```
-P98    = alluvial-ridge crest        (98th percentile of elevation in the near-channel band)
-P2     = channel bed                 (2nd percentile in the near-channel band)
-median = floodplain reference        (median elevation in the floodplain band)
-H_AR   = P98 - median   (ridge height above floodplain)
-Hm     = P98 - P2       (total bank relief, bed to crest)
-beta   = H_AR / Hm      (fraction of bank relief that is ridge standing above floodplain)
+crest      = alluvial-ridge crest     (lower of the two P98 bank-highs within ±150 m of the thalweg)
+floodplain = floodplain reference     (median terrain of the inter-channel corridor)
+bed        = channel bed              (SWOT survey-stage water surface − boat-ADCP thalweg depth)
+H_AR  = crest − floodplain    (ridge height above the floodplain)
+H_M   = crest − bed           (channel depth, bed to crest)
+β     = H_AR / H_M            (ridge height as a fraction of channel depth)
 ```
 
-β → 0: ridge ≈ floodplain (not perched). β → 1: floodplain ≈ bed (strongly perched, avulsion-prone).
+β → 0: the ridge stands level with the floodplain — nothing to spill off. β → 1: the bed has aggraded to floodplain level — the channel is perched a full channel depth above its surroundings.
+
+All three terms are **topographic** surfaces; the water surface is not a term in β. It enters only to locate the bed beneath the depth sounding, because ArcticDEM images the water surface rather than the bed. §2 explains why the cross-sections are iso-distance arcs; §3 is the measurement, including what the number does and does not license.
 
 ---
 
-## 2. The prior ArcGIS method, recovered
+## 2. Why iso-distance arcs, not straight cross-valley transects
 
-The original workflow (`~/Downloads/V6…ipynb`) drew a **straight guide line** down the Kanektok, hung **parallel** transects off it, and used **two clip zones** — a near-channel `River_Elevation` zone (→ P98, P2) and a broad `Total_Elevation` zone (→ median).
+A cross-section drawn obliquely to the valley axis measures the regional down-valley gradient, not superelevation, and the two are easy to confuse at this site because the gradient is large relative to the signal.
 
-We recovered the intended result directly from the intact elevation-point layers in the project geodatabase (`clean_and_complete.gdb`; the notebook run that would have saved β to `Avulsion_Lines_2` had errored, leaving those columns empty). The recovered table is committed at `reference/original_beta.parquet` and can be rebuilt from the gdb with `recover_original_beta.py`:
+The corridor falls at roughly **1.83 m/km** down-valley. A transect whose two ends differ by 4–6 km in distance-from-anchor therefore carries an **8–11 m** built-in elevation drop from gradient alone — an order of magnitude above the ~1 m superelevation being looked for. Any cross-valley comparison on such a transect reads as "the upstream channel is higher," regardless of whether either channel is perched. Removing the regional elevation-vs-distance trend collapses the apparent cross-valley difference to **±1–2 m with inconsistent sign**.
 
-> **Recovered original:** β median **0.96**, H_AR median **4.30 m**, ~30 % of transects "perched" (β > 1).
+The fix is to make the cross-section an **iso-distance line**, so both ends sit at the same downstream coordinate and the gradient term cancels by construction rather than by detrending. Here that line is the **arc of constant straight-line distance from the shared anchor** (§3) — which also puts the DEM on the same longitudinal axis as the SWOT dashboard, so the two analyses are directly comparable. The frame is independently checked against SWOT at matched distance, which finds the Uyak marginally *higher* than the Kanektok (§3), the opposite of what oblique transects report.
 
-This looked like a strongly perched Kanektok. **It is largely an artifact** (§3).
-
----
-
-## 3. The diagonal-transect artifact (why the original over-read superelevation)
-
-The straight guide line is not aligned with the true flow/valley axis, so its parallel transects run **diagonally** across the valley. Measured against the shared anchor:
-
-- Each transect connects a Kanektok point to a Uyak point **4–6 km further downstream**.
-- The regional down-valley gradient (~**1.83 m/km**) over that 4–6 km offset predicts an **8–11 m** drop — which **equals essentially the entire observed "Kanektok-above-Uyak" drop**.
-- Removing the regional elevation-vs-distance trend collapses the cross-valley difference to **±1–2 m, with inconsistent sign** — i.e. no systematic superelevation.
-
-**Independent check:** the SWOT dashboard, comparing the rivers at *matched* distance-from-anchor, finds the **Uyak marginally _higher_** (+0.19 m median). The diagonal transect pointed the opposite way — a geometry artifact, not a signal. Extending the floodplain zone all the way to the low Uyak inflated it further (a naive rebuild gave β ≈ 2.9, 99 % "perched").
-
-**Lesson (recorded):** the down-valley gradient must be removed — here by comparing at **matched downstream distance** along iso-anchor arcs (§4). *(An earlier perpendicular-to-channel superelevation method, "Approach A" — Gearon-standard β from ⟂ transects — gave a consistent modest-levee result, β ≈ 0.41, but has been retired now that the arc method is the accurate, field-centerline-based approach; it lives in git history if needed.)*
+*(A flow-perpendicular section at each channel — "Approach A", giving β ≈ 0.41 — was tried and retired in favour of the arc frame, which compares both rivers in one cut and shares the SWOT axis; it lives in git history. Perpendicular re-measurement remains the rigorous refinement noted in §3.)*
 
 ---
 
-## 4. The arc method — radial "iso-distance-from-anchor" cross-sections
+## 3. The arc method — radial "iso-distance-from-anchor" cross-sections
 
 Each transect is the **arc of points at a constant straight-line distance (radius) from the shared anchor**, so every point is at the same "downstream" coordinate the SWOT dashboard uses. An arc spans **Kanektok → floodplain → Uyak** in one cut, letting the two rivers be compared at a matched downstream position.
 
@@ -78,7 +72,7 @@ Each transect is the **arc of points at a constant straight-line distance (radiu
 
 So although the Uyak water surface is marginally the higher of the two, **neither channel is perched above the inter-channel corridor, and the Kanektok is distinctly incised on every arc** — direct topographic evidence *against* a Kanektok → Uyak avulsion. *Caveat:* the corridor is wide (~2 km), so its median is a broad reference and could be biased if a subtle interfluve divide sits between the channels; the sign and magnitude are robust enough that this does not change the conclusion.
 
-**Gearon superelevation ratio β = H_AR / H_M.** The dimensionless form of the same idea (Gearon et al. 2024, *Nature*) is **β = H_AR/H_M = (ridge crest − floodplain) / (ridge crest − bed)** — alluvial-ridge height over channel depth. It is identical to the prior ArcGIS `(P98 − median)/(P98 − P2)`, which is why we report it: **β here is the reproduction of the preliminary analysis**, not an attempt to replicate Gearon's study design.
+**Gearon superelevation ratio β = H_AR / H_M.** The dimensionless form of the same idea (Gearon et al. 2024, *Nature*) is **β = H_AR/H_M = (ridge crest − floodplain) / (ridge crest − bed)** — alluvial-ridge height over channel depth. This is the quantity CIVIC warning sign 1 is stated in (§1), so it is what we report; it is not an attempt to replicate Gearon's study design, and γ / Λ are deliberately not evaluated (see the threshold discussion below).
 
 Note that all three terms are **topographic** surfaces. The water surface is *not* a term in β — in Gearon it appears only as an instrument for locating the bed, because lidar cannot see through water ("ICESat-2 can rarely resolve channel bed elevations owing to strong absorption of near-infrared laser pulses by turbid water"). We have the bed directly: **bed = water surface − boat-ADCP thalweg depth**, and since SWOT overflew on **2026-05-28 and 05-30, inside the 2026-05-28→06-03 survey window**, the water surface used is the one measured *at the stage the depths were sounded at*. That removes the stage mismatch in pairing a 2026 depth with a 2010–2021 DEM (worth +0.05 m on the bed here). The survey itself caught a typical stage — **+0.04 m** from the all-pass median — so β is not stage-biased.
 
@@ -89,7 +83,14 @@ Note that all three terms are **topographic** surfaces. The water surface is *no
 
 **Result: β median 0.06, with H_AR median +0.14 m**, and on **38 %** of arcs the near-channel high ground sits *below* the floodplain reference outright (β ≤ 0). The honest reading is not "β is safely under a threshold" but **there is no alluvial ridge to superelevate** — the same fact the −1.50 m incision reports, in dimensionless form. H_M median 2.86 m (freeboard + measured depth 1.30 m). This supersedes the earlier β ≈ 0.24, which was an artifact of the over-wide crest window; about a third of that H_AR was also a datum offset, the ~2.7 km-wide corridor median sitting ~0.29 m below the floodplain immediately beside the Kanektok.
 
-**β = 1 is not the operative avulsion threshold, and we do not claim it is.** Gearon's criterion is **βγ ≥ Λ** (their eq. 4), with Λ median **2.1** (range 0.2–11); the paper is explicit that "β only accounts for half of Λ" and that "roughly 60 % of deltas in our dataset have β < 0.5" — near the sink, rivers that *did* avulse carry low β because the gradient term γ is high. This analysis deliberately does **not** evaluate γ, so β alone cannot be read as a pass/fail against avulsion; it is reported as the reproduction of the ArcGIS metric, and the avulsion argument rests on the incision result. *(For scale only: with S_M = 195.4 cm/km and a ridge-flank run of 150–500 m, γ would be ≈ 0.9–3.0 and βγ ≈ 0.2–0.7, still well under Λ — but the corridor-median floodplain has no location, so S_AR has no defensible run length and we do not publish a γ.)*
+**Reading β against a threshold — and why the test is one-directional.** The threshold in CIVIC warning sign 1 is **β above ~0.5** (Ganti et al. 2016). That value is lower than the classical superelevation criterion of roughly **one full channel depth** (β ≈ 1; Mohrig et al. 2000, read off ancient alluvial sequences) because on **backwater-controlled deltas** the avulsion site is set by backwater hydrodynamics rather than by the channel having to aggrade to the brim — the flow finds a steeper path before full superelevation is reached, at roughly half a channel depth. **β = 1 is therefore not the operative threshold here, and neither is it a Gearon threshold.**
+
+The critical point is that **the test only runs in one direction.** β > 0.5 is evidence *for* frequent avulsion; **β < 0.5 is not a clearance.** Gearon's own criterion is **βγ ≥ Λ** (their eq. 4) with Λ median **2.1** (range 0.2–11), and the paper is explicit that "β only accounts for half of Λ" and that "roughly 60 % of deltas in our dataset have β < 0.5" — near the sink, rivers that *did* avulse carry low β because the gradient term γ is high. So "β = 0.06 < 0.5, therefore stable" is an invalid inference, and we do not make it. What β = 0.06 licenses is the narrower statement that **H_AR ≈ 0 — there is no alluvial ridge to superelevate** — and the avulsion argument rests on that plus the incision result, not on clearing a threshold. *(For scale only: with S_M = 195.4 cm/km and a ridge-flank run of 150–500 m, γ would be ≈ 0.9–3.0 and βγ ≈ 0.2–0.7, still well under Λ — but the corridor-median floodplain has no location, so S_AR has no defensible run length and we do not publish a γ.)*
+
+Two further limits on how hard β can be pushed here:
+
+- **At this magnitude the measurement bias exceeds the measurement.** The ~2.7 km-wide corridor median sits ~0.29 m below the floodplain immediately beside the Kanektok; against H_M median 2.86 m that is **≈ 0.10 in β units**, larger than the reported β = 0.06. It does not threaten the conclusion (H_AR ≈ 0 either way, and 0.06 + 0.10 = 0.16 is still far under 0.5), but β should not be read to two decimals, and Ganti's ratio is referenced to the floodplain at the levee toe rather than to a corridor median — a definitional mismatch with the threshold as well as noise.
+- **The applicable threshold depends where on the profile you are.** Ganti's ~0.5 is calibrated on a backwater-controlled delta, and Gearon's central finding is that the rules of avulsion *change downstream*. This corridor runs from a bifurcation at 3 km to tidal flats at 34.5 km (where β = −4.6), so β is reported **as a function of radius** rather than collapsed to one number tested against one threshold.
 
 β is Kanektok-only (the Uyak has ADCP depth near its mouth only). Figure `arcB_beta.png`; per-arc columns `kan_depth_m/kan_bed_m/kan_bed_dem_m/kan_crest_m/kan_HAR_m/kan_HM_m/kan_beta/kan_freeboard_over_depth`. *Caveat:* the crest/H_AR is read along the (slightly oblique) arc rather than a true flow-perpendicular section — a perpendicular re-measurement remains the rigorous refinement.
 
@@ -103,23 +104,27 @@ Note that all three terms are **topographic** surfaces. The water surface is *no
 
 ---
 
-## 5. Overall conclusion
+## 4. Overall conclusion
 
 The arc method and the independent SWOT water-surface analysis **agree**:
 
 - At matched downstream distance the **Uyak water surface sits higher** than the Kanektok: **+0.96 m**, measured from SWOT overpasses that caught both rivers at the same moment (higher on 100 % of passes). The DEM arcs give +1.45 m; the gap is a differential-stage artifact of the multi-date mosaic.
 - But raw height is not the avulsion criterion: against the inter-channel floodplain corridor, the **Kanektok is incised on 100 % of arcs** (median −1.50 m at the median observed stage, and still −1.01 m at high water) while the **Uyak sits ≈ at grade** (−0.49 m). A channel must be *perched above* the corridor to avulse into it — neither is, and the Kanektok emphatically is not.
-- The **superelevation ratio β = H_AR/H_M ≈ 0.06 with H_AR ≈ +0.14 m** says the same thing dimensionlessly: **the Kanektok has no alluvial ridge** to perch on, and on 38 % of arcs the near-channel high ground is below the floodplain outright. β is reported as the reproduction of the preliminary ArcGIS metric — **not** as a pass/fail against a β = 1 threshold, which is not Gearon's operative criterion (§4).
-- The **topographic case for a Kanektok → Uyak avulsion is weak.** The prior β ≈ 0.96 / "30 % perched" reading was inflated by diagonal-transect geometry (a down-valley-gradient artifact), not a real superelevation signal.
+- The **superelevation ratio β = H_AR/H_M ≈ 0.06 with H_AR ≈ +0.14 m** says the same thing dimensionlessly: **the Kanektok has no alluvial ridge** to perch on, and on 38 % of arcs the near-channel high ground is below the floodplain outright. This sits far below CIVIC warning sign 1's β ≈ 0.5, but the finding is stated as *H_AR ≈ 0*, not as clearing a threshold — β < 0.5 is not evidence of stability (§3).
+- The **topographic case for a Kanektok → Uyak avulsion is weak** — on the superelevation evidence. Warning signs 2 and 3 (down-channel slope drop, cross-levee gradient) are the SWOT side of the question and are not settled here.
 - The DEM is **independently corroborated by SWOT**: the DEM channel water surface lands within **0.15 m** of the SWOT median stage on both rivers, on a shared EGM2008 datum — three datasets (2 m DEM, boat ADCP, SWOT) telling one story.
 
 A well-supported near-grade / null result, consistent across three independent datasets (2 m DEM arcs + boat-ADCP depth + SWOT), is a defensible thesis finding.
 
 ---
 
-## 6. References
+## 5. References
 
-- Gearon, J. H. et al. (2024) *Rules of river avulsion change downstream.* **Nature** 634. doi:10.1038/s41586-024-07964-2 — perpendicular-to-channel cross-sections; along-channel normalized distance; β = H_AR/H_M.
+- Ganti, V., Chadwick, A. J., Hassenruck-Gudipati, H. J. & Lamb, M. P. (2016) *Avulsion cycles and their stratigraphic signature on an experimental backwater-controlled delta.* **JGR: Earth Surface** 121, 1651–1675. doi:10.1002/2016JF003915 — **the ~0.5 superelevation threshold** in CIVIC warning sign 1 (§1); avulsion on backwater-controlled deltas at roughly half a channel depth rather than a full one.
+- Mohrig, D., Heller, P. L., Paola, C. & Lyons, W. J. (2000) *Interpreting avulsion process from ancient alluvial sequences.* **GSA Bulletin** 112 — the classical one-channel-depth (β ≈ 1) superelevation criterion that ~0.5 supersedes for backwater-controlled settings.
+- Gearon, J. H. et al. (2024) *Rules of river avulsion change downstream.* **Nature** 634. doi:10.1038/s41586-024-07964-2 — perpendicular-to-channel cross-sections; along-channel normalized distance; β = H_AR/H_M; the βγ ≥ Λ criterion (Λ median 2.1) and the finding that ~60 % of avulsed deltas have β < 0.5, i.e. low β is not evidence of stability.
+- Brooke, S. et al. (2022) *Where rivers jump course.* **Science** 376. doi:10.1126/science.abm1215 — CIVIC warning sign 2 (down-channel slope drop by a factor 2–3); SWOT side of the question.
+- Slingerland, R. & Smith, N. D. (2004) *River avulsions and their deposits.* **Annu. Rev. Earth Planet. Sci.** 32. doi:10.1146/annurev.earth.32.101802.120201 — CIVIC warning sign 3 (cross-levee gradient steeper than down-channel).
 - Gearon, J. H. et al. (2025) *River avulsion precursors encoded in alluvial-ridge geometry.* **GRL.** doi:10.1029/2024GL114047 — channel-perpendicular sections every 200 m.
 - Valenza / Brooke et al. (2020) **Nat. Communications** 11. doi:10.1038/s41467-020-15859-9 — along-channel-belt distance from the mountain front, normalized by channel width.
 - Jerolmack & Mohrig (2007) **Geology** — superelevation via channel-belt cross-section.
@@ -128,7 +133,7 @@ A well-supported near-grade / null result, consistent across three independent d
 
 ---
 
-## 7. Data provenance
+## 6. Data provenance
 
 | Item | Source |
 |---|---|
@@ -138,6 +143,5 @@ A well-supported near-grade / null result, consistent across three independent d
 | Official Uyak centerline | `data/uyak_centerline_official.gpkg` (field boat-GPS via `build_uyak_centerline.py`, hand-edited) — Uyak prior |
 | Official Kanektok centerline | `data/kanektok_centerline_official.gpkg` (field boat-ADCP thalweg via `build_kanektok_centerline.py`) — Kanektok prior |
 | Kanektok thalweg depth | `data/kanektok_thalweg_depth.parquet` (Day-03 pings: radius + River_Depth) — the β bed / H_M term |
-| ADCP field survey | `~/Downloads/ADCP Data/` (coworker boat ADCP, May–Jun 2026; River_Depth + shear velocity) — Kanektok centerline + depth source; Uyak depth (mouth only) reserved for the deferred Uyak model |
-| Prior ArcGIS geometry & Z points | `clean_and_complete.gdb` (`Guide_Lines_2`, `Avulsion_Lines_2`, `River_Elevation_2`, `Total_Elevation_2_Clipped`). The gdb is too large to commit; it is archived at `~/Downloads/clean_and_complete.gdb.zip`. Committed extracts: `reference/avulsion_transects.gpkg` (the two vector layers) and `reference/original_beta.parquet` (the recovered β table; rebuild with `recover_original_beta.py`) |
+| ADCP field survey | `data/adcp_velocity_depth.parquet` (**tracked**, from `ingest_adcp.py`) — the coworker boat-ADCP RiverSurveyor velocity/depth export, May–Jun 2026: 40 815 pings, 339 transects, 6 survey days (Kanektok Days 02/02b/03/05/06 + Uiyak Day 04), all export columns (LAT/LON/ALT/DEPTH/WSPEED/FDIR + timestamp), ~1.8 MB zstd. Source of the Kanektok centerline and every depth number here. Provenance in `data/adcp_velocity_depth.manifest.json`. The raw archive (~386 MB of `.PD0` instrument binaries, per-transect NetCDF, CSV intermediates, discharge workbooks) is **not** committed — nothing downstream reads it, and it belongs in a data repository; `ingest_adcp.py` finds it via `--adcp-dir` / `$SWOT_ADCP_DIR` / `~/Downloads/ADCP Data` |
 | Shared anchor / dist_km | identical to `dashboard_swot.py` (verified) |

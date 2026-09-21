@@ -2,11 +2,24 @@
 
 Avulsion analysis for the Kanektok & Uyak. **Full methods, results, and caveats:
 [`AVULSION_ANALYSIS.md`](AVULSION_ANALYSIS.md)** (the single source of truth for the science).
-This file tracks build status only. Last updated 2026-08-08 (SWOT validation + β correction).
+This file tracks build status only. Last updated 2026-08-19 (ADCP ingest committed;
+preliminary-ArcGIS β removed, β reframed on CIVIC warning sign 1).
 
 ---
 
 ## ✅ Done
+
+- **ADCP survey brought into the repo** (2026-08-19). New `ingest_adcp.py` → tracked
+  `data/adcp_velocity_depth.parquet` (40 815 pings, 339 transects, 6 survey days, both rivers, all
+  export columns, ~1.8 MB zstd) + `data/adcp_velocity_depth.manifest.json`. `build_kanektok_centerline.py`
+  and `adcp_depth_stats.py` now read that parquet instead of globbing
+  `/home/luke/Downloads/ADCP Data`, so **the whole β chain reproduces from a clean clone** — the last
+  hardcoded personal path in the analysis is gone (`build_uyak_centerline.py`'s onX GPX is the one
+  remaining, for the Uyak centerline draft only; the official centerline is committed). Verified:
+  `kanektok_thalweg_depth.parquet` and `uyak_mouth_depth.parquet` rebuild **byte-identical**, and
+  `adcp_depth_stats.py` reproduces every published number (median 1.22 m, mean 1.29 ± 0.46,
+  p10–p90 0.79–1.88, max 3.9 m; mouth 1.37 vs 1.08 m = 1.26×). β is untouched. The raw ~386 MB
+  archive (`.PD0`, NetCDF, CSV intermediates, discharge workbooks) is deliberately **not** committed.
 
 - **SWOT validation + stage handling, and a β correction** (2026-08-08). New
   `swot_arc_reference.py` → tracked `data/swot_arc_reference.parquet` (per-radius EGM2008 geoid,
@@ -18,7 +31,8 @@ This file tracks build status only. Last updated 2026-08-08 (SWOT validation + �
     should ≈ channel depth (A/B was 1.87 at ±350 m — an unfillable bank; 1.27 at ±150 m).
     **β 0.24 → 0.06, H_AR 0.87 → +0.14 m**, β ≤ 0 on 38 % of arcs → **no alluvial ridge**.
   - **β = 1 is no longer presented as the avulsion threshold** anywhere (Gearon's criterion is
-    βγ ≥ Λ; γ deliberately not evaluated). β is framed as the reproduction of the ArcGIS metric.
+    βγ ≥ Λ; γ deliberately not evaluated). β is framed as CIVIC warning sign 1 (β > ~0.5, Ganti
+    et al. 2016), a one-directional test — see the 2026-08-19 entry above.
   - **Uyak − Kanektok now from pass-paired SWOT: +0.96 m** (100 % of passes). The DEM-only +1.45 m
     carried a ~0.27 m differential-stage artifact (per-arc median, recomputed 2026-08) — the mosaic caught the Kanektok at the 29th
     percentile of stages and the Uyak at the 76th. (The old docs compared against "+0.19 m (SWOT)",
@@ -33,12 +47,10 @@ This file tracks build status only. Last updated 2026-08-08 (SWOT validation + �
   - Dashboard tab shows SWOT water-surface markers with p10–p90 error bars, stage bands on the long
     profiles, stage-aware superelevation tooltips, and migration/threshold caveats. AppTest clean.
 
-- **Recovered the prior ArcGIS method** (β = (P98−median)/(P98−P2)) and its intended result
-  from the project geodatabase (β med 0.96, H_AR 4.30 m) — the notebook run that would have
-  saved it had errored.
-- **Diagnosed the diagonal-transect artifact:** the straight-guide-line transects run
-  obliquely, so the apparent Kanektok superelevation was ~90 % down-valley gradient. Confirmed
-  against the SWOT dashboard (Uyak marginally higher at matched distance).
+- **Established the iso-distance-arc frame** as the methods requirement: an oblique cross-valley
+  transect measures the ~1.83 m/km down-valley gradient (8–11 m over a 4–6 km end-to-end offset)
+  rather than the ~1 m superelevation signal. Confirmed against the SWOT dashboard (Uyak marginally
+  higher at matched distance). Recorded in `AVULSION_ANALYSIS.md` §2.
 - **The arc method** (`build_arc_B.py`) — radial iso-distance-from-anchor cross-sections, the
   dashboard-comparable side-by-side. Sampled at native 2 m; channels snapped to the DEM low.
   Established the Uyak water surface sits above the Kanektok while the Kanektok is incised below the
@@ -80,7 +92,7 @@ This file tracks build status only. Last updated 2026-08-08 (SWOT validation + �
   every β / superelevation number is unchanged.
 - **Retired Approach A** (perpendicular-to-channel β, `beta_perpendicular.py`): superseded by the
   arc method; removed from the dashboard/map/docs. Result (β ≈ 0.41, modest levee) recorded in
-  §3; code recoverable from git history.
+  `AVULSION_ANALYSIS.md` §2; code recoverable from git history.
 
 ## ⬜ Optional next steps
 
@@ -92,11 +104,13 @@ This file tracks build status only. Last updated 2026-08-08 (SWOT validation + �
 
 ## 🗂️ Script status (see README for details)
 
-- **Current:** `build_arc_B.py`, `build_uyak_centerline.py`, `build_kanektok_centerline.py`,
-  `adcp_depth_stats.py`, `make_swot_centerline.py`, `centerline.py`, `map_transects.py`.
-- **Superseded / exploratory (kept for provenance):** `reproduce_beta.py` (single-zone first
-  pass), `beta_floodplain.py` (single-analysis two-zone — demonstrated the artifact),
-  `prototype_B.py` + `run_B.py` (early two-rivers-with-detrend framing), `transects.py` (the
-  perpendicular-transect machinery behind the retired Approach A).
-- **Legacy (Gearon β/γ/Λ port, not used by the current reproduction):** `avulsion_metrics.py`,
-  `build_transects.py`, `pick_features.py`, `make_avulsion_figures.py`, `validation/`.
+- **Current:** `build_arc_B.py`, `swot_arc_reference.py`, `ingest_adcp.py`,
+  `build_uyak_centerline.py`, `build_kanektok_centerline.py`, `adcp_depth_stats.py`,
+  `make_swot_centerline.py`, `centerline.py`, `map_transects.py`.
+- **Legacy (Gearon β/γ/Λ port, not used by the current analysis):** `avulsion_metrics.py`,
+  `build_transects.py`, `transects.py`, `pick_features.py`, `make_avulsion_figures.py`,
+  `validation/`.
+- **Removed 2026-08-19** (preliminary-ArcGIS β reproduction, no longer part of the analysis):
+  `reproduce_beta.py`, `beta_floodplain.py`, `prototype_B.py`, `run_B.py`, `make_beta_figures.py`,
+  `recover_original_beta.py`, `reference/original_beta.parquet`,
+  `reference/avulsion_transects.gpkg`. Recoverable from git history.

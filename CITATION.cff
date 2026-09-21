@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software or the processed SWOT data products, please cite
+  it as below. This work is supported by NSF Award 2527256, "Dynamic Modeling
+  of River Ecosystem Stability."
+title: SWOT River Dynamics Dashboard
+type: software
+authors:
+  - family-names: Stork
+    given-names: Luke
+    email: luke.stork@acres.com
+repository-code: https://github.com/lukestork839/SWOT_Dashboard
+url: https://swotdashboard.streamlit.app/
+license: CC-BY-NC-4.0
+keywords:
+  - SWOT
+  - remote sensing
+  - hydrology
+  - river avulsion
+  - Kanektok River
+  - Alaska
+abstract: >-
+  Ingestion, analysis, and interactive visualization of NASA SWOT satellite
+  water-surface-elevation data for the Kanektok River and Uyak Creek near
+  Quinhagak, Alaska, assessing avulsion risk by comparing hydraulic gradients
+  between the two distributary channels.
