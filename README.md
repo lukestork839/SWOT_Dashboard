@@ -8,6 +8,27 @@
 
 Interactive visualization of NASA SWOT satellite data for two Alaskan rivers (Kanektok River and Uyak Creek), comparing hydraulic gradients to assess avulsion risk.
 
+The Kanektok River is the water source and subsistence artery of the village of Quinhagak,
+Alaska, whose residents asked whether the river is about to jump course into Uyak Creek.
+This repository holds the complete measurement system built to answer that question — SWOT
+pixel-cloud ingestion, quality control, gradient and superelevation analysis, an
+interactive monitoring dashboard, and the thesis figure pipeline.
+
+### Key findings
+
+| Warning sign | Result |
+|---|---|
+| Reach-scale gradient | Kanektok **195.3 cm/km** vs Uyak **192.4 cm/km** — the advantage (+2.9 cm/km, ~1.5%) belongs to the channel the river already occupies |
+| Bifurcation-zone gradient | **+24.6 cm/km** pass-paired Kanektok advantage in the 1–5 km window (steeper on 44 of 45 paired passes) |
+| Superelevation | Absent: Kanektok water surface **−1.50 m below** floodplain grade on 100% of measured arcs, at every observed stage; β median **0.06** |
+| Temporal stability | Gradients stable 2023–2026; the response to ex-Typhoon Halong (Oct 2025) did not exceed natural year-to-year variability |
+
+None of the three avulsion warning signs points toward a course change. Full numbers and
+provenance: [`docs/RESULTS.md`](docs/RESULTS.md).
+
+*Supported by National Science Foundation Award 2527256 ("Dynamic Modeling of River
+Ecosystem Stability").*
+
 ---
 
 ## Quick Start
@@ -53,6 +74,10 @@ SWOT_Pull.py ──► batch_outputs/ ──► dashboard_swot.py
 2. **`dashboard_swot.py`** reads those parquet files and presents an interactive Streamlit dashboard.
 
 You only need step 2 to explore the dashboard. Step 1 is for downloading your own data.
+
+Under the hood, all the math lives in one shared package (`swot_core/`), used identically by
+the dashboard, the thesis figures, and the analyses, and guarded by a numerical regression
+gate — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ### Data Loading Priority
 
@@ -124,17 +149,22 @@ python rebuild_master.py
 
 ### Analysis Tabs
 
-The dashboard organizes analysis into top-level tabs and nested "More Tabs":
+The dashboard has two top-level tabs — **📡 SWOT Data** and **🏔️ DEM Data** — each with its
+own row of analysis tabs.
 
-**Top-level:**
+**SWOT Data tabs** (in dashboard order):
 
 | Tab | What It Shows |
 |-----|---------------|
 | **Gradient Profile** | WSE vs. distance scatter with binned-median profile lines. (The headline steepness number is the per-pass Theil–Sen reference gradient on the **Hydraulic Gradient** tab, not an OLS trendline.) Supports **box-select → Map View highlight** (see below). |
 | **Hydraulic Gradient** | The authoritative reach gradient: per-pass Theil–Sen slopes on 1 km node medians, median across coverage-gated open-water passes, with the per-pass distribution. |
-| **Fine-Scale Slope** | 0.5–4 km resolution slope profiles computed within each pass (stage constant) then aggregated — resolves the near-bifurcation structure the reach average hides. |
 | **Detrended Profile** | Removes the large-scale elevation trend (Relative Elevation Model) with a 2nd-order polynomial baseline fit to both rivers. Reveals subtle systematic differences between rivers. Statistics are reported as robust measures (median, MAD-based robust SD, P1/P99); a residual-domain outlier flag (Modified Z-Score > 3.5, per river) omits localized contamination from the plot and mean/SD without deleting it. Supports **box-select → Map View highlight** (see below). |
 | **Map View** | Interactive Folium map with multiple basemaps (satellite, terrain, etc.), measuring tools for distance/area, and color-by options (river name, WSE, classification, detrended residual, interval slope). Shows points **box-selected on a profile** as yellow-outlined markers. |
+| **Elevation Difference** | Direct Kanektok minus Uyak WSE comparison in 100 m distance bins. Shows which river is higher at each point. |
+| **Slope Profile** | How steepness varies along each river. Uses Gaussian-smoothed binned medians with a numerical derivative. |
+| **Fine-Scale Slope** | 0.5–4 km resolution slope profiles computed within each pass (stage constant) then aggregated — resolves the near-bifurcation structure the reach average hides. |
+| **Raw Data** | Table view of the data with CSV export. |
+| **Temporal Results** | Read-only display of the one-time temporal-stability analysis (seasonal, interannual, and pre/post-Typhoon Halong), rendered from pre-computed files in `temporal_results/` — no on-the-fly computation, so it works on the deployed app too. Write-up: [`TEMPORAL_ANALYSIS.md`](TEMPORAL_ANALYSIS.md). |
 
 > **Profile → Map cross-highlight:** on the **Gradient Profile** or **Detrended Profile**, drag a box (or lasso) around points of interest. Those exact points are outlined in yellow (keeping their river color) on the **Map View**, which auto-zooms to them so you can see where along the river they sit. Selections from both profiles combine; a **Clear highlight** button on the map resets them. Requires `streamlit>=1.49`.
 
@@ -150,17 +180,6 @@ The dashboard organizes analysis into top-level tabs and nested "More Tabs":
 | **Cross-Sections** | DEM arc cross-sections at 0.5 km radii from the anchor with SWOT stage overlays, superelevation metrics, and the ADCP-informed channel bed. |
 
 See [DEM Elevation Comparison](#dem-elevation-comparison) for methodology.
-
-**SWOT nested tabs:**
-
-| Tab | What It Shows |
-|-----|---------------|
-| **Elevation Difference** | Direct Kanektok minus Uyak WSE comparison in 100m distance bins. Shows which river is higher at each point. |
-| **Slope Profile** | How steepness varies along each river. Uses Gaussian-smoothed binned medians with numerical derivative. |
-| **Raw Data** | Table view of the data with CSV export. |
-| **Temporal Results** | Read-only display of the one-time temporal-stability analysis (seasonal, interannual, and pre/post-Typhoon Halong). Shows the control-chart time series, stage-invariance scatter, distribution comparisons, and the typhoon spatial-delta, plus result tables. Rendered from pre-computed files — no on-the-fly computation. |
-
-The former interactive **Temporal Evolution**, **Seasonal Comparison**, and **Typhoon Impact** tabs (density-biased, per-selection) have been retired. Their questions are now answered by a single, methodology-locked one-time analysis (`temporal_analysis.py`), whose results the **Temporal Results** tab displays. See [`TEMPORAL_ANALYSIS.md`](TEMPORAL_ANALYSIS.md) for the full write-up. Because the results are pre-computed (git-tracked in `temporal_results/`), this tab is available on both the local and the deployed Streamlit Cloud dashboard.
 
 ### Controls
 
@@ -236,7 +255,8 @@ The dashboard includes a DEM comparison tab that overlays ArcticDEM V4 terrain e
 
 For the complete scientific documentation, see:
 - [`SCIENTIFIC_METHODOLOGY.md`](SCIENTIFIC_METHODOLOGY.md) -- verification, quality flag reference, calibration results
-- [`SWOT_Processing_Documentation.md`](SWOT_Processing_Documentation.md) -- detailed technical processing documentation
+- [`docs/RESULTS.md`](docs/RESULTS.md) -- the canonical results and their provenance
+- [`docs/README.md`](docs/README.md) -- the full documentation map (architecture, temporal analysis, DEM analysis, references, archive)
 
 ---
 
@@ -244,28 +264,40 @@ For the complete scientific documentation, see:
 
 ```
 SWOT_Dashboard/
-├── setup.bat                        # One-command setup for Windows
-├── setup.sh                         # One-command setup for Linux/Mac
-├── SWOT_Pull.py                     # Data ingestion: NASA download + processing pipeline
-├── DEM_Pull.py                      # ArcticDEM extraction: GEE download + geoid correction
-├── dashboard_swot.py                # Visualization: Streamlit dashboard (~2500 lines)
-├── qc_registry.py                   # Single source: ice-safe months (May-Oct) + known-bad passes
-├── rebuild_master.py                # Utility: rebuild master parquets from granule CSVs
+├── README.md · LICENSE · CITATION.cff
+├── setup.bat / setup.sh             # One-command setup (dashboard-only dependencies)
 ├── requirements.txt                 # Dashboard dependencies (used by Streamlit Cloud)
-├── requirements-full.txt            # Full dependencies including ingestion pipeline
-├── river_poly.zip                   # River boundary polygons (GeoPackage format)
-├── batch_outputs/                   # Full dataset directory (gitignored, created by SWOT_Pull.py)
-│   ├── data/                        #   Granule CSV checkpoints (YYYY-MM-DD_gCCC_PPP_TTT_data.csv)
-│   ├── master_all_data.csv          #   Combined dataset, all columns
-│   ├── master_all_data.parquet      #   Single optimized parquet
-│   ├── master_all_data_part_*.parquet  # Partitioned for dashboard performance
-│   ├── arcticdem_rivers.tif         #   ArcticDEM V4 clipped to study area (from DEM_Pull.py)
-│   └── dem_river_elevations.parquet #   DEM elevations within river polygons (geoid-corrected)
-├── .streamlit/
-│   └── config.toml                  # Streamlit server/theme configuration
+├── requirements-full.txt            # Full pipeline dependencies (ingestion, DEM, transects)
+│
+├── SWOT_Pull.py                     # Data ingestion: NASA download + processing pipeline
+├── rebuild_master.py                # Rebuild master parquets from granule CSVs (no re-download)
+├── q3_topup_pull.py                 # Isolated late-2026 top-up pull for the temporal analysis
+├── qc_registry.py                   # Single source: ice-safe months (May-Oct) + known-bad passes
+├── DEM_Pull.py                      # ArcticDEM 10 m extraction (GEE) + geoid correction
+├── DEM_2m_Pull.py                   # ArcticDEM 2 m native mosaic (PGC S3, for the arc analysis)
+│
+├── dashboard_swot.py                # Streamlit entry point
+├── dashboard_tabs/                  # One renderer per dashboard tab (+ common.py cache layer)
+├── swot_core/                       # THE analysis core: config, data loaders, statistics
+├── .streamlit/config.toml           # Streamlit server/theme configuration
+├── static/                          # Dashboard assets
+│
+├── temporal_analysis.py             # One-time temporal-stability analysis (writes temporal_results/)
+├── verify_temporal_method.py        # Adversarial verification of the temporal method
+├── bifurcation_gauge.py             # Virtual-gauge analysis at the bifurcation
+├── dem_band_sweep.py                # DEM along-channel slope robustness sweep
+├── temporal_results/                # Tracked outputs displayed by the Temporal Results tab
+│
+├── DEM_Transects/                   # β / superelevation arc analysis, ADCP, centerlines (own README)
+├── dem_veg_filter/                  # DEM vegetation-filter experiment (negative result, FINDINGS.md)
+├── thesis_figures/                  # Print-quality figure builders + captions (own README)
+├── tools/                           # regression_gate.py + the 515-value numerical baseline
+│
+├── river_poly.zip                   # River boundary polygons
 ├── SCIENTIFIC_METHODOLOGY.md        # Complete scientific verification document
-├── SWOT_Processing_Documentation.md # Detailed technical processing docs
-└── README.md                        # This file
+├── TEMPORAL_ANALYSIS.md             # Temporal-stability write-up
+├── docs/                            # RESULTS.md, ARCHITECTURE.md, references, archive/ (see docs/README.md)
+└── batch_outputs/                   # Full dataset (gitignored; created by the pull scripts)
 ```
 
 ---
@@ -306,19 +338,21 @@ All configurable constants are at the top of `SWOT_Pull.py`:
 | `ROWS_PER_CHUNK` | 100,000 | Rows per partition file |
 | `NAME_MAPPING` | `{1: Uyak, 2: Kanektok}` | Polygon ID to river name mapping |
 
-### `dashboard_swot.py` Settings
+### Dashboard Settings
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `DATA_DIR` | `batch_outputs` | Directory for full dataset (local dev) |
-| `REMOTE_PARQUET_URL` | GitHub Release URL | Remote SWOT parquet for Streamlit Cloud |
-| `REMOTE_DEM_URL` | GitHub Release URL | Remote DEM parquet for Streamlit Cloud |
-| `MAX_PLOT_POINTS` | 15,000 | Max points rendered in scatter plots |
-| `MAX_BASELINE_POINTS` | 30,000 | Max points for detrending baseline fit |
-| `MAX_MAP_POINTS` | 5,000 | Max points rendered on Folium map |
-| `BIFURCATION_LAT` | 59.828886 | Latitude of river bifurcation point |
-| `BIFURCATION_LON` | -161.377778 | Longitude of river bifurcation point |
-| `BIFURCATION_DIST_KM` | 2.493 | Distance from anchor point to bifurcation |
+Data locations and analysis constants live in `swot_core/config.py`; rendering caps live in
+`dashboard_tabs/common.py`.
+
+| Setting | Where | Default | Description |
+|---------|-------|---------|-------------|
+| `DATA_DIR` | `swot_core/config.py` | `batch_outputs` | Directory for full dataset (local dev) |
+| `REMOTE_PARQUET_URL` | `swot_core/config.py` | GitHub Release URL | Remote SWOT parquet for Streamlit Cloud |
+| `REMOTE_DEM_URL` | `swot_core/config.py` | GitHub Release URL | Remote DEM parquet for Streamlit Cloud |
+| `BIFURCATION_LAT/LON` | `swot_core/config.py` | 59.828886 / -161.377778 | River bifurcation point |
+| `BIFURCATION_DIST_KM` | `swot_core/config.py` | 2.493 | Distance from anchor point to bifurcation |
+| `MAX_PLOT_POINTS` | `dashboard_tabs/common.py` | 15,000 | Max points rendered in scatter plots |
+| `MAX_BASELINE_POINTS` | `dashboard_tabs/common.py` | 30,000 | Max points for detrending baseline fit |
+| `MAX_MAP_POINTS` | `dashboard_tabs/common.py` | 5,000 | Max points rendered on Folium map |
 
 ---
 
@@ -345,7 +379,7 @@ To use this framework for a different study area:
    ```
    The dashboard auto-detects river names from the data -- no dashboard code changes needed.
 
-**Note:** The dashboard color mapping (`COLOR_MAP` in `dashboard_swot.py`) defaults to Kanektok/Uyak colors. Update this dict if you want specific colors for your rivers. If your river names aren't in the map, the dashboard falls back to black.
+**Note:** The dashboard color mapping (`COLOR_MAP` in `swot_core/config.py`) defaults to Kanektok/Uyak colors. Update this dict if you want specific colors for your rivers. If your river names aren't in the map, the dashboard falls back to black.
 
 ---
 
@@ -410,6 +444,13 @@ Just run `SWOT_Pull.py` again with the same date range. It checks for existing g
 
 **This Repository:**
 - Luke Stork (2026). SWOT River Dynamics Dashboard. GitHub: https://github.com/lukestork839/SWOT_Dashboard
+- Machine-readable citation metadata: [`CITATION.cff`](CITATION.cff) (GitHub's "Cite this repository" button uses it)
+
+**Funding:**
+- National Science Foundation Award 2527256, "Dynamic Modeling of River Ecosystem Stability".
+  Any opinions, findings, and conclusions are those of the author and do not necessarily
+  reflect the views of the NSF.
+- ArcticDEM provided by the Polar Geospatial Center under NSF-OPP awards 1043681, 1559691, 1542736.
 
 ---
 
