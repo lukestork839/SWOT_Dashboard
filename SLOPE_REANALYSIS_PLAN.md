@@ -4,6 +4,12 @@
 **Prototype:** `slope_finescale_prototype.py` → outputs in `slope_finescale_prototype/`
 **Date:** 2026-07-22
 
+> **Note (2026-09-21):** the standalone exploration scripts named in this document
+> (`slope_finescale_prototype.py`, `coastal_noise_diagnostic.py`, `canonical_stats.py`,
+> `canonical_stats_decomp.py`) did their job and were removed from the tree; they remain in
+> git history. The production implementation of the surviving estimator is
+> `swot_core/stats.py::fine_slope_theilsen`, displayed in the dashboard's Fine-Scale Slope tab.
+
 ---
 
 ## 1. What the professor asked (meeting notes, paraphrased)

@@ -35,7 +35,7 @@
 | **Load Tide (FES2014)** | ✅ Verified | ~-0.001 m magnitude, appropriate for inland location |
 | **Spatial Filtering** | ✅ Verified | Two-stage filtering (bounding box + exact geometry) |
 | **Distance Calculation** | ✅ Verified | Haversine formula appropriate for <100 km scale |
-| **Reference Gradient** | ✅ Verified | Per-pass Theil–Sen on 1 km nodes, median across passes; density-bias decomposition + season/coverage sensitivity (established via `gradient_prototype.py`, now a historical diagnostic — it predates the `slope_calc` removal) |
+| **Reference Gradient** | ✅ Verified | Per-pass Theil–Sen on 1 km nodes, median across passes; density-bias decomposition + season/coverage sensitivity (established via the `gradient_prototype.py` diagnostic, retired to git history — it predates the `slope_calc` removal) |
 | **Temporal Stability** | ✅ Q1/Q2 · ⏳ Q3 interim | Seasonal + interannual + typhoon comparisons on the reference-gradient engine; Q2 as natural-variability control for Q3; significance family-wise (Holm) + bootstrap CIs (`temporal_analysis.py`, `TEMPORAL_ANALYSIS.md`) |
 | **Field Calibration** | ✅ **SUCCESSFULLY VERIFIED** | RTK GPS (±1 cm precision), agreement within 1 m after datum correction |
 | **Code Implementation** | ✅ Verified | All critical steps documented with file:line references |
@@ -640,8 +640,9 @@ dist_km = haversine_vectorized(lat, lon, ANCHOR_LAT, ANCHOR_LON)
 > (density-biased), was never displayed anywhere, and had been fully superseded by the reference
 > gradient. The code-review fix campaign removed it from the ingestion schema, the master files,
 > and the dashboard's statistics query. `gradient_prototype.py`, the diagnostic that originally
-> compared the candidate methods, references the removed column and is retained as a historical
-> record only — its conclusions are documented in the Reference Gradient section below.
+> compared the candidate methods, referenced the removed column and has been retired from the
+> tree (it remains in git history) — its conclusions are documented in the Reference Gradient
+> section below.
 
 **Scientific Interpretation:**
 - Slopes are reported as positive magnitudes in cm/km (drop per kilometer of river length)
@@ -687,8 +688,8 @@ SELECT Reach_Name, AVG(bin_wse) AS avg_wse FROM binned GROUP BY Reach_Name
 ### Reference Gradient (Per-Pass Robust Regression)
 
 **Status:** ✅ Verified and justified (June 2026); values updated to the revised archive
-(August 2026). Original method-selection diagnostic: `gradient_prototype.py` (historical — it
-predates the `slope_calc` removal and the granule-keyed re-pull).
+(August 2026). Original method-selection diagnostic: `gradient_prototype.py` (retired to git
+history — it predates the `slope_calc` removal and the granule-keyed re-pull).
 
 **Motivation.** The dashboard historically displayed *two* gradient numbers that disagreed by
 1–2 % (e.g. Kanektok 182.3 cm/km on the profile trendline vs 179.8 cm/km in the summary table).
@@ -746,8 +747,8 @@ conclusion are unchanged.)*
 
 **Verification 1 — the estimate is decomposable and each step is justified.** Building up from
 the old trendline to the proposed method, isolating one effect at a time. *(Established June 2026
-on the pre-revision archive via `gradient_prototype.py`; the specific values below are
-point-in-time, but the decomposition logic is archive-independent.)*
+on the pre-revision archive via `gradient_prototype.py`, now in git history only; the specific
+values below are point-in-time, but the decomposition logic is archive-independent.)*
 
 | Step | Kanektok | Uyak | Effect added |
 |---|---|---|---|

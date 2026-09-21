@@ -66,6 +66,8 @@ scripts only refresh a `*_draft` copy in `outputs/` and never overwrite the offi
 | `adcp_depth_stats.py` | Kanektok depth statistics + Uyak-vs-Kanektok mouth depth comparison → `adcp_depth_comparison.png` |
 | `map_transects.py` | satellite placement-check map (centerlines + arcs + anchor) |
 | `make_swot_centerline.py` | build SWOT channel centerlines from water pixels → gpkg (reference overlay) |
+| `build_dem_centerline.py` | P6 — channel centerline derived from the DEM itself (no boat-track dependence); path-length / sinuosity check behind the along-channel gradient discussion |
+| `data/dem_centerline_nodes.parquet`, `data/dem_centerline_snapped.parquet` | **tracked** outputs of the above (per-radius channel positions; per-station DEM-snapped path), used by the DEM writeup figures |
 | `centerline.py` | centerline utilities (load / SWOT-points / polygon skeleton) |
 | `outputs/` | figures + parquet + `swot_centerlines.gpkg` (scratch; parquet gitignored) |
 

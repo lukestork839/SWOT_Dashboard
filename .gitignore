@@ -26,13 +26,9 @@ ENV/
 thesis_figures/output/
 thesis_figures/final/
 
-# Slope re-analysis: commit the generator scripts, not the rendered PNGs
-# (regenerable from slope_finescale_prototype.py / coastal_noise_diagnostic.py)
+# Outputs of retired exploratory scripts (scripts live in git history)
 slope_finescale_prototype/
 coastal_noise_diagnostic/
-
-# DEM channel-slope exploratory outputs
-# (regenerable from dem_channel_slope_phase2.py / dem_finescale_slope_spike.py)
 dem_channel_slope_phase2/
 dem_finescale_slope_spike/
 

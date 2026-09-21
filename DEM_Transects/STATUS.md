@@ -106,7 +106,7 @@ preliminary-ArcGIS β removed, β reframed on CIVIC warning sign 1).
 
 - **Current:** `build_arc_B.py`, `swot_arc_reference.py`, `ingest_adcp.py`,
   `build_uyak_centerline.py`, `build_kanektok_centerline.py`, `adcp_depth_stats.py`,
-  `make_swot_centerline.py`, `centerline.py`, `map_transects.py`.
+  `make_swot_centerline.py`, `build_dem_centerline.py`, `centerline.py`, `map_transects.py`.
 - **Legacy (Gearon β/γ/Λ port, not used by the current analysis):** `avulsion_metrics.py`,
   `build_transects.py`, `transects.py`, `pick_features.py`, `make_avulsion_figures.py`,
   `validation/`.

@@ -243,8 +243,9 @@ def calculate_slope_profile(dist_km, wse, smooth_km=2.0, n_eval=200):
 #     i.e. the scale an avulsion slope-advantage would act on. The resolution sweep
 #     showed it is comfortably resolvable (SNR ~20 Kanektok / ~15 Uyak).
 #   * 34 km trims the tidal mouth: cross-pass WSE spread only rises in the final
-#     ~1-2 km at each outlet (see coastal_noise_diagnostic.py), and that tail is far
-#     downstream of the bifurcation, so cutting it costs nothing.
+#     ~1-2 km at each outlet (verified by the 2026-07 coastal-noise diagnostic,
+#     retired to git history), and that tail is far downstream of the bifurcation,
+#     so cutting it costs nothing.
 FINE_RES_KM = 0.5
 FINE_XMAX_KM = 34.0
 

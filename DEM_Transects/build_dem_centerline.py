@@ -3,7 +3,7 @@
 WHY THIS EXISTS
 ---------------
 The along-channel gradient advantage measured in the Phase-2 channel-slope work
-(`dem_channel_slope_phase2.py`) turned out not to be robust: it ranged 1.02-1.23 purely
+(the retired `dem_channel_slope_phase2.py`, in git history) was not robust: it ranged 1.02-1.23 purely
 as a function of how much the field centerlines were smoothed, because the Uyak's
 apparent sinuosity is far higher than the Kanektok's (1.72 vs 1.46 at 1-5 km). The two
 field lines are not equally trustworthy for PATH LENGTH:
