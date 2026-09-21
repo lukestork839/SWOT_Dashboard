@@ -510,7 +510,6 @@ SWOT/
 │   └── master_all_data_part_*.parquet  # Optimized partitions for dashboard
 └── docs/
     ├── development_notes.md   # Development history & technical notes
-    └── SWOT_Handbook.pdf      # NASA reference document
 ```
 
 **Key Configuration Locations:**

@@ -1469,7 +1469,7 @@ If you have questions about our methodology, here are resources:
 
 1. **Code Implementation:** See `SWOT_Pull.py` with line numbers referenced above
 2. **Technical Details:** See `docs/development_notes.md` for development history
-3. **SWOT Handbook:** See `docs/SWOT_Handbook.pdf` (JPL D-109532)
+3. **SWOT Handbook:** SWOT Data User Handbook (JPL D-109532), available from PO.DAAC: https://podaac.jpl.nasa.gov/SWOT
 4. **Verification Summary:** See `docs/Verification_Summary.md`
 5. **Field Calibration:** See calibration data in `Quinhagak SWOT Calibration Readings Nov 2025/`
 

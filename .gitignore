@@ -50,17 +50,12 @@ temp_swot_batch/
 temp_classification_check/
 temp_calibration_data/
 
-# Local workspace files
-.workspace/
-
 # Internal development notes (not needed by public users)
-docs/
 DEPLOYMENT.md
 DEPLOYMENT_SUMMARY.md
 NEXT_STEPS.md
 dashboard_optimizations.md
 PERFORMANCE_UPDATE.md
-Github_adjustment.md
 
 # Backup and diagnostic files
 *.backup

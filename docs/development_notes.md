@@ -552,7 +552,7 @@ NAME_MAPPING = {
 1. ✅ Created comprehensive `.gitignore`:
    - Excludes all data files (`batch_outputs/`, `temp_swot_batch/`)
    - Excludes Python artifacts (`__pycache__/`, `*.pyc`)
-   - Excludes workspace files (`.workspace/`)
+   - Excludes local workspace files
    - Prevents accidental commits of large files
 2. ✅ Updated `README.md`:
    - Reflects current 2-stage workflow (no optimize.py)
@@ -589,7 +589,7 @@ NAME_MAPPING = {
 - Dependencies: `requirements.txt`
 - Configuration: `river_poly.zip`, `.swot_cli_config.json`, `.gitignore`
 - Documentation: `README.md`, `SWOT_Processing_Documentation.md`, `docs/` folder
-- Reference: `docs/SWOT_Handbook.pdf`
+- Reference: SWOT Data User Handbook (JPL D-109532), https://podaac.jpl.nasa.gov/SWOT
 
 ### 2026-02-11: Map Styling Options & Classification Column Support
 **Problem Addressed:**
