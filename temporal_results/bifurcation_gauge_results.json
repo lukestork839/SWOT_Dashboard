@@ -1,0 +1,320 @@
+{
+  "gradient": {
+    "axis": "radial dist_km from the anchor point",
+    "window_km": [
+      3.5,
+      7.5
+    ],
+    "node_km": 0.5,
+    "min_px_per_node": 20,
+    "n_nodes": 9
+  },
+  "gauges": {
+    "1.00": {
+      "s_km": 1.0,
+      "separation_m": 740.0,
+      "radius_m": 300.0,
+      "points": {
+        "Kanektok_River": {
+          "lon": -161.393433,
+          "lat": 59.824217
+        },
+        "Uyak_Creek": {
+          "lon": -161.387946,
+          "lat": 59.834161
+        }
+      },
+      "stage_col": "stage_s100_m"
+    },
+    "1.25": {
+      "s_km": 1.25,
+      "separation_m": 982.0,
+      "radius_m": 300.0,
+      "points": {
+        "Kanektok_River": {
+          "lon": -161.39491,
+          "lat": 59.822291
+        },
+        "Uyak_Creek": {
+          "lon": -161.390389,
+          "lat": 59.835948
+        }
+      },
+      "stage_col": "stage_s125_m"
+    }
+  },
+  "primary_s_km": 1.0,
+  "rivers": {
+    "Kanektok_River": {
+      "gradient_cm_km": {
+        "median": 261.048,
+        "q1": 259.227,
+        "q3": 262.697,
+        "n": 95
+      },
+      "stage_m": {
+        "median": 58.415,
+        "q1": 58.32,
+        "q3": 58.524,
+        "n": 95
+      },
+      "gradient_vs_stage": {
+        "cm_km_per_m": -4.4,
+        "ci_lo": -7.7,
+        "ci_hi": -0.5,
+        "kendall_tau": -0.149,
+        "p": 0.032
+      }
+    },
+    "Uyak_Creek": {
+      "gradient_cm_km": {
+        "median": 229.026,
+        "q1": 225.388,
+        "q3": 233.412,
+        "n": 89
+      },
+      "stage_m": {
+        "median": 58.458,
+        "q1": 58.287,
+        "q3": 58.645,
+        "n": 89
+      },
+      "gradient_vs_stage": {
+        "cm_km_per_m": -12.9,
+        "ci_lo": -15.8,
+        "ci_hi": -9.5,
+        "kendall_tau": -0.448,
+        "p": 0.0
+      }
+    }
+  },
+  "paired": {
+    "s_km": 1.0,
+    "n_paired_passes": 89,
+    "advantage_cm_km": {
+      "median": 32.434,
+      "q1": 28.885,
+      "q3": 35.307,
+      "n": 89
+    },
+    "pct_passes_kanektok_steeper": 100.0,
+    "advantage_vs_stage": {
+      "cm_km_per_m": 13.8,
+      "ci_lo": 7.9,
+      "ci_hi": 18.6,
+      "kendall_tau": 0.346,
+      "p": 0.0
+    },
+    "stage_gap_kan_minus_uyak_m": {
+      "median": -0.036,
+      "q1": -0.154,
+      "q3": 0.058,
+      "n": 89
+    },
+    "stage_corr_kan_uyak": 0.806
+  },
+  "paired_by_gauge": {
+    "1.00": {
+      "s_km": 1.0,
+      "n_paired_passes": 89,
+      "advantage_cm_km": {
+        "median": 32.434,
+        "q1": 28.885,
+        "q3": 35.307,
+        "n": 89
+      },
+      "pct_passes_kanektok_steeper": 100.0,
+      "advantage_vs_stage": {
+        "cm_km_per_m": 13.8,
+        "ci_lo": 7.9,
+        "ci_hi": 18.6,
+        "kendall_tau": 0.346,
+        "p": 0.0
+      },
+      "stage_gap_kan_minus_uyak_m": {
+        "median": -0.036,
+        "q1": -0.154,
+        "q3": 0.058,
+        "n": 89
+      },
+      "stage_corr_kan_uyak": 0.806
+    },
+    "1.25": {
+      "s_km": 1.25,
+      "n_paired_passes": 88,
+      "advantage_cm_km": {
+        "median": 32.437,
+        "q1": 29.02,
+        "q3": 35.347,
+        "n": 88
+      },
+      "pct_passes_kanektok_steeper": 100.0,
+      "advantage_vs_stage": {
+        "cm_km_per_m": 15.1,
+        "ci_lo": 9.3,
+        "ci_hi": 21.6,
+        "kendall_tau": 0.355,
+        "p": 0.0
+      },
+      "stage_gap_kan_minus_uyak_m": {
+        "median": -0.007,
+        "q1": -0.097,
+        "q3": 0.072,
+        "n": 88
+      },
+      "stage_corr_kan_uyak": 0.652
+    }
+  },
+  "stage_divergence": [
+    {
+      "s_km": 0.75,
+      "separation_m": 529.0,
+      "n_passes": 95,
+      "shared_px": 0,
+      "kanektok_wse_m": 58.88,
+      "uyak_wse_m": 58.949,
+      "kanektok_q1_m": 58.805,
+      "kanektok_q3_m": 58.989,
+      "uyak_q1_m": 58.761,
+      "uyak_q3_m": 59.059,
+      "gap_median_m": -0.056,
+      "gap_q1_m": -0.154,
+      "gap_q3_m": 0.065
+    },
+    {
+      "s_km": 1.0,
+      "separation_m": 740.0,
+      "n_passes": 95,
+      "shared_px": 0,
+      "kanektok_wse_m": 58.415,
+      "uyak_wse_m": 58.425,
+      "kanektok_q1_m": 58.32,
+      "kanektok_q3_m": 58.524,
+      "uyak_q1_m": 58.266,
+      "uyak_q3_m": 58.636,
+      "gap_median_m": -0.034,
+      "gap_q1_m": -0.149,
+      "gap_q3_m": 0.079
+    },
+    {
+      "s_km": 1.25,
+      "separation_m": 982.0,
+      "n_passes": 93,
+      "shared_px": 0,
+      "kanektok_wse_m": 58.058,
+      "uyak_wse_m": 58.074,
+      "kanektok_q1_m": 57.929,
+      "kanektok_q3_m": 58.172,
+      "uyak_q1_m": 57.949,
+      "uyak_q3_m": 58.186,
+      "gap_median_m": -0.011,
+      "gap_q1_m": -0.101,
+      "gap_q3_m": 0.071
+    },
+    {
+      "s_km": 1.5,
+      "separation_m": 965.0,
+      "n_passes": 94,
+      "shared_px": 0,
+      "kanektok_wse_m": 57.6,
+      "uyak_wse_m": 57.911,
+      "kanektok_q1_m": 57.503,
+      "kanektok_q3_m": 57.724,
+      "uyak_q1_m": 57.73,
+      "uyak_q3_m": 58.026,
+      "gap_median_m": -0.236,
+      "gap_q1_m": -0.353,
+      "gap_q3_m": -0.14
+    },
+    {
+      "s_km": 1.75,
+      "separation_m": 1075.0,
+      "n_passes": 94,
+      "shared_px": 0,
+      "kanektok_wse_m": 57.191,
+      "uyak_wse_m": 57.702,
+      "kanektok_q1_m": 57.091,
+      "kanektok_q3_m": 57.324,
+      "uyak_q1_m": 57.553,
+      "uyak_q3_m": 57.787,
+      "gap_median_m": -0.461,
+      "gap_q1_m": -0.548,
+      "gap_q3_m": -0.343
+    },
+    {
+      "s_km": 2.0,
+      "separation_m": 1203.0,
+      "n_passes": 94,
+      "shared_px": 0,
+      "kanektok_wse_m": 56.866,
+      "uyak_wse_m": 57.319,
+      "kanektok_q1_m": 56.733,
+      "kanektok_q3_m": 56.995,
+      "uyak_q1_m": 57.148,
+      "uyak_q3_m": 57.42,
+      "gap_median_m": -0.423,
+      "gap_q1_m": -0.601,
+      "gap_q3_m": -0.204
+    },
+    {
+      "s_km": 2.25,
+      "separation_m": 1389.0,
+      "n_passes": 93,
+      "shared_px": 0,
+      "kanektok_wse_m": 56.347,
+      "uyak_wse_m": 56.581,
+      "kanektok_q1_m": 56.248,
+      "kanektok_q3_m": 56.463,
+      "uyak_q1_m": 56.324,
+      "uyak_q3_m": 56.739,
+      "gap_median_m": -0.128,
+      "gap_q1_m": -0.325,
+      "gap_q3_m": -0.006
+    },
+    {
+      "s_km": 2.5,
+      "separation_m": 1443.0,
+      "n_passes": 92,
+      "shared_px": 0,
+      "kanektok_wse_m": 55.768,
+      "uyak_wse_m": 56.046,
+      "kanektok_q1_m": 55.686,
+      "kanektok_q3_m": 55.884,
+      "uyak_q1_m": 55.781,
+      "uyak_q3_m": 56.223,
+      "gap_median_m": -0.216,
+      "gap_q1_m": -0.366,
+      "gap_q3_m": -0.042
+    },
+    {
+      "s_km": 2.75,
+      "separation_m": 1539.0,
+      "n_passes": 93,
+      "shared_px": 0,
+      "kanektok_wse_m": 55.175,
+      "uyak_wse_m": 55.538,
+      "kanektok_q1_m": 55.096,
+      "kanektok_q3_m": 55.278,
+      "uyak_q1_m": 55.298,
+      "uyak_q3_m": 55.754,
+      "gap_median_m": -0.298,
+      "gap_q1_m": -0.44,
+      "gap_q3_m": -0.125
+    },
+    {
+      "s_km": 3.0,
+      "separation_m": 1608.0,
+      "n_passes": 93,
+      "shared_px": 0,
+      "kanektok_wse_m": 54.518,
+      "uyak_wse_m": 55.057,
+      "kanektok_q1_m": 54.434,
+      "kanektok_q3_m": 54.622,
+      "uyak_q1_m": 54.9,
+      "uyak_q3_m": 55.292,
+      "gap_median_m": -0.533,
+      "gap_q1_m": -0.642,
+      "gap_q3_m": -0.425
+    }
+  ]
+}
