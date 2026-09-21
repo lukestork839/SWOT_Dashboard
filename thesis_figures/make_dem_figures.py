@@ -503,6 +503,390 @@ def build_dem_fig1(variant: str = "D", zoom: int = 12):
 
 
 # ---------------------------------------------------------------------------
+# D4 -- superelevation ratio beta and its ingredients, per arc
+# ---------------------------------------------------------------------------
+# Crest-half-window sensitivity sweep (AVULSION_ANALYSIS.md §4, "the bankfull
+# check"): median beta as the crest search window widens. The sign of beta flips
+# with this analyst choice, which is why the beta figures were held back until the
+# window was defended; ±150 m is adopted because its freeboard/depth ratio
+# (A/B = 1.27) is bankfull-consistent, where ±350 m gives 1.87 -- a bank the river
+# could never overtop. The sweep is documented in prose (and in the thesis
+# canonical-values doc); re-deriving it means re-running build_arc_B.py per window.
+BETA_WINDOW_SWEEP = {75: -0.16, 150: 0.06, 250: 0.21, 350: 0.24, 500: 0.28}
+BETA_WINDOW_ADOPTED = 150
+
+
+def build_dem_fig4(variant: str = "M"):
+    """DEM Fig 4 -- superelevation ratio beta = H_AR/H_M, per arc.
+
+    Two candidate treatments:
+      M  Map. The arcs themselves drawn over satellite imagery, coloured by their
+         beta bin. Shows WHERE the (absent) ridge signal sits, and makes the point
+         that every arc lands at or below beta = 0.5 -- the frequent-avulsion
+         threshold for backwater-controlled deltas (Ganti et al. 2016).
+      P  Profiles. (a) beta vs distance with the crest-window sweep inset,
+         (b) the H_AR / H_M / ADCP-depth ingredients.
+      S  Superelevation. Channel water surface minus the corridor floodplain
+         reference, both rivers, with the SWOT p10-p90 stage band -- the decisive
+         avulsion metric (D4's spec panel a, split out as its own figure).
+    """
+    variant = variant.upper()
+    if variant == "M":
+        return _dem_fig4_map()
+    if variant == "P":
+        return _dem_fig4_profile()
+    if variant == "S":
+        return _dem_fig4_superelev()
+    raise ValueError(f"variant must be M, P or S (got {variant!r})")
+
+
+# Beta colour classes for the map variant. All measured arcs fall at or below 0.5 --
+# the threshold above which avulsions occur frequently on backwater-controlled deltas
+# (Ganti et al. 2016, CIVIC warning sign 1) -- so the classes subdivide the range
+# BELOW it, with a dedicated class for beta <= 0 (near-channel high ground at or below
+# the floodplain reference). Note the test is one-directional: high beta indicates
+# frequent avulsion, low beta does NOT indicate stability (Gearon: beta*gamma >= Lambda,
+# and ~60% of avulsed deltas carry beta < 0.5). The figure's claim is H_AR ~ 0.
+BETA_BINS = (
+    (-np.inf, 0.0, "#3FC8B4", r"$\beta \leq 0$  (no ridge)"),
+    (0.0, 0.25, "#FFD84D", r"$0 < \beta \leq 0.25$"),
+    (0.25, 0.5, "#FF7A1A", r"$0.25 < \beta \leq 0.5$"),
+)
+
+
+def _dem_fig4_map(zoom: int = 12):
+    """Variant M -- beta painted onto the arc sampling frame over imagery.
+
+    Each 0.5 km iso-distance arc is drawn across the full bearing sector and
+    coloured by its Kanektok beta class; the arc IS the cross-section the value was
+    measured on. The
+    3.0 km arc has no defined crest (no beta) and is left unpainted. beta is a
+    near-channel metric, so the field centerlines ride on top in white to keep the
+    channels locatable under the paint.
+    """
+    import pandas as pd
+    import contextily as cx
+    from pyproj import Transformer
+
+    tf = Transformer.from_crs(4326, WEBM, always_xy=True)
+    df = pd.read_parquet(ARC_CHANNELS).sort_values("R_km")
+    lines = _load_centerlines()
+    xlim, ylim = _dem_extent()
+
+    fig, ax = plt.subplots(figsize=(config.FIG_WIDTH_FULL, 3.0))
+    ax.set_xlim(*xlim); ax.set_ylim(*ylim); ax.set_aspect("equal")
+    cx.add_basemap(ax, crs=WEBM, source=cx.providers.Esri.WorldImagery,
+                   zoom=zoom, attribution=False, zorder=0)
+
+    def bin_color(beta):
+        for lo, hi, color, _ in BETA_BINS:
+            if lo < beta <= hi:
+                return color
+        return None
+
+    # The coloured stripes. Each arc is CLIPPED to the section it was actually
+    # measured on -- the Kanektok-to-Uyak span plus 400 m on either side (the
+    # along-arc channel positions come straight from the arc analysis output) --
+    # so the paint hugs the corridor instead of flooding the whole bearing sector.
+    # Arc spacing is 0.5 km (~5.7 pt at print size).
+    stroke = [pe.withStroke(linewidth=4.3, foreground="black", alpha=0.35)]
+    PAD_M = 400.0
+    for _, r in df.iterrows():
+        beta, R = r["kan_beta"], r["R_km"]
+        if not np.isfinite(beta):
+            continue
+        br_lo, br_hi = BEAR_MIN, BEAR_MAX
+        ka, ua = r["kan_arc_m"], r["uyak_arc_m"]
+        if np.isfinite(ka) and np.isfinite(ua):
+            pad = np.degrees(PAD_M / (R * 1000.0))
+            br_lo = max(BEAR_MIN,
+                        BEAR_MIN + np.degrees(min(ka, ua) / (R * 1000.0)) - pad)
+            br_hi = min(BEAR_MAX,
+                        BEAR_MIN + np.degrees(max(ka, ua) / (R * 1000.0)) + pad)
+        br = np.linspace(br_lo, br_hi, 200)
+        la, lo = _dest(config.ANCHOR_LAT, config.ANCHOR_LON, R, br)
+        x, y = tf.transform(lo, la)
+        ax.plot(x, y, color=bin_color(beta), lw=3.5, alpha=0.95, zorder=3,
+                solid_capstyle="butt", path_effects=stroke)
+
+    # Radius labels ride each labelled stripe's southern (Kanektok-side) end,
+    # just below the painted ribbon.
+    x0, x1 = sorted(ax.get_xlim()); y0, y1 = sorted(ax.get_ylim())
+    dy = 0.016 * (y1 - y0)
+    for R in (5, 10, 20, 30):
+        row = df[df["R_km"] == float(R)]
+        if row.empty:
+            continue
+        r = row.iloc[0]
+        ka, ua = r["kan_arc_m"], r["uyak_arc_m"]
+        if not (np.isfinite(ka) and np.isfinite(ua)):
+            continue
+        br_lo = (BEAR_MIN + np.degrees(min(ka, ua) / (R * 1000.0))
+                 - np.degrees(PAD_M / (R * 1000.0)))
+        la, lo = _dest(config.ANCHOR_LAT, config.ANCHOR_LON, R, br_lo)
+        x, y = tf.transform(lo, la)
+        ax.text(x, y - dy, f"{R:g} km", fontsize=6.5, color="white",
+                ha="center", va="top", zorder=7,
+                path_effects=[pe.withStroke(linewidth=2.0, foreground="black")])
+
+    # Channels in white (the beta palette owns the colour budget here); identity
+    # is carried by direct labels rather than the firebrick/dodgerblue convention.
+    halo = [pe.withStroke(linewidth=2.6, foreground="black", alpha=0.7)]
+    for reach, line in lines.items():
+        x, y = line.xy
+        ax.plot(x, y, color="white", lw=1.2, zorder=5, solid_capstyle="round",
+                path_effects=halo)
+    for lon, lat, txt, rot in ((-161.785, 59.7725, "Kanektok River", 10),
+                               (-161.700, 59.8225, "Uyak Creek", 8)):
+        mx, my = tf.transform(lon, lat)
+        ax.text(mx, my, txt, fontsize=7, fontstyle="italic", color="white",
+                ha="center", va="center", rotation=rot, rotation_mode="anchor",
+                zorder=7,
+                path_effects=[pe.withStroke(linewidth=2.0, foreground="black")])
+    _draw_markers(ax, tf)
+    _degree_ticks(ax, tf)
+
+    # Legend: the three beta classes with their arc counts, plus map symbols.
+    counts = [int(((df["kan_beta"] > lo) & (df["kan_beta"] <= hi)).sum())
+              for lo, hi, _, _ in BETA_BINS]
+    h = [Line2D([], [], color=c, lw=3.5) for _, _, c, _ in BETA_BINS]
+    lb = [f"{lab}   [{n} arcs]" for (_, _, _, lab), n in zip(BETA_BINS, counts)]
+    h += [Line2D([], [], color="white", lw=1.2,
+                 path_effects=[pe.withStroke(linewidth=2.2, foreground="black")]),
+          Line2D([], [], marker="o", ls="none", mfc="white", mec="black", ms=6),
+          Line2D([], [], marker="*", ls="none", mfc="white", mec="black", ms=10)]
+    lb += ["Field centerlines", "Anchor (0 km)", "Bifurcation"]
+    ax.legend(h, lb, loc="upper left", title=r"$\beta = H_{AR}/H_M$ per arc",
+              title_fontsize=7.5, frameon=True, facecolor="white",
+              framealpha=0.90, edgecolor="0.4", fontsize=6.5, borderpad=0.35,
+              labelspacing=0.30, handletextpad=0.5, handlelength=1.6,
+              borderaxespad=0.35)
+
+    b = df["kan_beta"].dropna()
+    ax.annotate(rf"median $\beta$ = {b.median():.2f} $\cdot$ $\beta \leq 0$ on "
+                rf"{100 * (b <= 0).mean():.0f}% of arcs",
+                xy=(0.988, 0.965), xycoords="axes fraction", fontsize=7.5,
+                color="white", ha="right", va="top", zorder=8,
+                path_effects=[pe.withStroke(linewidth=2.2, foreground="black")])
+
+    # Furniture in the open tundra south of the corridor (the clipped ribbon
+    # leaves the map's lower half free).
+    _mercator_scalebar(ax, km=5, center_lat=59.80, loc=(0.44, 0.09))
+    _north_arrow(ax, loc=(0.030, 0.06), zoom=0.20,
+                 icon_path=config.NORTH_ICON_PATH)
+    _map_layout(fig, xlim, ylim)
+    return fig
+
+
+def _dem_fig4_profile():
+    """DEM Fig 4 (variant P) -- beta and its ingredients as distance profiles.
+
+    (a) Kanektok beta against radius, measured on the iso-distance arc geometry.
+        beta <= 0 -- near-channel high ground at or below the floodplain reference --
+        is shaded cool; excursions above zero warm. The 34.5 km arc (beta = -4.6,
+        H_M collapsed to 0.55 m on the tidal flats) is clipped and annotated rather
+        than allowed to set the axis. An inset shows the crest-window sweep so the
+        analyst choice the metric hinges on is visible in the figure itself.
+    (b) The ingredients: H_M (crest - bed) is carried almost entirely by ADCP
+        channel depth, while H_AR (crest - floodplain) hovers at zero -- the
+        dimensioned form of the same no-ridge result.
+
+    beta is Kanektok-only (the Uyak has ADCP depth near its mouth only). No beta = 1
+    threshold line is drawn: Gearon's operative criterion is beta*gamma >= Lambda,
+    and this analysis does not evaluate gamma.
+    """
+    import pandas as pd
+
+    df = pd.read_parquet(ARC_CHANNELS).sort_values("R_km")
+    kan = config.river_color("Kanektok_River")
+
+    # Headline stats, computed the same way AVULSION_ANALYSIS.md reports them:
+    # over every arc with a defined beta (63 of 64; the 3.0 km arc has no crest).
+    b = df["kan_beta"].dropna()
+    n_le0, n_b = int((b <= 0).sum()), len(b)
+    med_beta = b.median()                                  # 0.06
+    med_har = df["kan_HAR_m"].median()                     # +0.14 m
+    med_hm = df.loc[b.index, "kan_HM_m"].median()          # 2.86 m
+    med_depth = df["kan_depth_m"].median()                 # 1.30 m
+
+    fig, (axa, axb) = plt.subplots(
+        2, 1, figsize=(config.FIG_WIDTH_FULL, 6.2), sharex=True,
+        constrained_layout=True)
+
+    # ---------------- (a) beta vs radius ----------------
+    # Headroom above the data (max 0.49) hosts the window-sweep inset; the inset's
+    # x-extent stops at axes-fraction 0.27 (R >= 25.6 km), where beta never exceeds
+    # 0.29, so no marker hides underneath it.
+    YMIN, YMAX = -0.95, 1.02
+    x = df["R_km"].to_numpy()
+    y = df["kan_beta"].to_numpy()
+    shown = np.where(y < YMIN + 0.06, np.nan, y)   # clip the tidal-flat outlier
+    axa.axhline(0.0, ls="--", lw=0.9, color=config.BASELINE_COLOR, zorder=2)
+    axa.fill_between(x, np.nan_to_num(shown, nan=0.0), 0.0,
+                     where=np.nan_to_num(shown, nan=0.0) > 0, interpolate=True,
+                     color=kan, alpha=0.15, lw=0, zorder=2)
+    axa.fill_between(x, np.nan_to_num(shown, nan=0.0), 0.0,
+                     where=np.nan_to_num(shown, nan=0.0) <= 0, interpolate=True,
+                     color="steelblue", alpha=0.18, lw=0, zorder=2)
+    axa.plot(x, shown, color=kan, lw=1.4, marker="o", ms=3.2, zorder=4)
+    axa.set_ylim(YMIN, YMAX)
+    axa.set_ylabel(r"Superelevation ratio  $\beta = H_{AR}/H_M$")
+
+    # The clipped outlier, drawn honestly: open marker pinned at the axis floor
+    # with its true value written next to it.
+    out = df[df["kan_beta"] < YMIN]
+    for _, r in out.iterrows():
+        axa.plot([r["R_km"]], [YMIN + 0.05], marker="v", ms=5, mfc="white",
+                 mec=kan, mew=1.2, ls="none", zorder=5, clip_on=False)
+        axa.annotate(rf"$\beta$ = {r['kan_beta']:.1f} (tidal flats)",
+                     xy=(r["R_km"], YMIN + 0.05), xytext=(8, 3),
+                     textcoords="offset points", fontsize=8, color="#333333",
+                     ha="left", va="bottom")
+
+    axa.annotate(
+        rf"median $\beta$ = {med_beta:.2f} $\cdot$ $\beta \leq 0$ on "
+        rf"{100*n_le0/n_b:.0f}% of arcs ({n_le0}/{n_b})"
+        "\nno alluvial ridge to superelevate",
+        xy=(0.985, 0.04), xycoords="axes fraction", fontsize=8.5,
+        ha="right", va="bottom", color="#333333")
+
+    # Crest-window sweep inset: beta's dependence on the crest half-window, the
+    # adopted +/-150 m highlighted. Lives in (a) because it IS a statement about
+    # beta; the window's unit (m) rides the title so nothing renders below the
+    # inset frame into the data band underneath.
+    axi = axa.inset_axes([0.045, 0.635, 0.225, 0.325])
+    wins = sorted(BETA_WINDOW_SWEEP)
+    axi.axhline(0.0, ls="--", lw=0.7, color=config.BASELINE_COLOR)
+    axi.plot(wins, [BETA_WINDOW_SWEEP[w] for w in wins], color="0.35", lw=1.1,
+             marker="o", ms=2.6, zorder=3)
+    axi.plot([BETA_WINDOW_ADOPTED], [BETA_WINDOW_SWEEP[BETA_WINDOW_ADOPTED]],
+             marker="o", ms=6, mfc=kan, mec="white", mew=1.0, ls="none", zorder=4)
+    axi.annotate("adopted\n$\\pm$150 m",
+                 xy=(BETA_WINDOW_ADOPTED, BETA_WINDOW_SWEEP[BETA_WINDOW_ADOPTED]),
+                 xytext=(6, -7), textcoords="offset points", fontsize=6.5,
+                 color="#333333", ha="left", va="top")
+    axi.set_title(r"median $\beta$ vs crest half-window (m)", fontsize=6.5, pad=2)
+    axi.tick_params(labelsize=6, length=2, pad=1.5)
+    axi.set_xticks(wins)
+    axi.set_xlim(35, 555)
+    axi.set_ylim(-0.24, 0.37)
+    axi.grid(False)
+    axi.set_facecolor("white")
+    for s in axi.spines.values():
+        s.set_linewidth(0.6)
+
+    # ---------------- (b) the ingredients ----------------
+    axb.axhline(0.0, ls="-", lw=0.8, color="#888888", zorder=1)
+    axb.plot(x, df["kan_HM_m"], color="0.15", lw=1.5, marker="o", ms=2.8,
+             zorder=4, label=r"$H_M$ (crest $-$ bed)")
+    axb.plot(x, df["kan_depth_m"], color="0.45", lw=1.3, ls="--", zorder=3,
+             label="ADCP thalweg depth")
+    axb.plot(x, df["kan_HAR_m"], color=kan, lw=1.4, marker="o", ms=2.8,
+             zorder=4, label=r"$H_{AR}$ (crest $-$ floodplain)")
+    axb.fill_between(x, df["kan_HAR_m"].fillna(0.0), 0.0, color=kan, alpha=0.12,
+                     lw=0, zorder=2)
+    axb.set_ylim(-3.2, 6.4)
+    axb.set_ylabel("Height (m)")
+    # Legend upper LEFT: H_M runs low (<= 3.6 m) over the seaward third, so that
+    # corner is the only clear block; the medians line takes the clear bottom right.
+    axb.legend(loc="upper left", fontsize=8.5, frameon=True, facecolor="white",
+               framealpha=0.9, edgecolor="0.6", borderpad=0.4, labelspacing=0.3)
+    axb.annotate(
+        rf"medians $-$ $H_M$ {med_hm:.2f} m $\cdot$ depth {med_depth:.2f} m "
+        rf"$\cdot$ $H_{{AR}}$ +{med_har:.2f} m",
+        xy=(0.985, 0.03), xycoords="axes fraction", fontsize=8.5,
+        ha="right", va="bottom", color="#333333")
+
+    # Shared distance axis: reversed, mouth left / anchor right, like every DEM
+    # profile figure. Bifurcation labelled once (a); (b) gets the bare line. Panel
+    # tags top-right, clear of the inset (a, upper left) and legend (b, upper left).
+    add_bifurcation_line(axa)
+    axb.axvline(config.BIFURCATION_DIST_KM, ls="--", lw=0.9,
+                color=config.BASELINE_COLOR, zorder=1)
+    for ax, tag in ((axa, "a"), (axb, "b")):
+        ax.annotate(f"({tag})", xy=(0.988, 0.965), xycoords="axes fraction",
+                    fontsize=10, fontweight="bold", ha="right", va="top")
+    style_distance_axis(axb, ARC_R_MAX)
+    return fig
+
+
+def _dem_fig4_superelev():
+    """DEM Fig 4 (variant S) -- superelevation against the floodplain corridor.
+
+    Channel water surface minus the corridor floodplain reference (median terrain
+    strictly between the two channels, each channel's +/-250 m notch excluded),
+    per arc, both rivers. A river has no single water surface -- at a fixed radius
+    the SWOT record spans ~0.7 m between p10 and p90 across the overpass archive --
+    so the line is superelevation at the MEDIAN observed stage and the band carries
+    it across the p10-p90 stage range. Zero is floodplain grade: a channel poised
+    to avulse rides above it. The Kanektok sits below on every arc at every
+    observed stage (incised); the Uyak sits at about floodplain grade -- the low
+    slough of the floodplain, not a levee-bound channel. The 3.0 km arc has no
+    corridor reference (the corridors are not separable that close to the
+    bifurcation) and is absent.
+    """
+    import pandas as pd
+
+    df = pd.read_parquet(ARC_CHANNELS).sort_values("R_km")
+    x = df["R_km"].to_numpy()
+    kan_c = config.river_color("Kanektok_River")
+    uyak_c = config.river_color("Uyak_Creek")
+
+    fig, ax = plt.subplots(figsize=(config.FIG_WIDTH_FULL, 3.8),
+                           constrained_layout=True)
+
+    ax.axhline(0.0, ls="--", lw=1.0, color=config.BASELINE_COLOR, zorder=2)
+    stats = {}
+    for river, color in (("kan", kan_c), ("uyak", uyak_c)):
+        med = df[f"{river}_superelev_med_m"]
+        p10 = df[f"{river}_superelev_p10_m"]
+        p90 = df[f"{river}_superelev_p90_m"]
+        ax.fill_between(x, p10, p90, color=color, alpha=0.22, lw=0, zorder=3)
+        ax.plot(x, med, color=color, lw=1.5, marker="o", ms=2.8, zorder=5)
+        stats[river] = (med.median(),
+                        100 * (med.dropna() > 0).mean(),
+                        100 * (p90.dropna() > 0).mean())
+
+    ax.set_ylim(-3.5, 1.75)
+    ax.set_ylabel("Superelevation above floodplain (m)")
+
+    # The zero line is the physical reference, so it gets a name on the plot.
+    ax.annotate("floodplain grade (corridor median terrain)",
+                xy=(0.012, 0.0), xycoords=("axes fraction", "data"),
+                xytext=(0, 3), textcoords="offset points",
+                fontsize=8, color=config.BASELINE_COLOR, ha="left", va="bottom")
+
+    # Direct river labels beat a colour legend here; the one legend entry that
+    # earns its place explains what the band IS.
+    ax.annotate("Uyak Creek", xy=(29.0, 0.62), fontsize=9.5, color=uyak_c,
+                ha="center", va="bottom", fontweight="bold")
+    ax.annotate("Kanektok River", xy=(29.0, -2.55), fontsize=9.5, color=kan_c,
+                ha="center", va="top", fontweight="bold")
+    ax.legend(handles=[Patch(facecolor="0.55", alpha=0.35,
+                             label="p10–p90 of observed SWOT stage\n"
+                                   "(line: median stage)")],
+              loc="upper left", fontsize=8, frameon=True, facecolor="white",
+              framealpha=0.9, edgecolor="0.6", borderpad=0.4)
+
+    # Headline stats, computed from the columns just drawn.
+    k_med, _, k_p90_above = stats["kan"]
+    u_med, u_above, _ = stats["uyak"]
+    assert k_p90_above == 0.0   # below floodplain even at high water, every arc
+    ax.annotate(
+        rf"Kanektok below the floodplain on 100% of arcs, at every observed stage"
+        rf" $\cdot$ median $-${abs(k_med):.2f} m"
+        "\n"
+        rf"Uyak $\approx$ floodplain grade $\cdot$ median $-${abs(u_med):.2f} m"
+        rf" $\cdot$ above on {u_above:.0f}% of arcs at median stage",
+        xy=(0.925, 0.03), xycoords="axes fraction", fontsize=8.5,
+        ha="right", va="bottom", color="#333333")
+
+    add_bifurcation_line(ax)
+    style_distance_axis(ax, ARC_R_MAX)
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # D2 -- valley long profile, corridor difference, channel difference
 # ---------------------------------------------------------------------------
 def _corridor_profile(bin_km: float = CORRIDOR_BIN_KM,
@@ -843,8 +1227,8 @@ def build_dem_fig5():
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-BUILDERS = {1: build_dem_fig1, 2: build_dem_fig2, 5: build_dem_fig5}
-VARIANTS = {1: ("A", "B", "C", "D")}
+BUILDERS = {1: build_dem_fig1, 2: build_dem_fig2, 4: build_dem_fig4, 5: build_dem_fig5}
+VARIANTS = {1: ("A", "B", "C", "D"), 4: ("M", "P", "S")}
 
 
 def main(argv=None):

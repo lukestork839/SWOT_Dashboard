@@ -1,0 +1,38 @@
+P8 — Figure 10's frame without the analysis (presentation figure, A/B partner)
+
+Esri World Imagery at exactly the extent, figure size, zoom and furniture
+placement of Figure 10, with everything derived from data removed: no analysis
+polygons, no SWOT node clouds, no centerlines, no anchor, bifurcation or gauge
+markers, no legend. Scale bar and north arrow only. Flipped back and forth
+against Figure 10 in a deck, the two slides register exactly — the map does not
+move, so the only thing that changes is the analysis overlay itself.
+
+The Kanektok River reads immediately: a continuous teal braid with exposed
+gravel bars, running from the lower left up to the bifurcation on the right.
+The Uyak Creek corridor — the upper third of the frame — reads as pale, near
+featureless floodplain crossed by relict channel scars, with the active thread
+barely more than one image pixel wide at this extent.
+
+That asymmetry is the point of the pair. In Figure 10 the two rivers are drawn
+as analysis polygons of comparable width, filled with node clouds of comparable
+density, and the Uyak therefore looks like the Kanektok's equal. It is not. The
+polygon is fitted around the braid plain the SWOT pixels are drawn from, not
+around the channel, and the node density reflects SWOT's water classification
+over a wet braid surface rather than a single deep thread. The flip separates
+what the analysis samples from what is actually in the water.
+
+Two renders are provided. P8_fig10_extent carries Figure 10's degree ticks and
+saves to an identical 1643 x 1152 canvas, which is what makes the flip steady;
+use this one for the A/B. P8_fig10_extent_bare drops the ticks for a full-bleed
+slide and consequently crops to a different box, so it will jump slightly if
+paired directly with Figure 10.
+
+Caveats carried over from P7: the Esri mosaic has an acquisition seam running
+diagonally across the scene, with the northern (Uyak) half from a paler,
+drier-looking pass, so some tonal contrast is the imagery rather than the
+rivers; and a single scene is a single unknown stage. The width contrast is
+qualitative context, not a measurement. See P7 for the close-up in which the
+Uyak's thread is actually resolved.
+
+Basemap: Esri World Imagery, fetched at zoom 13; the scale bar is corrected for
+the latitude distortion of the Web Mercator projection.

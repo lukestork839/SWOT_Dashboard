@@ -24,6 +24,7 @@ ENV/
 # Thesis figures: commit the generators/captions/assets, not the rendered output
 # (regenerable from the scripts; re-rendered on each clean-data refresh)
 thesis_figures/output/
+thesis_figures/final/
 
 # Slope re-analysis: commit the generator scripts, not the rendered PNGs
 # (regenerable from slope_finescale_prototype.py / coastal_noise_diagnostic.py)
@@ -59,6 +60,7 @@ DEPLOYMENT_SUMMARY.md
 NEXT_STEPS.md
 dashboard_optimizations.md
 PERFORMANCE_UPDATE.md
+Github_adjustment.md
 
 # Backup and diagnostic files
 *.backup
@@ -93,10 +95,8 @@ old_stuff/
 Quinhagak*
 *Calibration*Readings*/
 
-# Standalone DEM slope + veg-filter experiments: commit the generator scripts/findings,
+# Standalone DEM veg-filter experiments: commit the generator scripts/findings,
 # not the rendered outputs (regenerable from the scripts)
-/dem_channel_slope_phase2/
-/dem_finescale_slope_spike/
 /dem_veg_filter/outputs/
 
 # Personal working documents (thesis drafts, proposals) — never commit

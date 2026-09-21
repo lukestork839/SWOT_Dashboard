@@ -1,0 +1,12 @@
+P3 — Superelevation, the plain visual (presentation figure)
+
+The comparison with no notation: (a) a typical superelevated river, its bed
+aggraded to floodplain grade and its water surface riding above the plain it
+would spill into — the configuration that precedes an avulsion; (b) the
+Kanektok River as measured (median geometry across the 64 DEM arcs), set
+down into its own floodplain with the water surface below the surrounding
+ground at every observed stage. Same true vertical scale in both panels;
+the horizontal axis is compressed, so bank slopes appear far steeper than
+the gentle grades seen on the ground. Panel (a) is a conceptual schematic;
+panel (b) draws the measured median elevations (SWOT KaRIn water surface,
+ArcticDEM digital surface model terrain, boat ADCP depth).

@@ -95,18 +95,26 @@ def _stub(n: int, title: str, source: str) -> None:
 # FIGURE BUILDERS  (implemented one at a time as specs are finalised)
 # ---------------------------------------------------------------------------
 def _mercator_scalebar(ax, km, center_lat, loc=(0.38, 0.06), color="white",
-                       stroke="black"):
+                       stroke="black", fontsize=11, stroke_lw=1.3,
+                       fontweight="bold"):
     """Draw a ground-accurate scale bar on a Web-Mercator (EPSG:3857) axis.
 
     Web Mercator distances are inflated by 1/cos(lat), so a bar representing
     `km` ground kilometres spans `km*1000/cos(center_lat)` map units. Drawn as a
     single filled bar (white fill + thin black edge, so it reads on dark imagery and
-    has no disconnected end ticks) with a light-stroked, normal-weight label centred
+    has no disconnected end ticks) with a lightly haloed bold label centred
     above it. `loc` is the bar's lower-left corner in axes fraction.
 
     `stroke` is the label's outline colour and must contrast with `color`; on a pale
     basemap (e.g. hypsometric topography) pass color="black", stroke="white", or the
     label is drawn black-on-black and disappears into a blob.
+
+    Label legibility is a halo-to-glyph ratio problem, not a size problem alone. The
+    halo is stroked on the glyph outline, so half its width falls *inside* the letter;
+    once `stroke_lw` approaches a fifth of `fontsize` it closes the counters of a
+    serif "km" and the label reads as a smudge, worst over mid-tone imagery. The
+    defaults keep that ratio near 1:8 and carry the weight in the glyph (bold) rather
+    than in the outline, which is what survives projection.
     """
     import matplotlib.patheffects as pe
     from matplotlib.patches import Rectangle
@@ -119,8 +127,9 @@ def _mercator_scalebar(ax, km, center_lat, loc=(0.38, 0.06), color="white",
     ax.add_patch(Rectangle((bx, by), L, h, facecolor=color, edgecolor="black",
                            linewidth=1.0, zorder=9))
     ax.text(bx + L / 2, by + h * 1.5, f"{km:g} km", ha="center", va="bottom",
-            fontsize=8, color=color, fontweight="normal",
-            path_effects=[pe.withStroke(linewidth=1.8, foreground=stroke)], zorder=9)
+            fontsize=fontsize, color=color, fontweight=fontweight,
+            path_effects=[pe.withStroke(linewidth=stroke_lw, foreground=stroke)],
+            zorder=9)
 
 
 def _north_arrow(ax, loc=(0.055, 0.80), color="white", icon_path=None, zoom=0.13,
@@ -187,6 +196,126 @@ def _locator_inset(ax, tf, lon, lat, loc="lower right", width="26%", height="36%
     for s in axins.spines.values():
         s.set(visible=True, edgecolor="0.3", linewidth=0.8)
     return axins
+
+
+def build_fig0(zoom: int = 11):
+    """Fig 0 -- Regional setting: Kuskokwim Bay, Quinhagak, and the two distributaries.
+
+    The wide "where are we" map the committee asked the thesis to open with. It is
+    deliberately geographic rather than analytic: no polygons, no node clouds, no arc
+    frame -- those belong to the detailed study-area figures that follow. Content is
+    limited to what a first-time reader needs to orient: Kuskokwim Bay and the coast,
+    the village of Quinhagak (Kuinerraq), the Kanektok mainstem arriving out of the
+    Ahklun Mountains, the bifurcation, and the two distributaries (field-surveyed
+    centerlines, thesis palette). Rivers are labelled directly on the map instead of
+    in a legend so the figure reads at a glance.
+
+    Frame is ~90 x 60 km centred on the lower Kanektok: wide enough that the bay,
+    the village, and the mountain front are all *in* the picture (the reviewer
+    complaint about Fig 1 was that none of them are), small enough that the two
+    distributaries are still distinct lines rather than a smudge. Basemap tiles are
+    fetched at build time (needs network).
+    """
+    import os
+    import contextily as cx
+    import matplotlib.patheffects as pe
+    from pyproj import Transformer
+
+    WEBM = 3857
+    tf = Transformer.from_crs(4326, WEBM, always_xy=True)
+
+    # View window (lon/lat corners), chosen so Quinhagak sits lower-left with open
+    # bay water west of it, the reach crosses the middle, and the frame's east end
+    # reaches the Ahklun Mountains front where the Kanektok leaves its canyon.
+    VIEW_W, VIEW_E = -162.30, -160.75
+    VIEW_S, VIEW_N = 59.52, 60.06
+    x0, y0 = tf.transform(VIEW_W, VIEW_S)
+    x1, y1 = tf.transform(VIEW_E, VIEW_N)
+
+    # Quinhagak (Kuinerraq) village site, north bank of the Kanektok mouth (GNIS).
+    QUIN_LON, QUIN_LAT = -161.9106, 59.7494
+
+    fig, ax = plt.subplots(
+        figsize=(config.FIG_WIDTH_FULL,
+                 config.FIG_WIDTH_FULL * (y1 - y0) / (x1 - x0) + 0.3))
+    ax.set_xlim(x0, x1); ax.set_ylim(y0, y1); ax.set_aspect("equal")
+    cx.add_basemap(ax, crs=WEBM, source=cx.providers.Esri.WorldImagery,
+                   zoom=zoom, attribution=False, zorder=0)
+
+    # Field-surveyed distributary centerlines (same files the DEM arc analysis snaps
+    # to), drawn with a dark halo so they read over both water and tundra.
+    # Uyak Creek is drawn at half the Kanektok's line width: a cartographic cue
+    # to the size contrast between mainstem and secondary distributary, which is
+    # otherwise invisible at this scale. The halo scales with the line so the
+    # thinner blue does not disappear inside its own outline.
+    import geopandas as gpd
+    cl_dir = os.path.join(config.REPO_ROOT, "DEM_Transects", "data")
+    for reach, fname, lw in [
+            ("Kanektok_River", "kanektok_centerline_official.gpkg", 1.9),
+            ("Uyak_Creek", "uyak_centerline_official.gpkg", 0.95)]:
+        g = gpd.read_file(os.path.join(cl_dir, fname)).to_crs(WEBM)
+        geom = g.geometry.iloc[0]
+        line = (max(geom.geoms, key=lambda s: s.length)
+                if geom.geom_type == "MultiLineString" else geom)
+        lx, ly = line.xy
+        ax.plot(lx, ly, color=config.river_color(reach), lw=lw, zorder=5,
+                solid_capstyle="round",
+                path_effects=[pe.withStroke(linewidth=lw + 1.3,
+                                            foreground="black", alpha=0.6)])
+
+    # On-map feature labels. White with a dark stroke reads on imagery everywhere;
+    # water/terrain names italic (cartographic convention), settlement name upright.
+    def label(lon, lat, text, size=9, style="italic", ha="center", va="center",
+              rotation=0):
+        mx, my = tf.transform(lon, lat)
+        ax.text(mx, my, text, fontsize=size, fontstyle=style, color="white",
+                ha=ha, va=va, rotation=rotation, rotation_mode="anchor", zorder=7,
+                path_effects=[pe.withStroke(linewidth=2.2, foreground="black")])
+
+    # Bay label rides the open water NORTH of the furniture corner (scale bar +
+    # north arrow own the lower left); mountains label sits just clear of the
+    # locator inset's top edge, over the range front it names.
+    label(-162.17, 59.88, "Kuskokwim\nBay", size=11)
+    label(-161.02, 59.745, "Ahklun Mountains", size=10)
+    label(-161.62, 59.765, "Kanektok River", rotation=8)
+    # Anchored from the text's BOTTOM edge and lifted clear of the channel: the
+    # Uyak crest reaches 59.8253 N at this longitude, so a centred label at
+    # 59.825 straddled its own river.
+    label(-161.70, 59.8290, "Uyak Creek", rotation=8, va="bottom")
+
+    # Quinhagak: village marker + name (Yup'ik name per the community's usage).
+    qx, qy = tf.transform(QUIN_LON, QUIN_LAT)
+    ax.scatter([qx], [qy], marker="s", s=42, color="white", edgecolor="black",
+               linewidths=1.0, zorder=8)
+    label(QUIN_LON + 0.015, QUIN_LAT - 0.012, "Quinhagak (Kuinerraq)",
+          size=9, style="normal", ha="left", va="top")
+
+    # Bifurcation: the single most important point on the map -- star + direct label.
+    bx, by = tf.transform(config.BIFURCATION_LON, config.BIFURCATION_LAT)
+    ax.scatter([bx], [by], marker="*", s=150, color="white", edgecolor="black",
+               linewidths=1.0, zorder=8)
+    label(config.BIFURCATION_LON + 0.012, config.BIFURCATION_LAT + 0.016,
+          "bifurcation", size=8.5, style="normal", ha="left", va="bottom")
+
+    # Degree ticks on the frame (axis units are Web-Mercator metres).
+    lon_ticks = [-162.2, -161.8, -161.4, -161.0]
+    lat_ticks = [59.6, 59.8, 60.0]
+    ax.set_xticks([tf.transform(lo, lat_ticks[0])[0] for lo in lon_ticks])
+    ax.set_xticklabels([f"{abs(lo):.1f}°W" for lo in lon_ticks])
+    ax.set_yticks([tf.transform(lon_ticks[0], la)[1] for la in lat_ticks])
+    ax.set_yticklabels([f"{la:.1f}°N" for la in lat_ticks])
+    ax.grid(False)
+    ax.tick_params(direction="out")
+
+    # Furniture over the open bay water (lower left): scale bar with the north arrow
+    # above it. Alaska locator lower right, study area marked as a point (see
+    # _locator_inset for why a point and not an extent box).
+    _mercator_scalebar(ax, km=20, center_lat=59.79, loc=(0.045, 0.055))
+    _north_arrow(ax, loc=(0.062, 0.115), zoom=0.20,
+                 icon_path=config.NORTH_ICON_PATH)
+    _locator_inset(ax, tf, (VIEW_W + VIEW_E) / 2, (VIEW_S + VIEW_N) / 2,
+                   width="24%", height="30%")
+    return fig
 
 
 def build_fig1(zoom: int = 12, n_points: int = 90000, pad_frac: float = 0.06):
@@ -283,9 +412,10 @@ def build_fig1(zoom: int = 12, n_points: int = 90000, pad_frac: float = 0.06):
 
     # --- cartographic furniture ----------------------------------------------------
     _mercator_scalebar(ax, km=5, center_lat=59.80, loc=(0.38, 0.06))
-    # North arrow is added in post from the Nalaquq village vector logo (stays crisp
-    # at small size, unlike a rasterised icon); the lower-left corner is left clear
-    # for it. See _north_arrow() / config.NORTH_ICON_PATH if a drawn arrow is wanted.
+    # North arrow in the lower-left corner (kept clear of channels and legend),
+    # same Nalaquq icon treatment as Fig 0 so the exported render is self-contained.
+    _north_arrow(ax, loc=(0.062, 0.075), zoom=0.20,
+                 icon_path=config.NORTH_ICON_PATH)
 
     # --- legend (white box, legible over imagery) ----------------------------------
     handles = [
@@ -435,18 +565,48 @@ def build_fig2():
     return fig
 
 
-def build_fig3():
-    """Fig 3 -- Temporal Stability & Stage-Invariance (Results 5.1).
+def _fig3_time_series(m, typhoon, col, ylabel, legend_loc, legend_ncol=2):
+    """One standalone time-series figure of the temporal-stability record."""
+    order = sorted(config.COLOR_MAP, key=lambda r: r == "Uyak_Creek")
+    fig, ax = plt.subplots(figsize=(config.FIG_WIDTH_FULL, 3.1),
+                           constrained_layout=True)
+    # winter (Dec-Mar) shading -- no gated open-water data there.
+    for y0 in (2023, 2024, 2025):
+        ax.axvspan(pd.Timestamp(f"{y0}-12-01"), pd.Timestamp(f"{y0+1}-03-31"),
+                   color="lightsteelblue", alpha=0.25, lw=0, zorder=0)
+    ax.axvline(pd.Timestamp(typhoon), color="black", ls="--", lw=1.2, zorder=1)
+    ax.annotate("Typhoon Halong", xy=(pd.Timestamp(typhoon), 1.0),
+                xycoords=("data", "axes fraction"), xytext=(3, -3),
+                textcoords="offset points", fontsize=8, color="black",
+                ha="left", va="top")
+    for reach in order:
+        d = m[m["reach"] == reach].sort_values("date")
+        ax.plot(d["date"].to_numpy(), d[col].to_numpy(), linestyle="none",
+                marker="o", ms=4, color=config.river_color(reach), alpha=0.75,
+                label=config.river_label(reach), zorder=3)
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    ax.set_xlim(m["date"].min() - pd.Timedelta(days=40),
+                m["date"].max() + pd.Timedelta(days=40))
+    ax.set_xlabel("Date")
+    ax.set_ylabel(ylabel)
+    ax.legend(loc=legend_loc, ncol=legend_ncol)
+    return fig
 
-    Three panels from the one-time temporal analysis (temporal_results/):
-      (a) WSE at 15 km (stage proxy) vs date,
-      (b) robust hydraulic gradient vs date,
+
+def build_fig3():
+    """Fig 3a/3b/3c -- Temporal Stability & Stage-Invariance (Results 5.1).
+
+    Three standalone figures (thesis Figures 16-18) from the one-time temporal
+    analysis (temporal_results/), split so each can sit beside the text that
+    discusses it:
+      3a: WSE at the fixed 15 km reference (stage proxy) vs date,
+      3b: robust per-pass hydraulic gradient vs date,
     both with winter (Dec-Mar, no open-water data) shaded and Typhoon Halong
-    landfall marked -- showing seasonal, interannual, and pre/post-typhoon
-    stability on one time axis; and
-      (c) gradient vs stage, demonstrating stage-invariance (flat bands justify
-    pooling passes across seasons/years). The typhoon comparison is INTERIM (see
-    caption). QC-excluded passes (config.EXCLUDED_PASSES) are dropped.
+    landfall marked; and
+      3c: gradient vs stage, demonstrating stage-invariance (flat bands justify
+    pooling passes across seasons/years).
+    QC-excluded passes (config.EXCLUDED_PASSES) are dropped.
     Source: temporal_metrics_per_pass.parquet + temporal_analysis_results.json.
     """
     m = core.load_temporal_metrics()
@@ -454,40 +614,18 @@ def build_fig3():
     typhoon = results["method"]["typhoon_date"]
     order = sorted(config.COLOR_MAP, key=lambda r: r == "Uyak_Creek")
 
-    fig, (ax_a, ax_b, ax_c) = plt.subplots(
-        3, 1, figsize=(config.FIG_WIDTH_FULL, 8.2), constrained_layout=True)
+    # Legend spots chosen around the data: 3a top-centre (clear sky between the
+    # 2023 outliers at left and the typhoon label at right), 3b centre-right
+    # (the 197-210 cm/km band is empty away from the early-2023 outliers).
+    fig_a = _fig3_time_series(m, typhoon, "wse_ref_m", "WSE at 15 km (m)",
+                              "upper center")
+    fig_b = _fig3_time_series(m, typhoon, "slope_cm_km",
+                              "Hydraulic Gradient (cm/km)", "center right",
+                              legend_ncol=1)
 
-    def _events(ax):
-        # winter (Dec-Mar) shading -- no gated open-water data there.
-        for y0 in (2023, 2024, 2025):
-            ax.axvspan(pd.Timestamp(f"{y0}-12-01"), pd.Timestamp(f"{y0+1}-03-31"),
-                       color="lightsteelblue", alpha=0.25, lw=0, zorder=0)
-        ax.axvline(pd.Timestamp(typhoon), color="black", ls="--", lw=1.2, zorder=1)
-
-    # (a) WSE at 15 km vs date, (b) gradient vs date.
-    for ax, col in ((ax_a, "wse_ref_m"), (ax_b, "slope_cm_km")):
-        _events(ax)
-        for reach in order:
-            d = m[m["reach"] == reach].sort_values("date")
-            ax.plot(d["date"].to_numpy(), d[col].to_numpy(), linestyle="none",
-                    marker="o", ms=4, color=config.river_color(reach), alpha=0.75,
-                    label=config.river_label(reach), zorder=3)
-        ax.xaxis.set_major_locator(mdates.YearLocator())
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
-        ax.set_xlim(m["date"].min() - pd.Timedelta(days=40),
-                    m["date"].max() + pd.Timedelta(days=40))
-    ax_a.tick_params(labelbottom=False)   # (b) carries the shared date axis
-    # typhoon label on the top panel
-    ax_a.annotate("Typhoon Halong", xy=(pd.Timestamp(typhoon), 1.0),
-                  xycoords=("data", "axes fraction"), xytext=(3, -3),
-                  textcoords="offset points", fontsize=8, color="black",
-                  ha="left", va="top")
-    ax_a.set_ylabel("WSE at 15 km (m)")
-    ax_b.set_ylabel("Hydraulic Gradient\n(cm/km)")
-    ax_b.set_xlabel("Date")
-    ax_a.legend(loc="lower left", ncol=2)
-
-    # (c) stage-invariance: gradient vs stage, with per-river median lines.
+    # 3c: stage-invariance -- gradient vs stage, with per-river median lines.
+    fig_c, ax_c = plt.subplots(figsize=(config.FIG_WIDTH_FULL, 3.4),
+                               constrained_layout=True)
     for reach in order:
         d = m[m["reach"] == reach]
         color = config.river_color(reach)
@@ -497,15 +635,10 @@ def build_fig3():
         ax_c.axhline(float(d["slope_cm_km"].median()), color=color, ls=":",
                      lw=1.2, alpha=0.8, zorder=2)
     ax_c.set_xlabel("Water Surface Elevation at 15 km (m)  —  stage proxy")
-    ax_c.set_ylabel("Hydraulic Gradient\n(cm/km)")
+    ax_c.set_ylabel("Hydraulic Gradient (cm/km)")
     ax_c.legend(loc="upper right", ncol=1)
 
-    # Panel labels.
-    for ax, lab in ((ax_a, "(a)"), (ax_b, "(b)"), (ax_c, "(c)")):
-        ax.annotate(lab, xy=(0.0, 1.0), xycoords="axes fraction", xytext=(2, -2),
-                    textcoords="offset points", fontsize=11, fontweight="bold",
-                    ha="left", va="top")
-    return fig
+    return [("a", fig_a), ("b", fig_b), ("c", fig_c)]
 
 
 def build_fig4():
@@ -955,8 +1088,135 @@ def build_fig9(res_km: float = 0.5, method: str = "theilsen",
     return fig
 
 
+def build_fig10(zoom: int = 13, n_points: int = 120000, pad_frac: float = 0.07):
+    """Fig 10 -- Bifurcation & Virtual-Gauge Detail Map.
+
+    Zoomed companion to Fig 1, covering the anchor-to-~8 km reach where the
+    bifurcation-gauge analysis lives (bifurcation_gauge.py). Same construction
+    as Fig 1 -- analysis polygons plus the SWOT node clouds at the usual low
+    alpha over Esri World Imagery -- with markers for the anchor (0 km), the
+    bifurcation (~2.5 km), and the two virtual gauges, each sited 1 km
+    ALONG-CHANNEL past the split on its river's official centerline (the
+    channels are ~740 m apart there). The centerlines are drawn so the siting
+    reads directly off the map. Gauge positions are read from the analysis
+    summary, never hardcoded, so map and numbers cannot drift apart. Basemap
+    tiles are fetched at build time (needs network).
+    """
+    import json
+    import geopandas as gpd
+    import contextily as cx
+    from pyproj import Transformer
+    from matplotlib import patheffects as pe
+
+    WEBM = 3857
+    tf = Transformer.from_crs(4326, WEBM, always_xy=True)
+
+    polys = gpd.read_file("zip://river_poly.zip").to_crs(WEBM)
+    name_to_reach = {"Kanektok": "Kanektok_River", "Uyak": "Uyak_Creek"}
+    polys["reach"] = polys["Name"].map(name_to_reach)
+
+    # Extent: bounding box of the SWOT pixels within 8 km of the anchor
+    # (lon -161.476..-161.339, lat 59.803..59.843, from the master archive),
+    # padded, with extra room up top so the legend sits over tundra (Fig 1).
+    x0, y0 = tf.transform(-161.476, 59.803)
+    x1, y1 = tf.transform(-161.339, 59.843)
+    dx = (x1 - x0) * pad_frac
+    xlim = (x0 - dx, x1 + dx)
+    ylim = (y0 - (y1 - y0) * 0.10, y1 + (y1 - y0) * 0.34)
+
+    con = core.connect()
+    pts = core.load_swot(con, reaches=list(config.COLOR_MAP), open_water_only=True)
+    pts = pts[pts["dist_km"] <= 8.5]
+    rng = np.random.default_rng(42)
+
+    fig, ax = plt.subplots(figsize=(config.FIG_WIDTH_FULL, config.FIG_WIDTH_FULL / 1.4))
+    ax.set_xlim(*xlim); ax.set_ylim(*ylim)
+    ax.set_aspect("equal")
+
+    plot_order = sorted(config.COLOR_MAP, key=lambda r: r == "Uyak_Creek")
+    for reach in plot_order:
+        color = config.river_color(reach)
+        sub = polys[polys["reach"] == reach]
+        sub.plot(ax=ax, facecolor=color, edgecolor="none", alpha=0.05, zorder=3)
+        sub.boundary.plot(ax=ax, edgecolor=color, linewidth=1.3, zorder=3)
+        d = pts[pts["Reach_Name"] == reach]
+        if len(d) > n_points:
+            d = d.iloc[rng.choice(len(d), n_points, replace=False)]
+        px, py = tf.transform(d["longitude"].to_numpy(), d["latitude"].to_numpy())
+        # Same low alpha as Fig 1; slightly larger dots because each pixel
+        # covers ~5x more screen area at this zoom.
+        ax.scatter(px, py, s=2.6, color=color, alpha=0.09, edgecolor="none",
+                   rasterized=True, zorder=4)
+
+    def _mk(lon, lat, **kw):
+        mx, my = tf.transform(lon, lat)
+        ax.scatter([mx], [my], zorder=6,
+                   linewidths=1.1, edgecolor="black", **kw)
+
+    # Official channel centerlines -- the ruler the gauges are sited along.
+    for reach, path in [("Kanektok_River",
+                         "DEM_Transects/data/kanektok_centerline_official.gpkg"),
+                        ("Uyak_Creek",
+                         "DEM_Transects/data/uyak_centerline_official.gpkg")]:
+        cl = gpd.read_file(path).to_crs(WEBM)
+        cl.plot(ax=ax, color=config.river_color(reach), linewidth=1.0, zorder=5,
+                path_effects=[pe.Stroke(linewidth=2.2, foreground="white",
+                                        alpha=0.75), pe.Normal()])
+
+    _mk(config.ANCHOR_LON, config.ANCHOR_LAT, marker="o", s=55, color="white")
+    _mk(config.BIFURCATION_LON, config.BIFURCATION_LAT, marker="*", s=170,
+        color="white")
+    # Bifurcation virtual gauges (bifurcation_gauge.py): one per river, sited
+    # 1 km along-channel past the split on that river's centerline. Read from
+    # the analysis summary so the map always shows the gauges actually used.
+    with open(f"{config.TEMPORAL_DIR}/bifurcation_gauge_results.json") as f:
+        gsum = json.load(f)
+    gmeta = gsum["gauges"][f"{gsum['primary_s_km']:.2f}"]
+    for reach, p in gmeta["points"].items():
+        _mk(p["lon"], p["lat"], marker="D", s=42, color="white")
+    gauge_s_km, gauge_sep_m = gmeta["s_km"], gmeta["separation_m"]
+
+    cx.add_basemap(ax, crs=WEBM, source=cx.providers.Esri.WorldImagery,
+                   zoom=zoom, attribution=False, zorder=0)
+
+    # --- lat/lon edge labels --------------------------------------------------------
+    lon_ticks = [-161.46, -161.42, -161.38, -161.34]
+    lat_ticks = [59.81, 59.82, 59.83, 59.84]
+    ax.set_xticks([tf.transform(lo, lat_ticks[0])[0] for lo in lon_ticks])
+    ax.set_xticklabels([f"{abs(lo):.2f}°W" for lo in lon_ticks])
+    ax.set_yticks([tf.transform(lon_ticks[0], la)[1] for la in lat_ticks])
+    ax.set_yticklabels([f"{la:.2f}°N" for la in lat_ticks])
+    ax.grid(False)
+    ax.tick_params(direction="out")
+
+    # --- cartographic furniture ----------------------------------------------------
+    _mercator_scalebar(ax, km=2, center_lat=59.82, loc=(0.42, 0.06))
+    # North arrow lower-RIGHT here: the lower-left corner is river at this zoom.
+    _north_arrow(ax, loc=(0.91, 0.115), zoom=0.20,
+                 icon_path=config.NORTH_ICON_PATH)
+
+    handles = [
+        Patch(facecolor=config.river_color("Kanektok_River"), alpha=0.30,
+              edgecolor=config.river_color("Kanektok_River"), linewidth=1.3),
+        Patch(facecolor=config.river_color("Uyak_Creek"), alpha=0.30,
+              edgecolor=config.river_color("Uyak_Creek"), linewidth=1.3),
+        Line2D([], [], marker="o", ls="none", mfc="white", mec="black", ms=6),
+        Line2D([], [], marker="*", ls="none", mfc="white", mec="black", ms=10),
+        Line2D([], [], marker="D", ls="none", mfc="white", mec="black", ms=5),
+    ]
+    labels = ["Kanektok River", "Uyak Creek", "Anchor (0 km)",
+              "Bifurcation",
+              f"Virtual gauge ({gauge_s_km:g} km along-channel past the split)"]
+    ax.legend(handles, labels, loc="upper left", frameon=True, facecolor="white",
+              framealpha=0.92, edgecolor="0.4", fontsize=7, borderpad=0.4,
+              labelspacing=0.35, handletextpad=0.5)
+
+    return fig
+
+
 # Registry: figure number -> (builder, short title).
 FIGURES = {
+    0: (build_fig0, "Regional Setting Overview Map"),
     1: (build_fig1, "Study Area & Spatial Normalization Map"),
     2: (build_fig2, "Custom Python Pipeline Flowchart"),
     3: (build_fig3, "Temporal Stability & Stage-Invariance"),
@@ -966,6 +1226,7 @@ FIGURES = {
     7: (build_fig7, "Detrended Relative Elevation Profile"),
     8: (build_fig8, "Interval Slope Profile"),
     9: (build_fig9, "Fine-Scale Slope Profile"),
+    10: (build_fig10, "Bifurcation & Virtual-Gauge Detail Map"),
 }
 EXTERNAL = {}  # all figures now have in-module builders
 
@@ -1060,8 +1321,17 @@ def main(argv=None):
         builder, title = FIGURES[n]
         try:
             fig = builder()
-            paths = config.savefig(fig, f"figure_{n:02d}", subdir=SERIES)
-            plt.close(fig)
+            # A builder may return a single Figure or a list of (suffix, Figure)
+            # pairs for figures exported as separate standalone files (Fig 3).
+            if isinstance(fig, list):
+                paths = []
+                for suffix, f in fig:
+                    paths += config.savefig(f, f"figure_{n:02d}{suffix}",
+                                            subdir=SERIES)
+                    plt.close(f)
+            else:
+                paths = config.savefig(fig, f"figure_{n:02d}", subdir=SERIES)
+                plt.close(fig)
             built.append(n)
             print(f"Figure {n} ({title}) -> {', '.join(paths)}")
         except NotImplementedFigure as e:
