@@ -6,7 +6,10 @@ density-unbiased, robust engine used for the reference gradient):
 
   Q1. Seasonal natural variability   -- High flow (May) vs Low flow (Jul-Aug)
   Q2. Normal interannual stability    -- Summer 2024 vs Summer 2025 (no disturbance)
-  Q3. Extreme-event impact            -- Pre- vs post-Typhoon Halong (2025 vs 2026)
+  Q3. Extreme-event impact            -- Pre- vs post-Typhoon Halong:
+      Jul-Aug 2025 (last low-flow season before landfall) vs Jul-Aug 2026
+      (first after). DEFINITIVE window — supersedes the June-vs-June interim
+      comparison used while the 2026 low-flow season was still incomplete.
 
 Scientific logic: Q2 is the CONTROL for Q3. Interannual change under no
 disturbance (2024->2025) is the natural-variability baseline; the storm signal
@@ -47,6 +50,18 @@ OUT_SUMMARY = f"{OUT_DIR}/temporal_analysis_results.json"
 OUT_Q3PROFILE = f"{OUT_DIR}/temporal_q3_profile.parquet"
 
 DATA_GLOB = "batch_outputs/master_all_data_part_*.parquet"
+
+# Definitive-Q3 supplement: the master archive was frozen at FREEZE_DATE for
+# the thesis (every headline value derives from it), but the Jul-Aug 2026
+# low-flow window runs past the freeze. The late-August 2026 granules are
+# pulled by q3_topup_pull.py into an ISOLATED directory and combined into this
+# parquet. It feeds ONLY the Q3 storm-window comparison: Q1/Q2 (and the Q2
+# baseline that Q3 is judged against) are computed on passes <= FREEZE_DATE,
+# so no pre-existing number can move. If the parquet is absent the analysis
+# still runs, with the 2026 storm window truncated at the freeze date.
+TOPUP_PARQUET = "batch_outputs/q3_topup_20260831/q3_topup.parquet"
+FREEZE_DATE = "2026-08-10"
+
 REACHES = ["Kanektok_River", "Uyak_Creek"]
 
 # --- method parameters (locked to match the reference gradient) ---
@@ -68,13 +83,23 @@ OPEN_WATER_MONTHS = ICE_SAFE_MONTHS
 HIGH_FLOW_MONTHS = {5}      # May freshet
 LOW_FLOW_MONTHS = {7, 8}    # Jul-Aug baseflow
 
-# Typhoon Halong landfall. Recorded in the results JSON for provenance only —
-# the Q3 comparison windows are hardcoded June-vs-June below, NOT derived from
-# this constant. Derive them from it at the definitive Q3 rerun (~Sep 2026).
+# Typhoon Halong landfall (the extratropical remnant struck western Alaska on
+# this date). The Q3 windows follow from it: PRE = the last complete low-flow
+# (Jul-Aug) season before landfall = 2025; POST = the first one after = 2026.
 TYPHOON_DATE = "2025-10-12"
+Q3_PRE_YEAR = 2025
+Q3_POST_YEAR = 2026
 
 
-def per_pass_metrics(con, reach):
+def _source_expr():
+    """DuckDB read_parquet() source: the frozen master, plus the isolated
+    Q3 top-up parquet when it exists (see TOPUP_PARQUET note above)."""
+    if os.path.exists(TOPUP_PARQUET):
+        return f"read_parquet(['{DATA_GLOB}', '{TOPUP_PARQUET}'])"
+    return f"read_parquet('{DATA_GLOB}')"
+
+
+def per_pass_metrics(con, reach, src):
     """One row per pass: robust slope + water level, both from 1 km node medians."""
     nodes = con.execute(f"""
         SELECT CAST(Pass_Date AS DATE) AS d,
@@ -82,7 +107,7 @@ def per_pass_metrics(con, reach):
                EXTRACT(MONTH FROM CAST(Pass_Date AS DATE)) AS mo,
                ROUND(dist_km / {NODE_KM}) * {NODE_KM} AS node,
                MEDIAN(wse) AS wse
-        FROM read_parquet('{DATA_GLOB}')
+        FROM {src}
         WHERE Reach_Name = '{reach}'
         GROUP BY d, yr, mo, node
         ORDER BY d, node
@@ -110,6 +135,9 @@ def per_pass_metrics(con, reach):
             "wse_ref_m": wse_ref,
             "gated": (span >= MIN_SPAN_KM) and (lo <= MAX_START_KM),
             "open_water": int(g["mo"].iloc[0]) in OPEN_WATER_MONTHS,
+            # True for top-up passes after the archive freeze: used by Q3 only,
+            # excluded from Q1/Q2 so every frozen-archive number stays put.
+            "post_freeze": pd.Timestamp(d) > pd.Timestamp(FREEZE_DATE),
         })
     return pd.DataFrame(rows)
 
@@ -316,21 +344,43 @@ def _boot_excess_ci(pre, post, base_a, base_b, n_boot=10000, seed=42):
     return dwse_ci, excess_ci
 
 
+def _monthday_matched(a, b):
+    """Clip two same-season pass sets to their common month-day overlap.
+
+    Sensitivity check for asymmetric window coverage (e.g. the pre year sampled
+    through Aug 30 but the post year only through Aug 21): keeps only passes
+    whose month-day falls in [latest first pass, earliest last pass] across the
+    two years, so baseflow recession inside the window cannot bias the medians.
+    Descriptive only — its medians are reported, but it contributes no test to
+    the Holm family."""
+    md = lambda s: s["date"].dt.strftime("%m-%d")
+    if len(a) == 0 or len(b) == 0:
+        return a, b, None
+    lo = max(md(a).min(), md(b).min())
+    hi = min(md(a).max(), md(b).max())
+    return a[md(a).between(lo, hi)], b[md(b).between(lo, hi)], (lo, hi)
+
+
 def q3_typhoon(df, baseline):
     print("\n" + "=" * 90)
-    print("Q3. EXTREME-EVENT IMPACT  --  Typhoon Halong (2025-10-12)")
-    print("    INTERIM: June 2025 (pre) vs June 2026 (post) -- matched open-water month.")
-    print("    Full Jul-Aug 2025 vs 2026 comparison pending the summer-2026 pull.")
+    print("Q3. EXTREME-EVENT IMPACT  --  Typhoon Halong (landfall 2025-10-12)")
+    print(f"    DEFINITIVE: Jul-Aug {Q3_PRE_YEAR} (pre) vs Jul-Aug {Q3_POST_YEAR} (post)")
+    print("    -- the matched low-flow seasons either side of landfall; same season")
+    print("       as the Q2 natural-variability baseline it is judged against.")
     print("=" * 90)
     rows = []
+    sens_rows = []
     for reach in REACHES:
-        a = _period(df, reach, 2025, {6})   # June 2025 (pre-storm summer)
-        b = _period(df, reach, 2026, {6})   # June 2026 (post-storm summer)
+        a = _period(df, reach, Q3_PRE_YEAR, LOW_FLOW_MONTHS)    # Jul-Aug pre-storm
+        b = _period(df, reach, Q3_POST_YEAR, LOW_FLOW_MONTHS)   # Jul-Aug post-storm
         print(f"\n{reach}")
-        print(f"     slope  (cm/km)  Jun-2025: {_fmt(a['slope_cm_km'])}")
-        print(f"                     Jun-2026: {_fmt(b['slope_cm_km'])}")
-        print(f"     WSE@{REF_DIST_KM:.0f}km (m)  Jun-2025: {_fmt(a['wse_ref_m'])}")
-        print(f"                     Jun-2026: {_fmt(b['wse_ref_m'])}")
+        if len(a) and len(b):
+            print(f"     window coverage  pre : {a['date'].min().date()} .. {a['date'].max().date()}  (n={len(a)})")
+            print(f"                      post: {b['date'].min().date()} .. {b['date'].max().date()}  (n={len(b)})")
+        print(f"     slope  (cm/km)  JulAug-{Q3_PRE_YEAR}: {_fmt(a['slope_cm_km'])}")
+        print(f"                     JulAug-{Q3_POST_YEAR}: {_fmt(b['slope_cm_km'])}")
+        print(f"     WSE@{REF_DIST_KM:.0f}km (m)  JulAug-{Q3_PRE_YEAR}: {_fmt(a['wse_ref_m'])}")
+        print(f"                     JulAug-{Q3_POST_YEAR}: {_fmt(b['wse_ref_m'])}")
         dwse = np.median(b["wse_ref_m"]) - np.median(a["wse_ref_m"]) if len(a) and len(b) else np.nan
         dslp = np.median(b["slope_cm_km"]) - np.median(a["slope_cm_km"]) if len(a) and len(b) else np.nan
         pw, ns = _mwu(a["wse_ref_m"], b["wse_ref_m"])
@@ -366,7 +416,10 @@ def q3_typhoon(df, baseline):
                 verdict = "exceeds" if abs(dwse) > abs(bw) else "within"
                 print(f"        => WSE storm-window change {verdict.upper()} the normal interannual "
                       f"swing (point medians only — samples too small to bootstrap)")
-        rows.append({"question": "Q3_typhoon", "reach": reach, "window": "June (interim)",
+        rows.append({"question": "Q3_typhoon", "reach": reach,
+                     "window": "Jul-Aug (definitive)",
+                     "pre_dates": [str(a["date"].min().date()), str(a["date"].max().date())] if len(a) else None,
+                     "post_dates": [str(b["date"].min().date()), str(b["date"].max().date())] if len(b) else None,
                      "n_2025": len(a), "n_2026": len(b),
                      "slope_2025": _med(a["slope_cm_km"]), "slope_2026": _med(b["slope_cm_km"]),
                      "wse_2025": _med(a["wse_ref_m"]), "wse_2026": _med(b["wse_ref_m"]),
@@ -378,22 +431,37 @@ def q3_typhoon(df, baseline):
                      "dwse_ci95_m": [round(float(x), 3) for x in dwse_ci] if dwse_ci else None,
                      "excess_vs_baseline_ci95_m": [round(float(x), 3) for x in excess_ci] if excess_ci else None,
                      "wse_vs_baseline": verdict})
-    return rows
+
+        # Date-matched sensitivity: same comparison on the common month-day
+        # overlap of the two windows (guards against asymmetric coverage).
+        am, bm, span = _monthday_matched(a, b)
+        if span and len(am) and len(bm):
+            dwse_m = np.median(bm["wse_ref_m"]) - np.median(am["wse_ref_m"])
+            dslp_m = np.median(bm["slope_cm_km"]) - np.median(am["slope_cm_km"])
+            print(f"     -> date-matched sensitivity (month-days {span[0]}..{span[1]}): "
+                  f"WSE {dwse_m:+.2f} m, slope {dslp_m:+.1f} cm/km "
+                  f"(n={len(am)} vs {len(bm)}; descriptive only)")
+            sens_rows.append({"question": "Q3_sensitivity_date_matched", "reach": reach,
+                              "monthday_lo": span[0], "monthday_hi": span[1],
+                              "n_pre": len(am), "n_post": len(bm),
+                              "dwse_m": round(float(dwse_m), 3),
+                              "dslope_cm_km": round(float(dslp_m), 2)})
+    return rows, sens_rows
 
 
-def elevation_change_by_distance(con, reach, pre_start, pre_end, post_start, post_end):
+def elevation_change_by_distance(con, reach, src, pre_start, pre_end, post_start, post_end):
     """Binned-median WSE profile difference (post - pre), density-unbiased."""
     q = f"""
         WITH pre AS (
             SELECT ROUND(dist_km / 0.5) * 0.5 AS b, MEDIAN(wse) AS w
-            FROM read_parquet('{DATA_GLOB}')
+            FROM {src}
             WHERE Reach_Name='{reach}'
               AND CAST(Pass_Date AS DATE) BETWEEN CAST('{pre_start}' AS DATE) AND CAST('{pre_end}' AS DATE)
             GROUP BY b HAVING COUNT(*) >= 3
         ),
         post AS (
             SELECT ROUND(dist_km / 0.5) * 0.5 AS b, MEDIAN(wse) AS w
-            FROM read_parquet('{DATA_GLOB}')
+            FROM {src}
             WHERE Reach_Name='{reach}'
               AND CAST(Pass_Date AS DATE) BETWEEN CAST('{post_start}' AS DATE) AND CAST('{post_end}' AS DATE)
             GROUP BY b HAVING COUNT(*) >= 3
@@ -405,7 +473,7 @@ def elevation_change_by_distance(con, reach, pre_start, pre_end, post_start, pos
     return con.execute(q).fetchdf()
 
 
-def q3_profile(con):
+def q3_profile(con, src):
     """Return (summary_rows, per_bin_curve_df).
 
     summary_rows -> JSON scalars (median/upstream/downstream dWSE).
@@ -413,13 +481,16 @@ def q3_profile(con):
     that the dashboard's spatial-delta figure (Fig 2) draws directly.
     """
     print("\n" + "-" * 90)
-    print("Q3 detail: WSE change by distance, June 2025 -> June 2026 (binned medians)")
+    print(f"Q3 detail: WSE change by distance, Jul-Aug {Q3_PRE_YEAR} -> "
+          f"Jul-Aug {Q3_POST_YEAR} (binned medians)")
     print("-" * 90)
     rows = []
     curves = []
     for reach in REACHES:
-        d = elevation_change_by_distance(con, reach, "2025-06-01", "2025-06-30",
-                                         "2026-06-01", "2026-06-30")
+        d = elevation_change_by_distance(
+            con, reach, src,
+            f"{Q3_PRE_YEAR}-07-01", f"{Q3_PRE_YEAR}-08-31",
+            f"{Q3_POST_YEAR}-07-01", f"{Q3_POST_YEAR}-08-31")
         if len(d) == 0:
             print(f"  {reach}: no overlapping bins")
             continue
@@ -446,18 +517,28 @@ def main():
     con = duckdb.connect()
     pd.set_option("display.width", 160)
 
-    parts = [per_pass_metrics(con, r) for r in REACHES]
+    src = _source_expr()
+    topup = os.path.exists(TOPUP_PARQUET)
+    parts = [per_pass_metrics(con, r, src) for r in REACHES]
     allp = pd.concat(parts, ignore_index=True)
     df = allp[(allp["gated"]) & (allp["open_water"])].copy()
+    # Q1/Q2 (and the Q2 baseline Q3 is judged against) see ONLY the frozen
+    # archive; the post-freeze top-up passes reach the Q3 windows alone.
+    df_frozen = df[~df["post_freeze"]].copy()
 
-    print(f"Full record: {len(allp)} passes fit; {len(df)} full-coverage open-water passes used.")
+    print(f"Full record: {len(allp)} passes fit; {len(df)} full-coverage open-water passes used")
+    print(f"  ({len(df_frozen)} frozen-archive passes for Q1/Q2; "
+          f"{len(df) - len(df_frozen)} post-freeze top-up passes, Q3 only).")
     print(f"Date range: {allp['date'].min().date()} .. {allp['date'].max().date()}")
+    if not topup:
+        print(f"NOTE: top-up parquet absent ({TOPUP_PARQUET}) — the {Q3_POST_YEAR} "
+              f"storm window is truncated at the archive freeze ({FREEZE_DATE}).")
     print(f"Reference distance for water level (WSE@ref): {REF_DIST_KM:.0f} km\n")
 
-    q1 = q1_seasonal(df)
-    baseline, q2 = q2_interannual(df, LOW_FLOW_MONTHS, "Jul-Aug low flow")
-    q3 = q3_typhoon(df, baseline)
-    q3p, q3_curve = q3_profile(con)
+    q1 = q1_seasonal(df_frozen)
+    baseline, q2 = q2_interannual(df_frozen, LOW_FLOW_MONTHS, "Jul-Aug low flow")
+    q3, q3_sens = q3_typhoon(df, baseline)
+    q3p, q3_curve = q3_profile(con, src)
 
     # One family-wise significance decision across ALL Mann-Whitney tests above.
     holm_report = holm_adjust([q1, q2, q3])
@@ -483,6 +564,16 @@ def main():
             "high_flow_months": sorted(HIGH_FLOW_MONTHS),
             "low_flow_months": sorted(LOW_FLOW_MONTHS),
             "typhoon_date": TYPHOON_DATE,
+            "q3_window": (
+                f"DEFINITIVE: Jul-Aug {Q3_PRE_YEAR} (last low-flow season before "
+                f"landfall) vs Jul-Aug {Q3_POST_YEAR} (first after); same season "
+                "as the Q2 baseline. Supersedes the June-vs-June interim run."),
+            "q3_topup": (
+                f"post-freeze {Q3_POST_YEAR} passes from {TOPUP_PARQUET} "
+                "(isolated pull, q3_topup_pull.py; frozen master untouched)"
+                if topup else
+                f"NONE — {Q3_POST_YEAR} window truncated at the archive freeze "
+                f"({FREEZE_DATE}); rerun after q3_topup_pull.py"),
             "slope_estimator": "Theil-Sen on 1km node medians (abs cm/km)",
             "level_metric": f"WSE at {REF_DIST_KM:.0f} km from Theil-Sen fit (m)",
             "multiple_comparison": (
@@ -496,12 +587,16 @@ def main():
         "record": {
             "n_passes_fit": int(len(allp)),
             "n_full_coverage_open_water": int(len(df)),
+            "n_frozen_archive_q1_q2": int(len(df_frozen)),
+            "n_post_freeze_topup_q3_only": int(len(df) - len(df_frozen)),
+            "freeze_date": FREEZE_DATE,
             "date_min": str(allp["date"].min().date()),
             "date_max": str(allp["date"].max().date()),
         },
         "Q1_seasonal": q1,
         "Q2_interannual": q2,
         "Q3_typhoon": q3,
+        "Q3_sensitivity": q3_sens,
         "Q3_profile": q3p,
     }
     with open(OUT_SUMMARY, "w") as f:

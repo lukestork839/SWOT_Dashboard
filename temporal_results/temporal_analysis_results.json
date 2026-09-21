@@ -21,16 +21,21 @@
       8
     ],
     "typhoon_date": "2025-10-12",
+    "q3_window": "DEFINITIVE: Jul-Aug 2025 (last low-flow season before landfall) vs Jul-Aug 2026 (first after); same season as the Q2 baseline. Supersedes the June-vs-June interim run.",
+    "q3_topup": "post-freeze 2026 passes from batch_outputs/q3_topup_20260831/q3_topup.parquet (isolated pull, q3_topup_pull.py; frozen master untouched)",
     "slope_estimator": "Theil-Sen on 1km node medians (abs cm/km)",
     "level_metric": "WSE at 15 km from Theil-Sen fit (m)",
     "multiple_comparison": "Holm step-down over all 16 Mann-Whitney tests (one family across Q1/Q2/Q3); significance = adjusted p < 0.05; adjusted values exported as p_wse_holm / p_slope_holm",
     "q3_verdict": "bootstrap 95% CI (n=10000, seed=42) on |storm dWSE| - |baseline dWSE|; verdict exceeds/within only if the CI excludes 0, else indistinguishable"
   },
   "record": {
-    "n_passes_fit": 190,
-    "n_full_coverage_open_water": 188,
+    "n_passes_fit": 196,
+    "n_full_coverage_open_water": 194,
+    "n_frozen_archive_q1_q2": 188,
+    "n_post_freeze_topup_q3_only": 6,
+    "freeze_date": "2026-08-10",
     "date_min": "2023-07-31",
-    "date_max": "2026-08-10"
+    "date_max": "2026-08-21"
   },
   "Q1_seasonal": [
     {
@@ -66,7 +71,7 @@
       "wse_low": 30.194,
       "dwse_m": 0.179,
       "p_wse": 0.0517,
-      "p_wse_holm": 0.6204
+      "p_wse_holm": 0.5687
     },
     {
       "question": "Q1_wse_seasonal",
@@ -113,7 +118,7 @@
       "wse_low": 29.981,
       "dwse_m": 0.262,
       "p_wse": 0.0897,
-      "p_wse_holm": 0.897
+      "p_wse_holm": 0.7176
     },
     {
       "question": "Q1_wse_seasonal",
@@ -125,7 +130,7 @@
       "wse_low": 30.343,
       "dwse_m": -0.267,
       "p_wse": 0.0734,
-      "p_wse_holm": 0.8074
+      "p_wse_holm": 0.6606
     }
   ],
   "Q2_interannual": [
@@ -174,58 +179,96 @@
     {
       "question": "Q3_typhoon",
       "reach": "Kanektok_River",
-      "window": "June (interim)",
-      "n_2025": 5,
-      "n_2026": 5,
-      "slope_2025": 195.398,
-      "slope_2026": 195.504,
-      "wse_2025": 30.469,
-      "wse_2026": 30.315,
-      "dwse_m": -0.154,
-      "dslope_cm_km": 0.11,
-      "p_wse": 0.8413,
-      "p_slope": 1.0,
+      "window": "Jul-Aug (definitive)",
+      "pre_dates": [
+        "2025-07-10",
+        "2025-08-30"
+      ],
+      "post_dates": [
+        "2026-07-01",
+        "2026-08-21"
+      ],
+      "n_2025": 11,
+      "n_2026": 10,
+      "slope_2025": 195.501,
+      "slope_2026": 195.323,
+      "wse_2025": 30.194,
+      "wse_2026": 30.281,
+      "dwse_m": 0.087,
+      "dslope_cm_km": -0.18,
+      "p_wse": 0.3418,
+      "p_slope": 0.2178,
       "baseline_dwse_m": -0.226,
       "baseline_dslope_cm_km": 0.51,
       "dwse_ci95_m": [
-        -0.23,
-        0.261
+        -0.042,
+        0.155
       ],
       "excess_vs_baseline_ci95_m": [
-        -0.265,
-        0.088
+        -0.262,
+        -0.002
       ],
-      "wse_vs_baseline": "indistinguishable",
+      "wse_vs_baseline": "within",
       "p_wse_holm": 1.0,
       "p_slope_holm": 1.0
     },
     {
       "question": "Q3_typhoon",
       "reach": "Uyak_Creek",
-      "window": "June (interim)",
-      "n_2025": 5,
-      "n_2026": 5,
-      "slope_2025": 193.065,
-      "slope_2026": 193.025,
-      "wse_2025": 30.511,
-      "wse_2026": 30.201,
-      "dwse_m": -0.31,
-      "dslope_cm_km": -0.04,
-      "p_wse": 0.1508,
-      "p_slope": 0.5476,
+      "window": "Jul-Aug (definitive)",
+      "pre_dates": [
+        "2025-07-10",
+        "2025-08-30"
+      ],
+      "post_dates": [
+        "2026-07-01",
+        "2026-08-21"
+      ],
+      "n_2025": 11,
+      "n_2026": 10,
+      "slope_2025": 191.291,
+      "slope_2026": 192.455,
+      "wse_2025": 29.981,
+      "wse_2026": 30.33,
+      "dwse_m": 0.349,
+      "dslope_cm_km": 1.16,
+      "p_wse": 0.0067,
+      "p_slope": 0.0528,
       "baseline_dwse_m": -0.356,
       "baseline_dslope_cm_km": 0.06,
       "dwse_ci95_m": [
-        -0.526,
-        0.063
+        0.028,
+        0.549
       ],
       "excess_vs_baseline_ci95_m": [
-        -0.392,
-        0.272
+        -0.374,
+        0.34
       ],
       "wse_vs_baseline": "indistinguishable",
-      "p_wse_holm": 1.0,
-      "p_slope_holm": 1.0
+      "p_wse_holm": 0.0804,
+      "p_slope_holm": 0.5687
+    }
+  ],
+  "Q3_sensitivity": [
+    {
+      "question": "Q3_sensitivity_date_matched",
+      "reach": "Kanektok_River",
+      "monthday_lo": "07-10",
+      "monthday_hi": "08-21",
+      "n_pre": 9,
+      "n_post": 8,
+      "dwse_m": 0.087,
+      "dslope_cm_km": -0.2
+    },
+    {
+      "question": "Q3_sensitivity_date_matched",
+      "reach": "Uyak_Creek",
+      "monthday_lo": "07-10",
+      "monthday_hi": "08-21",
+      "n_pre": 9,
+      "n_post": 8,
+      "dwse_m": 0.366,
+      "dslope_cm_km": 1.16
     }
   ],
   "Q3_profile": [
@@ -233,17 +276,17 @@
       "question": "Q3_profile",
       "reach": "Kanektok_River",
       "n_bins": 70,
-      "median_dwse_m": -0.045,
-      "downstream_dwse_m": -0.057,
-      "upstream_dwse_m": -0.026
+      "median_dwse_m": 0.116,
+      "downstream_dwse_m": 0.119,
+      "upstream_dwse_m": 0.113
     },
     {
       "question": "Q3_profile",
       "reach": "Uyak_Creek",
       "n_bins": 72,
-      "median_dwse_m": -0.053,
-      "downstream_dwse_m": -0.063,
-      "upstream_dwse_m": -0.047
+      "median_dwse_m": 0.125,
+      "downstream_dwse_m": 0.1,
+      "upstream_dwse_m": 0.182
     }
   ]
 }
