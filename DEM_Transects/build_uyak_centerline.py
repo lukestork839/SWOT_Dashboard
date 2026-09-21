@@ -39,7 +39,7 @@ from shapely.geometry import LineString
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "outputs")
-DL = "/home/luke/Downloads"
+DL = os.environ.get("SWOT_GPX_DIR", os.path.expanduser("~/Downloads"))
 
 ANCHOR = (59.82463509, -161.33397834)   # lat, lon — shared radial origin (SWOT/DEM dist_km)
 R_EARTH = 6371.0088

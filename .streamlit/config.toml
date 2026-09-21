@@ -30,8 +30,9 @@ fastReruns = true  # Enable fast reruns
 postScriptGC = true  # Run garbage collection after script execution
 
 [client]
-# Show detailed errors for debugging (can disable in production)
-showErrorDetails = true
+# Public deployment: show only the exception type, never tracebacks/paths.
+# Set to "full" locally when debugging.
+showErrorDetails = "type"
 toolbarMode = "minimal"
 
 [logger]

@@ -43,5 +43,5 @@ harness reports both:
 - γ from raw `sar1,sar2,sar3` → diverges (surfaces the typo, not silently absorbed).
 
 When we publish Kanektok/Uyak γ values we will use the corrected mean and note the
-difference from the published dataset. Worth raising with the authors (jhgearon@iu.edu)
-if we cite their per-site γ/Λ.
+difference from the published dataset. Worth raising with the paper's corresponding
+author if we cite their per-site γ/Λ.

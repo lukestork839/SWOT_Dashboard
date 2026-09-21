@@ -40,7 +40,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 OUT = os.path.join(HERE, "outputs")
 ARCTIC = os.path.join(ROOT, "batch_outputs", "arcticdem_rivers.tif")
-LIDAR = "/home/luke/University/ArcticDEM/lidar_dem_wgs84.tif"
+LIDAR = os.environ.get(
+    "LIDAR_DEM_PATH",
+    os.path.join(os.path.dirname(ROOT), "ArcticDEM", "lidar_dem_wgs84.tif"),
+)
 
 GEE_BARE_OFFSET = 12.764754844924473  # ArcticDEM-LiDAR bare-ground offset from GEE script
 FILL_BELOW = 5.0          # raw ellipsoidal heights here are >12 m; <5 m is GEE 0-fill

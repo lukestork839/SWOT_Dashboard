@@ -57,6 +57,9 @@ NEXT_STEPS.md
 dashboard_optimizations.md
 PERFORMANCE_UPDATE.md
 
+# NASA SWOT product handbook (get it from PO.DAAC; not redistributed here)
+docs/SWOT_Handbook.pdf
+
 # Backup and diagnostic files
 *.backup
 calibration_diagnostic.py
@@ -71,6 +74,12 @@ poster_assets/
 .netrc
 *.credentials
 .swot_cli_config.json
+.env
+.env.*
+.streamlit/secrets.toml
+secrets.toml
+*.pem
+*.key
 
 # OS
 .DS_Store

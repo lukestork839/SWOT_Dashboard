@@ -12,8 +12,8 @@ preliminary-ArcGIS β removed, β reframed on CIVIC warning sign 1).
 - **ADCP survey brought into the repo** (2026-08-19). New `ingest_adcp.py` → tracked
   `data/adcp_velocity_depth.parquet` (40 815 pings, 339 transects, 6 survey days, both rivers, all
   export columns, ~1.8 MB zstd) + `data/adcp_velocity_depth.manifest.json`. `build_kanektok_centerline.py`
-  and `adcp_depth_stats.py` now read that parquet instead of globbing
-  `/home/luke/Downloads/ADCP Data`, so **the whole β chain reproduces from a clean clone** — the last
+  and `adcp_depth_stats.py` now read that parquet instead of globbing a local
+  `ADCP Data` download folder, so **the whole β chain reproduces from a clean clone** — the last
   hardcoded personal path in the analysis is gone (`build_uyak_centerline.py`'s onX GPX is the one
   remaining, for the Uyak centerline draft only; the official centerline is committed). Verified:
   `kanektok_thalweg_depth.parquet` and `uyak_mouth_depth.parquet` rebuild **byte-identical**, and

@@ -26,8 +26,8 @@ separable here. See the 2 m follow-up section below for the numbers.
 
 - **DEM under test:** `batch_outputs/arcticdem_rivers.tif` (ArcticDEM V4, ~10 m, WGS84
   ellipsoidal).
-- **Ground truth:** `/home/luke/University/ArcticDEM/lidar_dem_wgs84.tif` (NOAA 2024 QL1
-  LiDAR, 1 m bare-earth, NAVD88), resampled (averaged) onto the ArcticDEM grid.
+- **Ground truth:** `lidar_dem_wgs84.tif` (NOAA 2024 QL1 LiDAR, 1 m bare-earth, NAVD88;
+  local file, path set via `LIDAR_DEM_PATH`), resampled (averaged) onto the ArcticDEM grid.
 - **Datum alignment:** single bare-ground offset **12.765 m** (the GEE NLCD-bare-ground
   value, validated at 2 m). A low percentile of (ArcticDEM−LiDAR) gives 12.26 m but is
   biased low by negative photogrammetric noise at cutbanks/water edges — *not* used.

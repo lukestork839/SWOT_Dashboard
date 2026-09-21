@@ -1,3 +1,9 @@
+"""Extract ArcticDEM (10 m) elevations along the river polygons via Google Earth Engine.
+
+Writes batch_outputs/dem_river_elevations.parquet — the input behind the dashboard's
+DEM tab. Requires the EE_PROJECT environment variable set to your own Earth Engine
+cloud project id (see https://developers.google.com/earth-engine/guides/access).
+"""
 import ee
 import geopandas as gpd
 import pandas as pd
@@ -48,7 +54,13 @@ def export_dem_from_gee(gdf):
         return
 
     print("Initializing Earth Engine...")
-    ee.Initialize(project="lukes-swot-project")
+    ee_project = os.environ.get("EE_PROJECT")
+    if not ee_project:
+        raise SystemExit(
+            "Set the EE_PROJECT environment variable to your Google Earth Engine "
+            "cloud project id (https://developers.google.com/earth-engine/guides/access)"
+        )
+    ee.Initialize(project=ee_project)
 
     # Build EE geometry from polygon bounds (with small buffer)
     bounds = gdf.total_bounds  # [minx, miny, maxx, maxy]
