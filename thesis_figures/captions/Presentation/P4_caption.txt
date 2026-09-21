@@ -1,0 +1,31 @@
+P4 — The two channels on their shared floodplain (presentation figure)
+
+Composite cross-section of the floodplain corridor at matched distance from
+the anchor: the Kanektok River and Uyak Creek cut into the one plain they
+share, with the ~2.6 km of corridor between them collapsed to an axis break.
+Both drawn from the measured medians of the 63-arc analysis, against the
+same floodplain-corridor reference used throughout: the Kanektok's median
+water surface sits 1.50 m below the plain (SWOT KaRIn, median stage), the
+Uyak's 0.49 m below — the Uyak is the low slough of the floodplain, nearly
+at grade (above the corridor on ~30% of arcs), while the Kanektok is set a
+full metre deeper. The independent pass-paired comparison gives the same
+answer: the Uyak's water surface rides +0.96 m above the Kanektok's at
+matched radius, on 100% of passes (2,495 pass–radius pairs, 49 passes).
+Neither channel is perched above the corridor it would spill into, and the
+Kanektok is already the topographic low — water leaving it would have to
+end up higher.
+
+Channel widths are drawn to relative scale (Kanektok ~50 m, Uyak ~30 m).
+The Kanektok bed hangs one measured ADCP depth (1.30 m, per-arc median)
+below its water line; the Uyak bed is dashed because its depth (1.08 m)
+was measured only at the mouth reach (radius 31–33 km), the one reach the
+boat survey covered on both rivers. Same true vertical scale as figures
+P1–P3; the horizontal axis is compressed and the inter-channel corridor
+omitted, so bank slopes appear far steeper than the gentle grades seen on
+the ground.
+
+Data: SWOT L2 HR PIXC water surface elevations / ArcticDEM digital surface
+model / boat ADCP survey; all on the EGM2008 datum. All "below the plain"
+statements are stage statements quoted at median stage: across the observed
+range the Kanektok spans −1.75 m (low water) to −1.01 m (high), the Uyak
+−0.77 m to −0.14 m.

@@ -1,3 +1,13 @@
+# ⚠️ SUPERSEDED (2026-08-17) — do not use
+
+**Every number in this file predates the 2026-08-14 archive rebuild and is stale**
+(155 passes, 195.4/191.7, +0.38 m superelevation, p=0.033 …). The single
+authoritative source is now `Project_Info/thesis_canonical_values.md` (Part 3 is
+the stale→current replacement table). This file is kept only as a record of the
+2026-07-15 verification pass.
+
+---
+
 # Results — single authoritative values for Sections 3.1–3.4 (2026-07-15)
 
 All numbers recomputed from the current data + repo code on 2026-07-15 (not from

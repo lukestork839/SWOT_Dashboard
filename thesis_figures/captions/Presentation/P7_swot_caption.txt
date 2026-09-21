@@ -1,0 +1,49 @@
+P7b — The same scene with the SWOT node cloud (presentation figure)
+
+The partner panel to P7: identical extent, figure size, basemap zoom, scale bar
+and north arrow, with every SWOT node in frame drawn on top at the same 0.09
+alpha used for the node clouds in Figures 1 and 10. Nothing else changes
+between the two, so shown side by side the only difference is the data.
+Presented left (imagery) to right (imagery plus data), the pair answers
+"where does the measurement actually come from?" in one gesture.
+
+Dots are drawn slightly larger here than in the thesis maps (s=4.5, against 1.8
+in Figure 1 and 2.6 in Figure 10) because each SWOT pixel covers far more
+screen area at this zoom; at the smaller size the sampling lattice itself
+becomes visible and reads as noise rather than as data. The opacity is
+unchanged, so density still means density: darker areas are areas observed on
+more passes.
+
+The panel carries no legend: it is meant to be shown beside the overlay-free
+one, where the imagery is the subject and a keyed box in the corner would both
+cover it and pull the eye off it. Red is the Kanektok River, blue is Uyak
+Creek — the same colours used throughout the series — named on the slide or in
+the talk rather than in the frame.
+
+Three things are worth pointing at while the slide is up.
+
+The clouds do trace real water. Both follow the braid threads visible in the
+left panel closely, including the minor anabranches, which is the reassuring
+half of the comparison — the pixel classification is finding channels, not
+painting the floodplain at random.
+
+The Uyak's cloud is nonetheless far broader than the Uyak. In the left panel
+its channel is a single thread a few image pixels wide; on the right it is a
+band comparable in width to the Kanektok's. This is the corridor artifact
+described in P7's caption, made visible rather than asserted: the analysis
+polygon is fitted around the braid plain the pixels are drawn from, not around
+the channel.
+
+The straight diagonal seam where blue gives way to red is a polygon boundary,
+not a river feature. The two analysis polygons overlap along the shared reach
+upstream of the split (~4% of the smaller polygon's area, and both contain the
+bifurcation point itself); Uyak Creek is drawn last here, as in every other
+figure in the series, so that the narrower river is never buried, and in the
+overlap its blue therefore covers the Kanektok's red. The consequence to name
+out loud is that the wide bright channel entering from the east — the shared
+reach above the bifurcation — appears blue, which should not be read as the
+Uyak being that wide there.
+
+Basemap: Esri World Imagery, fetched at zoom 15; the scale bar is corrected for
+the latitude distortion of the Web Mercator projection. Nodes are the
+open-water-classified archive, unthinned within the frame.

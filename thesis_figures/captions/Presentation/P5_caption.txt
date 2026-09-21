@@ -1,0 +1,17 @@
+P5 — The two channels, the plain visual (presentation figure)
+
+Companion to P4 with no measurement labels: the Kanektok River and Uyak
+Creek on the one floodplain they share, drawn as a composite cross-section
+at matched distance from the anchor with the corridor between them
+collapsed to an axis break (the ~2.6 km separation noted at the break). The only message is where each water surface sits: the Uyak
+just below the floodplain, the Kanektok well below it — the Kanektok is
+already the low road, so water leaving it would have to end up higher.
+
+Though unlabeled, the geometry is the measured one (identical ground and
+water levels to P4): median water surfaces from the 63-arc analysis
+(SWOT KaRIn, median stage), terrain from the ArcticDEM digital surface
+model, channel widths to relative scale. The Uyak bed is dashed because
+its depth comes from the boat ADCP at the mouth reach only. Same true
+vertical scale as P1–P4; the horizontal axis is compressed and the
+inter-channel corridor omitted, so bank slopes appear far steeper than
+the gentle grades seen on the ground.

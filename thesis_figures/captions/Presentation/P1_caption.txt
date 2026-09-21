@@ -1,0 +1,22 @@
+P1 — Superelevation comparison (presentation figure)
+
+What an avulsion-ready channel looks like versus what was measured. (a) A
+superelevated channel, drawn schematically after Gearon et al. (2024) with
+their notation: the alluvial ridge stands H_AR above the floodplain, the
+channel depth H_M is measured crest to bed, and with the bed aggraded to
+floodplain grade the superelevation ratio beta = H_AR/H_M approaches 1 — the
+water surface rides above the plain it would spill into. (b) The Kanektok
+River's measured median cross-section geometry (64 DEM arcs): the
+near-channel crest sits +0.14 m above the floodplain reference (H_AR), the
+median water surface sits 1.50 m below it (SWOT KaRIn, median stage), and the
+bed hangs one measured ADCP depth (1.30 m) below the water line, giving
+H_M = 2.86 m and beta = 0.06; on 38% of arcs the crest sits at or below the
+floodplain (beta <= 0). Both panels share the same true vertical scale; the
+horizontal axis is compressed (a schematic ~hundreds of metres), so bank
+slopes appear far steeper than the gentle grades seen on the ground. The
+individual medians are taken over
+slightly different arc populations, so the drawn bed (water - depth) and the
+median H_M agree approximately rather than exactly.
+
+Data: SWOT L2 HR PIXC water surface elevations / ArcticDEM digital surface
+model / boat ADCP survey. Panel (a) is a conceptual schematic, not data.
