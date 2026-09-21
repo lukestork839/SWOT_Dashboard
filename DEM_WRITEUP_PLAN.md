@@ -167,6 +167,19 @@ wavelengths is exactly the signature of wander rather than meandering.
 
 ### 1.5 P6 result — the gradient advantage is recovered, in a stated band — 2026-08-10
 
+> **⚠️ SUPERSEDED 2026-08-31 (`dem_band_sweep.py`).** This section's sweep ran on
+> the PRE-trim centerlines; the 2026-08-21 Uyak entry-tail trim removes the very
+> path content that made the Uyak's 188–192 cm/km stable. The table below
+> reproduces exactly on the pre-trim lines (method validated), but on the trimmed
+> lines the K/U ratio ranges 1.19–1.43 (this section's line-start window),
+> 1.01–1.13 (frame-matched radial 1–5 km), 1.18–1.27 (radial frame) — the
+> Kanektok is steeper in EVERY configuration, but no declared band pins the
+> magnitude, so the "two-sensor convergence with 1.158" claim is dead twice over
+> (the SWOT side is also pre-rebuild; current paired ratio is 1.110). What
+> survives: Kanektok along-channel ~210–230 cm/km stable everywhere; direction-only
+> DEM corroboration; magnitude quoted from SWOT (+24.6 cm/km, 44/45, ratio 1.110).
+> Authoritative record: `Project_Info/thesis_canonical_values.md` §1.9.
+
 `DEM_Transects/build_dem_centerline.py` (new, tracked). Two methods were built; the first two
 attempts failed for instructive reasons, and the third settled it.
 
