@@ -25,7 +25,7 @@ DEM_PATH = os.path.join(DATA_DIR, "dem_river_elevations.parquet")
 TEMPORAL_DIR = os.path.join(REPO_ROOT, "temporal_results")
 
 # Stable release-asset URLs (the file behind each URL is swapped at deploy time;
-# the URL itself never changes — see docs/development_notes.md deploy recipe).
+# the URL itself never changes — deploy recipe in docs/archive/2026-05_development_notes.md).
 REMOTE_PARQUET_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/dashboard_data.parquet"
 REMOTE_DEM_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/dem_river_elevations.parquet"
 REMOTE_REFGRAD_URL = "https://github.com/lukestork839/SWOT_Dashboard/releases/download/v2.0-data/reference_gradient_per_pass.parquet"

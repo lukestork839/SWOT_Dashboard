@@ -6,7 +6,7 @@
 **Reference Document:** SWOT Science Data Products User Handbook (JPL D-109532, May 2024)
 **Study Area:** Kanektok River and Uyak Creek, Alaska
 
-> **August 2026 pipeline revision.** A systematic code review (`docs/CODE_REVIEW_FINDINGS.md`)
+> **August 2026 pipeline revision.** A systematic code review (`docs/archive/2026-08_code_review_findings.md`)
 > led to a set of pipeline fixes and a full archive re-pull: granule-keyed checkpoints (recovering
 > ~169 never-ingested sibling-tile granules), the MAD outlier filter moved from raw WSE to
 > node-median residuals, a hard May–Oct ice-season line (`qc_registry.py`), removal of the legacy
@@ -1469,9 +1469,9 @@ Use this checklist to verify our processing against the SWOT handbook:
 If you have questions about our methodology, here are resources:
 
 1. **Code Implementation:** See `SWOT_Pull.py` with line numbers referenced above
-2. **Technical Details:** See `docs/development_notes.md` for development history
+2. **Results of record:** See `docs/RESULTS.md`
 3. **SWOT Handbook:** SWOT Data User Handbook (JPL D-109532), available from PO.DAAC: https://podaac.jpl.nasa.gov/SWOT
-4. **Verification Summary:** See `docs/Verification_Summary.md`
+4. **Development history:** See `docs/archive/` (verification summary, development notes, review records)
 5. **Field Calibration:** See calibration data in `Quinhagak SWOT Calibration Readings Nov 2025/`
 
 ### Common Questions Anticipated
@@ -1511,4 +1511,4 @@ If you use or evaluate this methodology, please cite:
 
 **Document Status:** IN PROGRESS — PIXC quality flag filtering pending expert review
 **Verification Status:** ✅ Core processing VERIFIED AGAINST JPL D-109532
-**Last Reviewed:** August 14, 2026 (post-code-review pipeline revision — see `docs/CODE_REVIEW_FINDINGS.md`)
+**Last Reviewed:** August 14, 2026 (post-code-review pipeline revision — see `docs/archive/2026-08_code_review_findings.md`)

@@ -3,7 +3,7 @@
 Re-derivation (2026-08-31) of the P6 channel-slope sweep on the CURRENT
 (trimmed 2026-08-21) field centerlines, for the DEM-vs-SWOT gradient-ratio
 cross-check in the thesis Results. The P6 original (2026-08-10, see
-DEM_WRITEUP_PLAN.md section 1.5) ran on the pre-trim lines, whose Uyak
+docs/DEM_WRITEUP_PLAN.md section 1.5) ran on the pre-trim lines, whose Uyak
 Kanektok-entry tail inflated the near-bifurcation path length; this script
 reproduces that table exactly when pointed at the pre-trim lines
 (git show HEAD:DEM_Transects/data/..._centerline_official.gpkg) and reports

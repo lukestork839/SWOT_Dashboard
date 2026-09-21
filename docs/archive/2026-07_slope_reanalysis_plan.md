@@ -1,3 +1,7 @@
+> **Archived record (2026-09-21) — no longer maintained.** Kept for provenance; file paths,
+> line numbers, and results reflect the repository at the time of writing. For current
+> methodology and results see the repository root and `docs/`.
+
 # Slope Re-analysis — Findings & Plan
 
 **Status:** exploration complete (standalone prototype), no pipeline/thesis changes made yet.

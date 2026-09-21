@@ -7,8 +7,8 @@ and restructures the outline in `DEM_outline.pdf`.
 methods, results, and the figure set that carries them.
 
 Companion docs: `DEM_Transects/AVULSION_ANALYSIS.md` (arc method, the science of record),
-`SCIENTIFIC_METHODOLOGY.md` (validation), `SLOPE_REANALYSIS_PLAN.md` (the SWOT slope analogue
-this plan mirrors), `dem_veg_filter/FINDINGS.md` (DEM quality).
+`SCIENTIFIC_METHODOLOGY.md` (validation), `docs/archive/2026-07_slope_reanalysis_plan.md` (the
+SWOT slope analogue this plan mirrors), `dem_veg_filter/FINDINGS.md` (DEM quality).
 
 ---
 
@@ -178,7 +178,7 @@ wavelengths is exactly the signature of wander rather than meandering.
 > (the SWOT side is also pre-rebuild; current paired ratio is 1.110). What
 > survives: Kanektok along-channel ~210–230 cm/km stable everywhere; direction-only
 > DEM corroboration; magnitude quoted from SWOT (+24.6 cm/km, 44/45, ratio 1.110).
-> Authoritative record: `Project_Info/thesis_canonical_values.md` §1.9.
+> Authoritative public record: `docs/RESULTS.md` (mirrors the thesis numbers).
 
 `DEM_Transects/build_dem_centerline.py` (new, tracked). Two methods were built; the first two
 attempts failed for instructive reasons, and the third settled it.
@@ -700,7 +700,7 @@ Follow-on folded into P2.4: the production channel-slope script must use the **b
 method with arc length re-parameterised along the smoothed path — not raw and not Douglas–Peucker.
 
 ### P5 — Verification note
-Following the SWOT precedent (`thesis_figures/captions/RESULTS_VERIFICATION.md`): every number
+Following the SWOT precedent (`docs/archive/2026-07_results_verification.md`): every number
 quoted in a DEM caption gets recomputed from the tracked artifacts by a smoke check, so caption and
 figure cannot drift.
 

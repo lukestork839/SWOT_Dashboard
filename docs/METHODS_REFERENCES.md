@@ -13,6 +13,10 @@ Masters Thesis draft 6 and `DEM_Transects/AVULSION_ANALYSIS.md`).
 **Code↔writeup legend:** ✅ matches · ❌ mismatch (code and write-up disagree — one must change) ·
 ➖ not claimed in write-up · 🔍 unverified (needs Phase B)
 
+> **Code references are frozen at 2026-08-12**, before the dashboard split: where a row cites
+> `dashboard_swot.py:<line>`, the logic now lives in `swot_core/stats.py`, `swot_core/data.py`,
+> or `dashboard_tabs/common.py`. The scientific content of each row is unaffected.
+
 **Citation legend:** `OK` cited & in Zotero · `FIX-ZOTERO` cited in thesis but Zotero record
 missing/malformed · `GAP` methodological choice with no supporting reference yet ·
 `N/A` engineering choice, no citation expected

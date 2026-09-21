@@ -1,3 +1,7 @@
+> **Archived record (2026-09-21) — no longer maintained.** Kept for provenance; file paths,
+> line numbers, and results reflect the repository at the time of writing. For current
+> methodology and results see the repository root and `docs/`.
+
 # ⚠️ SUPERSEDED (2026-08-17) — do not use
 
 **Every number in this file predates the 2026-08-14 archive rebuild and is stale**

@@ -71,9 +71,12 @@ scripts only refresh a `*_draft` copy in `outputs/` and never overwrite the offi
 | `centerline.py` | centerline utilities (load / SWOT-points / polygon skeleton) |
 | `outputs/` | figures + parquet + `swot_centerlines.gpkg` (scratch; parquet gitignored) |
 
-**Legacy** (Gearon β/γ/Λ port + validation harness, not used by the current analysis)
-`avulsion_metrics.py`, `build_transects.py`, `transects.py`, `pick_features.py`,
-`make_avulsion_figures.py`, `validation/`, `reference/`.
+**Validation** (proves the β/γ/Λ formula port is faithful to Gearon et al. 2024 before it
+is applied here): `avulsion_metrics.py` + `validation/` — see
+`validation/VALIDATION_FINDINGS.md`. The rest of the original Gearon-port harness
+(`build_transects.py`, `transects.py`, `pick_features.py`, `make_avulsion_figures.py`,
+straight perpendicular transects, unused by the arc analysis) was removed 2026-09-21 and
+lives in git history.
 
 *(The earlier preliminary-ArcGIS β reproduction — `reproduce_beta.py`, `beta_floodplain.py`,
 `prototype_B.py`, `run_B.py`, `make_beta_figures.py`, `recover_original_beta.py` and the recovered

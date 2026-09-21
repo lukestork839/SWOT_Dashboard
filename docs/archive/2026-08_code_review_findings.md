@@ -1,6 +1,10 @@
+> **Archived record (2026-09-21) — no longer maintained.** Kept for provenance; file paths,
+> line numbers, and results reflect the repository at the time of writing. For current
+> methodology and results see the repository root and `docs/`.
+
 # Code Review Findings — Phase B
 
-**Date:** 2026-08-12 · **Status:** REPORT ONLY — no fixes applied yet (per agreed report-first workflow).
+**Date:** 2026-08-12 · **Status at archive time:** all 22 verified findings were subsequently fixed and the archive re-pulled (see `docs/THESIS_IMPACT_LOG.md`). The "REPORT ONLY — no fixes applied yet" framing below reflects the report-first workflow at the time of writing.
 
 **Method:** 8 independent finder agents swept the science-bearing code (92 raw findings, 84 after dedup). Every finding rated critical/high, plus all correctness/statistical/data-pipeline mediums, was then passed to an independent adversarial verifier instructed to *refute* it, with read-only Python/DuckDB runs against the real repo data. **All 22 verified findings were CONFIRMED; none were refuted.** The remaining 62 lower-severity hygiene findings (dead code, stale docs/prose, duplicated constants, robustness nits) were not adversarially verified — they are listed in Part 2 and get re-checked at fix time.
 

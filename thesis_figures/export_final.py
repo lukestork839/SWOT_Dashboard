@@ -3,8 +3,7 @@ final thesis numbers.
 
 The generator scripts keep their stable file-series names (figure_00..09,
 dem_fig01..05); this script is the single place that maps those names to the
-sequential numbers used in the thesis document (the map in
-Project_Info/thesis_canonical_values.md section 1.13). Re-run it after any
+sequential figure numbers used in the thesis document. Re-run it after any
 figure regeneration; assembly should pull images and captions from final/
 only.
 
