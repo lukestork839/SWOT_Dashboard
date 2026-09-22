@@ -1,4 +1,4 @@
-"""Researcher dashboard entrypoint (Streamlit Cloud app: swotdashboard.streamlit.app).
+"""Researcher dashboard entrypoint (Streamlit Cloud app: swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app).
 
 The filename is load-bearing: the deployed app's main-file path points here.
 All tab content lives in dashboard_tabs/ (shared with the village app); all

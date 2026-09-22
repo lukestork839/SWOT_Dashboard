@@ -1,10 +1,10 @@
 # SWOT River Dynamics Dashboard
 
-### 🌊 [**Launch the live dashboard →**](https://swotdashboard.streamlit.app/)
+### 🌊 [**Launch the live dashboard →**](https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/)
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-Live%20Dashboard-FF4B4B.svg)](https://swotdashboard.streamlit.app/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-Live%20Dashboard-FF4B4B.svg)](https://swotdashboard-yk9ezgjahxvqjhmff767nu.streamlit.app/)
 
 Interactive visualization of NASA SWOT satellite data for two Alaskan rivers (Kanektok River and Uyak Creek), comparing hydraulic gradients to assess avulsion risk.
 
